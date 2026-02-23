@@ -1,0 +1,237 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Claude.ai light mode palette */
+  --foreground: hsl(60, 3%, 8%);              /* near-black, warm */
+  --background: hsl(48, 33%, 97%);            /* warm cream — #f9f8f4 */
+  --muted: hsl(53, 29%, 94.5%);              /* slightly darker cream for surfaces */
+  --muted-foreground: hsl(51, 3%, 44%);       /* warm medium gray */
+  --border: hsl(50, 21%, 88%);               /* subtle warm border */
+  --border-strong: hsl(50, 15%, 80%);
+  --primary: hsl(15, 63%, 60%);              /* Claude orange accent */
+  --primary-foreground: #ffffff;
+
+  /* Role colors — subtle tints */
+  --researcher-bg: hsl(214, 50%, 96%);
+  --researcher-border: hsl(214, 40%, 80%);
+  --auditor-bg: transparent;
+  --auditor-border: hsl(50, 16%, 85%);
+  --target-bg: hsl(142, 35%, 96%);
+  --target-border: hsl(142, 30%, 78%);
+
+  /* Reasoning blocks */
+  --reasoning-bg: linear-gradient(135deg, hsl(48, 25%, 96%) 0%, hsl(48, 20%, 94%) 100%);
+  --reasoning-border: hsl(48, 15%, 88%);
+  --reasoning-accent: hsl(48, 10%, 72%);
+  --reasoning-text: hsl(48, 5%, 35%);
+  --reasoning-badge-bg: hsl(48, 20%, 94%);
+  --reasoning-badge-text: hsl(48, 8%, 50%);
+  --reasoning-badge-full-bg: #ede9fe;
+  --reasoning-badge-full-text: #7c3aed;
+  --reasoning-badge-summary-bg: #fef3c7;
+  --reasoning-badge-summary-text: #d97706;
+  --reasoning-badge-redacted-bg: #fde2e2;
+  --reasoning-badge-redacted-text: #b91c1c;
+  --reasoning-preview-text: hsl(48, 8%, 60%);
+  --reasoning-content-bg: rgba(255, 255, 255, 0.5);
+  --reasoning-content-border: hsl(48, 15%, 88%);
+  --reasoning-hover: rgba(0, 0, 0, 0.02);
+
+  /* Transitions */
+  --transition-ease: cubic-bezier(0.165, 0.85, 0.45, 1);
+
+  /* Typography */
+  --line-height-content: 1.7;
+}
+
+/* Dark mode — opt-in via class="dark" on <html>, not automatic from OS preference */
+html.dark {
+    /*
+     * Warm dark palette — Claude.ai uses olive/amber-tinged grays.
+     * The key is hue 40-55 with 6-12% saturation so the warmth is visible.
+     */
+    --foreground: hsl(45, 30%, 96%);            /* warm cream, not pure white */
+    --background: hsl(50, 8%, 17%);             /* olive-brown dark — the signature warm tone */
+    --muted: hsl(50, 7%, 22%);                  /* warm raised surface */
+    --muted-foreground: hsl(45, 9%, 60%);       /* warm medium gray, clearly readable */
+    --border: hsl(48, 12%, 28%);                /* distinctly warm border */
+    --border-strong: hsl(48, 10%, 38%);
+    --primary: #3b82f6;
+    --primary-foreground: #ffffff;
+
+    /* Role colors — warm-shifted tints */
+    --researcher-bg: hsl(214, 30%, 20%);
+    --researcher-border: hsl(214, 30%, 40%);
+    --auditor-bg: transparent;
+    --auditor-border: hsl(48, 10%, 32%);
+    --target-bg: hsl(150, 18%, 17%);
+    --target-border: hsl(150, 20%, 32%);
+
+    /* Reasoning blocks — warm-shifted */
+    --reasoning-bg: linear-gradient(135deg, hsl(45, 6%, 20%) 0%, hsl(45, 7%, 16%) 100%);
+    --reasoning-border: hsl(45, 8%, 28%);
+    --reasoning-accent: hsl(45, 10%, 45%);
+    --reasoning-text: hsl(40, 15%, 80%);
+    --reasoning-badge-bg: hsl(45, 7%, 22%);
+    --reasoning-badge-text: hsl(45, 10%, 60%);
+    --reasoning-badge-full-bg: hsl(270, 40%, 22%);
+    --reasoning-badge-full-text: #a78bfa;
+    --reasoning-badge-summary-bg: hsl(35, 50%, 16%);
+    --reasoning-badge-summary-text: #fbbf24;
+    --reasoning-badge-redacted-bg: hsl(0, 40%, 16%);
+    --reasoning-badge-redacted-text: #fca5a5;
+    --reasoning-preview-text: hsl(45, 8%, 48%);
+    --reasoning-content-bg: rgba(0, 0, 0, 0.15);
+    --reasoning-content-border: hsl(45, 8%, 28%);
+    --reasoning-hover: rgba(255, 255, 255, 0.06);
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+  font-family: var(--font-inter, 'Inter'), system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Keep layout width stable regardless of content length/branch depth.
+   This prevents horizontal "jumping" when scrollbars appear/disappear. */
+html,
+body {
+  scrollbar-gutter: stable both-edges;
+}
+
+body {
+  overflow-y: scroll;
+}
+
+/* Custom scrollbar — keep visible and stable like Claude-style chats */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted-foreground) 45%, transparent);
+  border-radius: 999px;
+  border: 2px solid transparent; /* adds visual breathing room */
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted-foreground) 70%, transparent);
+  background-clip: padding-box;
+}
+
+/* =============================================================================
+   Reasoning Block Styles
+   ============================================================================= */
+
+.reasoning-block {
+  margin: 0.5rem 0;
+  background: var(--reasoning-bg);
+  border: 0.5px solid var(--reasoning-border);
+  border-left: 3px solid var(--reasoning-accent);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.reasoning-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.875rem;
+  transition: background 150ms ease;
+}
+
+.reasoning-header:hover {
+  background: var(--reasoning-hover);
+}
+
+.reasoning-badge {
+  display: inline-block;
+  background: var(--reasoning-badge-bg);
+  color: var(--reasoning-badge-text);
+  border-radius: 999px;
+  padding: 0.125rem 0.5rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
+.reasoning-badge.summary {
+  background: var(--reasoning-badge-summary-bg);
+  color: var(--reasoning-badge-summary-text);
+}
+
+.reasoning-badge.redacted {
+  background: var(--reasoning-badge-redacted-bg);
+  color: var(--reasoning-badge-redacted-text);
+}
+
+.reasoning-badge.full {
+  background: var(--reasoning-badge-full-bg);
+  color: var(--reasoning-badge-full-text);
+}
+
+.reasoning-toggle {
+  font-size: 0.625rem;
+  color: var(--reasoning-accent);
+  flex-shrink: 0;
+  transition: transform 150ms ease;
+}
+
+.reasoning-preview {
+  color: var(--reasoning-preview-text);
+  font-size: 0.8rem;
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.reasoning-content {
+  padding: 0 0.75rem 0.75rem 0.75rem;
+  font-style: italic;
+  color: var(--reasoning-text);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.reasoning-content code {
+  background: var(--reasoning-content-bg);
+  padding: 0.1rem 0.3rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.reasoning-content pre {
+  background: var(--reasoning-content-bg);
+  border: 0.5px solid var(--reasoning-content-border);
+  border-radius: 8px;
+  padding: 0.75rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
