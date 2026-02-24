@@ -6,14 +6,13 @@
 
 import { create } from "zustand";
 import type {
-  ChatMessage,
   ClientMessage,
   ViewState,
   ServerMessage,
-  PlaybackState,
   ToolCall,
   TargetState,
   ComputedBranchPoint,
+  SessionSummary,
 } from "@/lib/types";
 
 interface ToolCallRewriteDraft {
@@ -35,6 +34,13 @@ interface SessionState {
   rewriteDrafts: Record<string, ToolCallRewriteDraft | undefined>;
   lastError: string | null;
   _lastErrorId: number | null;
+
+  // Session list (sidebar)
+  sessionList: SessionSummary[];
+  sessionListLoading: boolean;
+
+  // Pending feedback queue (visible during generation)
+  pendingFeedback: string[];
 
   // Actions
   connect: (sessionId: string, serverUrl?: string) => void;
@@ -61,22 +67,20 @@ interface SessionState {
   toggleMessageCollapsed: (messageId: string) => void;
   clearError: () => void;
   handleServerMessage: (message: ServerMessage) => void;
+
+  // Feedback queue actions
+  queueFeedback: (content: string) => void;
+  removeQueuedFeedback: (index: number) => void;
+
+  // Session list actions
+  fetchSessionList: () => Promise<void>;
+  deleteSessionFromList: (id: string) => Promise<void>;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const RECONNECT_DELAY_MS = 2000;
 
-/**
- * Compute the default WebSocket server URL.
- * - If NEXT_PUBLIC_WS_URL is set, use it.
- * - Otherwise, derive from window.location (same-origin WebSocket via proxy).
- * - Falls back to ws://localhost:8000 for SSR/non-browser contexts.
- */
 function getDefaultServerUrl(): string {
-  if (typeof window === "undefined") return "ws://localhost:8000";
-  const envUrl = process.env.NEXT_PUBLIC_WS_URL;
-  if (envUrl) return envUrl;
-  // Use same-origin WebSocket (requires proxy rewrite in next.config.js)
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}`;
 }
@@ -94,6 +98,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   rewriteDrafts: {},
   lastError: null,
   _lastErrorId: null,
+  sessionList: [],
+  sessionListLoading: false,
+  pendingFeedback: [],
 
   // Connect to WebSocket
   connect: (sessionId: string, serverUrl?: string) => {
@@ -107,10 +114,23 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     }
 
     if (existingWs) {
+      existingWs.onclose = null;
+      existingWs.onerror = null;
+      existingWs.onmessage = null;
       existingWs.close();
     }
 
-    set({ connectionStatus: "connecting", sessionId, serverUrl });
+    set({
+      connectionStatus: "connecting",
+      sessionId,
+      serverUrl,
+      viewState: null,
+      version: 0,
+      collapsedMessages: new Set(),
+      rewriteDrafts: {},
+      lastError: null,
+      _lastErrorId: null,
+    });
 
     const wsUrl = `${serverUrl}/ws/${sessionId}`;
     const ws = new WebSocket(wsUrl);
@@ -139,7 +159,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     };
 
     ws.onerror = () => {
-      set({ connectionStatus: "error" });
+      set({ connectionStatus: "error", lastError: "WebSocket connection error" });
     };
 
     ws.onmessage = (event) => {
@@ -206,9 +226,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   pause: () => get().send({ type: "pause" }),
   step: () => get().send({ type: "step" }),
 
-  // Send feedback
+  // Send feedback (immediate -- used when NOT generating)
   sendFeedback: (content: string) => {
     get().send({ type: "feedback", content });
+  },
+
+  // Queue feedback (used when auditor IS generating)
+  queueFeedback: (content: string) => {
+    get().send({ type: "queue_feedback", content });
+  },
+
+  removeQueuedFeedback: (index: number) => {
+    get().send({ type: "remove_queued_feedback", index });
   },
 
   // Switch branch
@@ -311,7 +340,16 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   handleServerMessage: (message: ServerMessage) => {
     switch (message.type) {
       case "state": {
-        set({ viewState: message.state, version: message.state.version, lastError: null });
+        const prevSessionId = get().viewState?.session_id;
+        set({
+          viewState: message.state,
+          version: message.state.version,
+          lastError: null,
+          pendingFeedback: message.state.pending_feedback ?? [],
+        });
+        if (prevSessionId !== message.state.session_id) {
+          get().fetchSessionList();
+        }
         break;
       }
 
@@ -416,6 +454,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break;
       }
 
+      case "pending_feedback_updated": {
+        set({ pendingFeedback: message.pending_feedback });
+        break;
+      }
+
       case "error": {
         console.error("Server error:", message.message);
         const errorId = Date.now();
@@ -432,6 +475,38 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         console.error("Unknown server message type:", (message as Record<string, unknown>).type);
         break;
       }
+    }
+  },
+
+  fetchSessionList: async () => {
+    set({ sessionListLoading: true });
+    try {
+      const res = await fetch("/api/sessions");
+      if (res.ok) {
+        const data = await res.json();
+        set({ sessionList: data, sessionListLoading: false });
+      } else {
+        console.error(`Failed to fetch session list: ${res.status}`);
+        set({ sessionListLoading: false });
+      }
+    } catch (e) {
+      console.error("Failed to fetch session list:", e);
+      set({ sessionListLoading: false });
+    }
+  },
+
+  deleteSessionFromList: async (id: string) => {
+    try {
+      const res = await fetch(`/api/sessions/${id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const detail = await res.text().catch(() => "Unknown error");
+        set({ lastError: `Failed to delete session: ${detail}` });
+        return;
+      }
+      await get().fetchSessionList();
+    } catch (e) {
+      console.error("Failed to delete session:", e);
+      set({ lastError: "Failed to delete session: network error" });
     }
   },
 }));
@@ -479,3 +554,5 @@ export const useTargetBranchPoint = (toolCallId: string) =>
 export const useLastError = () => useSessionStore((s) => s.lastError);
 export const useToolCallRewriteDraft = (toolCallId: string) =>
   useSessionStore((s) => s.rewriteDrafts[toolCallId] ?? null);
+export const useSessionList = () => useSessionStore((s) => s.sessionList);
+export const usePendingFeedback = () => useSessionStore((s) => s.pendingFeedback);

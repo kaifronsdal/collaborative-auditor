@@ -1,5 +1,3 @@
-"use client";
-
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ToolCall, ChatMessage, ComputedBranchPoint } from "@/lib/types";
 import { extractTextContent, extractTargetResponse, extractTargetToolCalls, parseTargetContent, parseTargetToolCalls } from "@/lib/contentUtils";
@@ -1007,10 +1005,7 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
   const hasError = !!toolResult?.error;
 
   const handleResampleTarget = () => {
-    if (!toolResult) {
-      console.error(`Cannot resample target: no tool result for ${toolCall.id}`);
-      return;
-    }
+    if (!toolResult) return;
     resampleTargetResponse(toolResult.id, toolCall.id);
   };
 

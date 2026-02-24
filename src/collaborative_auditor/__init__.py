@@ -4,7 +4,7 @@ A real-time interface for researchers to collaboratively build audit transcripts
 with an AI auditor agent.
 """
 
-from petri.collaborative.models import (
+from collaborative_auditor.models import (
     AtomicEvent,
     ResearcherBranch,
     Session,

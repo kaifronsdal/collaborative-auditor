@@ -1,5 +1,3 @@
-"use client";
-
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type {
   ChatMessage,
@@ -207,8 +205,8 @@ function MessageCardInner({ message, index }: MessageCardProps) {
   const turnId = message.metadata?.turn_id;
 
   const source = message.metadata?.source;
-  if (!source) {
-    console.warn(`Message ${message.id} has no metadata.source`);
+  if (!source && message.role !== "system") {
+    console.warn(`Message ${message.id} (role=${message.role}) has no metadata.source — attributing as auditor`);
   }
   const isEdited = message.metadata?.edited;
 

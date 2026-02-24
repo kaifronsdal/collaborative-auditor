@@ -1,11 +1,11 @@
-"use client";
-
 import { useState } from "react";
-import { useSessionStore, useIsConnected, useViewState, usePlaybackState, useIsGenerating } from "@/store/session";
+import { useSessionStore, useIsConnected, useViewState, usePlaybackState, useIsGenerating, usePendingFeedback } from "@/store/session";
 
 export function FeedbackInput() {
   const [feedback, setFeedback] = useState("");
   const sendFeedback = useSessionStore((state) => state.sendFeedback);
+  const queueFeedback = useSessionStore((state) => state.queueFeedback);
+  const removeQueuedFeedback = useSessionStore((state) => state.removeQueuedFeedback);
   const play = useSessionStore((state) => state.play);
   const pause = useSessionStore((state) => state.pause);
   const step = useSessionStore((state) => state.step);
@@ -13,16 +13,22 @@ export function FeedbackInput() {
   const viewState = useViewState();
   const playbackState = usePlaybackState();
   const isGenerating = useIsGenerating();
+  const pendingFeedback = usePendingFeedback();
 
   const canControl = isConnected && viewState !== null;
   const isPlaying = playbackState === "playing";
   const isStepping = playbackState === "stepping";
   const isRunning = isPlaying || isStepping || isGenerating;
   const hasText = feedback.trim().length > 0;
+  const hasQueue = pendingFeedback.length > 0;
 
   const sendAndClear = () => {
     if (hasText && canControl) {
-      sendFeedback(feedback.trim());
+      if (isRunning) {
+        queueFeedback(feedback.trim());
+      } else {
+        sendFeedback(feedback.trim());
+      }
       setFeedback("");
     }
   };
@@ -37,48 +43,33 @@ export function FeedbackInput() {
     play();
   };
 
-  const handleSend = () => {
-    sendAndClear();
-  };
-
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      if (!canControl) return;
+      if (!canControl || !hasText) return;
 
-      if (hasText && !isRunning) {
-        // Send message + step one turn (most common action)
+      if (isRunning) {
+        sendAndClear();
+      } else {
         handleSendAndStep();
-      } else if (hasText && isRunning) {
-        // Auditor is running — just send the feedback
-        handleSend();
       }
-      // No text — Enter does nothing
     }
   };
 
-  // ── Render buttons based on state ─────────────────────────
-  //
-  // The step and play buttons are always in the same two positions.
-  // When text is entered they smoothly morph: circle → squircle,
-  // muted → primary. The icons stay centered, no overlays needed —
-  // the shape+color shift communicates "this will also send."
-
   const renderButtons = () => {
     if (isRunning && hasText) {
-      // State 4: Has text + running → Send+Continue + Pause
       return (
         <>
           <button
             type="button"
-            onClick={handleSend}
+            onClick={sendAndClear}
             disabled={!canControl}
             style={{ borderRadius: 8, transition: "all 200ms ease" }}
             className="w-8 h-8 flex items-center justify-center bg-[var(--foreground)] text-[var(--background)] hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed active:scale-95"
-            title="Send message (auditor continues running)"
+            title="Queue message"
           >
             <svg className="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M3 2.5C3 2.22386 2.77614 2 2.5 2C2.22386 2 2 2.22386 2 2.5V13.5C2 13.7761 2.22386 14 2.5 14C2.77614 14 3 13.7761 3 13.5V2.5ZM5 3.00176C5 2.19 5.91615 1.71648 6.57836 2.18598L13.5788 7.14908C14.1385 7.54593 14.1414 8.37575 13.5845 8.77653L6.58411 13.8142C5.9226 14.2903 5 13.8175 5 13.0026V3.00176ZM13.0004 7.96486L6 3.00175L6 13.0026L13.0004 7.96486Z" />
+              <path d="M3.5 1.5a.5.5 0 0 1 .8-.4l8 6a.5.5 0 0 1 0 .8l-8 6a.5.5 0 0 1-.8-.4v-12z" />
             </svg>
           </button>
           <button
@@ -98,7 +89,6 @@ export function FeedbackInput() {
     }
 
     if (isRunning) {
-      // State 2: No text + running → Pause only
       return (
         <button
           type="button"
@@ -115,9 +105,6 @@ export function FeedbackInput() {
       );
     }
 
-    // States 1 & 3: Stopped — step + play always in the DOM.
-    // When text is entered: circle → squircle + muted → primary.
-    // Same icons, just the button style changes.
     const radius = hasText ? 8 : 16;
     const bg = hasText
       ? "bg-[var(--foreground)] text-[var(--background)] hover:opacity-90"
@@ -156,19 +143,44 @@ export function FeedbackInput() {
   return (
     <div className="w-full">
       <div className="bg-white dark:bg-[var(--muted)] border border-0.5 border-[var(--border)] rounded-2xl shadow-sm overflow-hidden">
+        {/* Pending feedback queue */}
+        {hasQueue && (
+          <div className="px-4 pt-3 pb-1 space-y-1.5">
+            <div className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] font-medium">
+              {pendingFeedback.length} Queued
+            </div>
+            {pendingFeedback.map((item, i) => (
+              <div key={i} className="flex items-center gap-2 group/qi">
+                <span className="w-1 h-1 rounded-full bg-[var(--muted-foreground)] opacity-40 shrink-0" />
+                <span className="flex-1 text-sm text-[var(--foreground)] truncate">{item}</span>
+                <button
+                  type="button"
+                  onClick={() => removeQueuedFeedback(i)}
+                  className="shrink-0 w-5 h-5 flex items-center justify-center text-[var(--muted-foreground)] hover:text-red-400 rounded opacity-0 group-hover/qi:opacity-100 transition-all"
+                  title="Remove from queue"
+                >
+                  <svg className="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 4l8 8M12 4l-8 8" strokeLinecap="round" />
+                  </svg>
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         {/* Text input */}
         <textarea
           value={feedback}
           onChange={(e) => setFeedback(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Reply..."
+          placeholder={isRunning ? "Queue feedback for next turn..." : "Reply..."}
           disabled={!canControl}
           rows={1}
           className="w-full px-4 pt-3 pb-1 bg-transparent border-none focus:outline-none disabled:opacity-50 resize-none text-sm placeholder:text-[var(--muted-foreground)]/60"
           aria-label="Send feedback to auditor"
         />
 
-        {/* Bottom bar — controls */}
+        {/* Bottom bar -- controls */}
         <div className="flex items-center justify-end px-3 pb-2 pt-0.5">
           <div className="flex items-center gap-1.5">
             {renderButtons()}

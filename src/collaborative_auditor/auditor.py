@@ -6,12 +6,13 @@ managing state changes with atomic events.
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import logging
 import time
 from datetime import datetime
 from typing import Any, Callable, Awaitable
+
+import anyio
 
 from inspect_ai.model import (
     CachePolicy,
@@ -262,69 +263,62 @@ async def _execute_tool_call(
         ChatMessageTool with the result
     """
     try:
-        if tool_name == "set_target_system_message":
-            result = execute_set_target_system_message(
-                branch.target_state,
-                arguments["system_message"],
+        with anyio.CancelScope() as tool_scope:
+            if tool_name == "set_target_system_message":
+                result = execute_set_target_system_message(
+                    branch.target_state,
+                    arguments["system_message"],
+                )
+            elif tool_name == "create_tool":
+                result = execute_create_tool(
+                    branch.target_state,
+                    arguments["function_code"],
+                    arguments["environment_description"],
+                )
+            elif tool_name == "send_message":
+                result = execute_send_message(
+                    branch.target_state,
+                    arguments["message"],
+                )
+            elif tool_name == "send_tool_call_result":
+                result = execute_send_tool_call_result(
+                    branch.target_state,
+                    arguments["tool_call_id"],
+                    arguments["result"],
+                    arguments.get("is_error", False),
+                )
+            elif tool_name == "query_target":
+                cache_policy = create_cache_policy(
+                    session_id=session_id,
+                    resample_id=resample_id,
+                    expiry="1D",
+                )
+                _, result = await execute_query_target(
+                    branch.target_state,
+                    target_model_name,
+                    cache_policy=cache_policy,
+                )
+            elif tool_name == "end_conversation":
+                result = "Conversation ended."
+            else:
+                raise ValueError(f"Unknown tool: {tool_name}")
+
+        if tool_scope.cancelled_caught:
+            logger.info(f"Tool call '{tool_name}' interrupted by user (cancelled)")
+            return ChatMessageTool(
+                id=generate_id(),
+                content="Tool execution was interrupted by the researcher.",
+                tool_call_id=tool_call_id,
+                function=tool_name,
+                error=ToolCallError(type="unknown", message=INTERRUPTED_MESSAGE),
+                metadata={"source": "System"},
             )
-        elif tool_name == "create_tool":
-            result = execute_create_tool(
-                branch.target_state,
-                arguments["function_code"],
-                arguments["environment_description"],  # Required parameter
-            )
-        elif tool_name == "send_message":
-            result = execute_send_message(
-                branch.target_state,
-                arguments["message"],
-            )
-        elif tool_name == "send_tool_call_result":
-            result = execute_send_tool_call_result(
-                branch.target_state,
-                arguments["tool_call_id"],
-                arguments["result"],
-                arguments.get("is_error", False),
-            )
-        elif tool_name == "query_target":
-            # Create cache policy for target model call
-            cache_policy = create_cache_policy(
-                session_id=session_id,
-                resample_id=resample_id,
-                expiry="1D",
-            )
-            _, result = await execute_query_target(
-                branch.target_state,
-                target_model_name,
-                cache_policy=cache_policy,
-            )
-        elif tool_name == "end_conversation":
-            result = "Conversation ended."
-        else:
-            raise ValueError(f"Unknown tool: {tool_name}")
 
         return ChatMessageTool(
             id=generate_id(),
             content=result,
             tool_call_id=tool_call_id,
             function=tool_name,
-            metadata={"source": "System"},
-        )
-
-    except asyncio.CancelledError:
-        # User interrupted during tool execution (e.g., paused during query_target).
-        # Return a proper tool result so the auditor sees the interruption.
-        # Uncancel the task so subsequent awaits (event broadcasting, state push)
-        # don't immediately re-raise CancelledError.
-        task = asyncio.current_task()
-        if task:
-            task.uncancel()
-        logger.info(f"Tool call '{tool_name}' interrupted by user (cancelled)")
-        return ChatMessageTool(
-            id=generate_id(),
-            content="Tool execution was interrupted by the researcher.",
-            tool_call_id=tool_call_id,
-            function=tool_name,
-            error=ToolCallError(type="unknown", message=INTERRUPTED_MESSAGE),
             metadata={"source": "System"},
         )
 

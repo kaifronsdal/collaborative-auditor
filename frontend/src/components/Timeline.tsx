@@ -1,5 +1,3 @@
-"use client";
-
 import { useRef, useEffect } from "react";
 import { useCurrentBranch, useIsGenerating } from "@/store/session";
 import { MessageCard } from "@/components/MessageCard";
@@ -40,7 +38,7 @@ export function Timeline() {
     // Scroll when messages are added (count increased) while generating,
     // or when generation just started (isGenerating flipped on).
     // Skip when the count changed due to a branch switch (not generating).
-    if (isGenerating && messageCount >= prevCount) {
+    if (isGenerating && messageCount > prevCount) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
   }, [messageCount, isGenerating]);

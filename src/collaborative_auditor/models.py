@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Generator
 
@@ -93,7 +93,7 @@ class AtomicEvent(BaseModel):
 
     id: str = Field(default_factory=generate_id)
     seq: int = 0  # Currently unused — reserved for future reconnection sequencing
-    timestamp: datetime = Field(default_factory=datetime.now)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     event_type: EventType = EventType.SYSTEM_INIT  # Type of this event
     turn_id: str | None = None  # Links events in the same auditor turn
     tool_call_id: str | None = None  # Links to specific tool call
@@ -142,6 +142,8 @@ class Session(BaseModel):
     initial_prompt: str
     auditor_model: str
     target_model: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     branches: list[ResearcherBranch] = Field(default_factory=list)
     current_branch_index: int = 0
 
@@ -240,7 +242,7 @@ def track_state_changes(
             event = AtomicEvent(
                 id=generate_id(),
                 seq=0,
-                timestamp=datetime.now(),
+                timestamp=datetime.now(timezone.utc),
                 event_type=event_type,
                 turn_id=turn_id,
                 tool_call_id=tool_call_id,
@@ -285,46 +287,6 @@ def reconstruct_at_event(
         ChatMessageList.validate_python(auditor_state),
         TargetState.model_validate(target_state),
     )
-
-
-def has_branch_point(session: Session, branch_id: str, message_id: str) -> bool:
-    """Check if there's a branch point after this message for this branch."""
-    for bp in session.branch_points:
-        if bp.message_id == message_id and branch_id in bp.branch_ids:
-            return True
-    return False
-
-
-def get_branches_at_point(session: Session, message_id: str) -> list[str]:
-    """Get all branches that diverge after this message (ordered by creation time)."""
-    for bp in session.branch_points:
-        if bp.message_id == message_id:
-            return bp.branch_ids
-    return []
-
-
-def get_branch_point_by_message(session: Session, message_id: str) -> BranchPoint | None:
-    """Get the branch point for a specific message ID."""
-    for bp in session.branch_points:
-        if bp.message_id == message_id:
-            return bp
-    return None
-
-
-def get_branch_point_by_tool_call(session: Session, tool_call_id: str) -> BranchPoint | None:
-    """Get the branch point for a specific tool call ID."""
-    for bp in session.branch_points:
-        if bp.tool_call_id == tool_call_id:
-            return bp
-    return None
-
-
-def get_branch_point_by_event(session: Session, event_id: str) -> BranchPoint | None:
-    """Get the branch point for a specific event ID."""
-    for bp in session.branch_points:
-        if bp.event_id == event_id:
-            return bp
-    return None
 
 
 def create_branch(

@@ -1,5 +1,3 @@
-"use client";
-
 import { useSessionStore } from "@/store/session";
 import type { ComputedBranchPoint } from "@/lib/types";
 import type { MouseEvent } from "react";

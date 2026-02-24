@@ -153,6 +153,8 @@ export interface ViewState {
   initial_prompt: string;
   auditor_model: string;
   target_model: string;
+  created_at: string;
+  updated_at: string;
   current_branch: {
     id: string;
     auditor_messages: ChatMessage[];
@@ -164,6 +166,18 @@ export interface ViewState {
   playback_state: PlaybackState;
   is_generating: boolean;
   version: number;
+  pending_feedback: string[];
+}
+
+export interface SessionSummary {
+  id: string;
+  initial_prompt: string;
+  auditor_model: string;
+  target_model: string;
+  created_at: string;
+  updated_at: string;
+  branch_count: number;
+  message_count: number;
 }
 
 // ============= Server Messages (5 types) =============
@@ -180,6 +194,7 @@ export type ServerMessage =
       rewritten_arguments?: Record<string, unknown>;
       error?: string;
     }
+  | { type: "pending_feedback_updated"; pending_feedback: string[] }
   | { type: "error"; message: string };
 
 // ============= Client Messages =============
@@ -204,4 +219,6 @@ export type ClientMessage =
       target_field?: string;
     }
   | { type: "resample_target_response"; target_message_id: string; tool_call_id?: string }
-  | { type: "edit_initial_prompt"; new_content: string };
+  | { type: "edit_initial_prompt"; new_content: string }
+  | { type: "queue_feedback"; content: string }
+  | { type: "remove_queued_feedback"; index: number };

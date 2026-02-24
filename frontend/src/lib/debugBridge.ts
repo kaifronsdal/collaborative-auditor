@@ -14,7 +14,8 @@
  *   window.__bp()               → returns branch points summary
  */
 
-import type { ViewState, ChatMessage, ClientMessage, ToolCall, ComputedBranchPoint, TargetState } from "./types";
+import type { ViewState, ChatMessage, ClientMessage, ToolCall, ComputedBranchPoint, TargetState, ContentPart } from "./types";
+import { extractTargetResponse, isContentReasoning } from "./contentUtils";
 
 // ─── Text Rendering ───────────────────────────────────────────────
 
@@ -26,26 +27,18 @@ function truncate(text: string, maxLen = MAX_WIDTH): string {
   return flat.length > maxLen ? flat.slice(0, maxLen - 3) + "..." : flat;
 }
 
-function extractText(content: string | unknown[] | undefined): string {
+function extractText(content: string | ContentPart[] | undefined): string {
+  if (!content) return "";
   if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return content ? String(content) : "";
-  return content
-    .map((p: unknown) => {
-      const part = p as Record<string, unknown>;
-      if (part.type === "text") return (part.text as string) || "";
-      if (part.type === "reasoning") {
-        const r = (part.reasoning as string) || "";
-        return r ? `[thinking: ${truncate(r, 40)}]` : "";
-      }
-      return "";
-    })
-    .filter(Boolean)
-    .join(" ");
-}
-
-function extractTargetResponse(content: string): string | null {
-  const m = content.match(/<target_response[^>]*>([\s\S]*?)<\/target_response>/);
-  return m ? m[1].trim() : null;
+  const parts: string[] = [];
+  for (const p of content) {
+    if (p.type === "text") parts.push(p.text);
+    else if (isContentReasoning(p)) {
+      const r = p.reasoning || "";
+      if (r) parts.push(`[thinking: ${truncate(r, 40)}]`);
+    }
+  }
+  return parts.join(" ");
 }
 
 function getBpIndicator(
@@ -103,7 +96,6 @@ export function renderTextUI(vs: ViewState): string {
     const meta = msg.metadata ?? {};
     const source = meta.source ?? "";
     const msgId = msg.id ?? "";
-    const turnId = meta.turn_id ?? "";
 
     let label: string;
     if (msg.role === "system") label = "System";

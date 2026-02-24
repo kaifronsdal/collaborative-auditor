@@ -1,5 +1,3 @@
-"use client";
-
 import { useSessionStore, usePlaybackState, useIsGenerating, useIsConnected, useViewState } from "@/store/session";
 
 export function PlaybackControls() {

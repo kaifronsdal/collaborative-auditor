@@ -1,5 +1,3 @@
-"use client";
-
 interface ConnectionStatusProps {
   status: "disconnected" | "connecting" | "connected" | "error";
 }
