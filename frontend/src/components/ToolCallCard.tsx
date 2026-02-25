@@ -1026,7 +1026,7 @@ export function ToolCallCard({ toolCall }: ToolCallCardProps) {
   switch (toolCall.function) {
     case "query_target":
       return <QueryTargetRenderer state={sharedState} />;
-    case "create_tool":
+    case "create_tool_for_target":
       return <CreateToolRenderer state={sharedState} />;
     default:
       return <CompactToolRenderer state={sharedState} />;

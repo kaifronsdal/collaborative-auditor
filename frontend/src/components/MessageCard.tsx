@@ -5,7 +5,7 @@ import type {
   ContentReasoning,
 } from "@/lib/types";
 import { extractTextContent, isContentText, isContentReasoning, isContentImage } from "@/lib/contentUtils";
-import { useSessionStore, useTurnBranchPoint } from "@/store/session";
+import { useSessionStore, useTurnBranchPoint, useViewState } from "@/store/session";
 import { BranchNavigation } from "@/components/BranchNavigation";
 import { ToolCallCard } from "@/components/ToolCallCard";
 import { clsx } from "clsx";
@@ -168,6 +168,37 @@ function ContentRenderer({ content }: ContentRendererProps) {
 }
 
 // =============================================================================
+// Seed Instruction (collapsible for long content)
+// =============================================================================
+
+function SeedContent({ text }: { text: string }) {
+  const PREVIEW_CHARS = 420;
+  const [isCollapsed, setIsCollapsed] = useState(true);
+  const isLong = text.length > PREVIEW_CHARS;
+  const shownText = isCollapsed && isLong
+    ? `${text.slice(0, PREVIEW_CHARS).trimEnd()}...`
+    : text;
+
+  return (
+    <div>
+      <div className={clsx("whitespace-pre-wrap", BODY_TEXT_CLASS)}>{shownText}</div>
+      {isLong && (
+        <div className="mt-1">
+          <button
+            type="button"
+            className="text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors"
+            onClick={() => setIsCollapsed(!isCollapsed)}
+            aria-expanded={!isCollapsed}
+          >
+            {isCollapsed ? "more..." : "less..."}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
 // Role label colors
 // =============================================================================
 
@@ -176,6 +207,7 @@ const roleLabelColors: Record<string, string> = {
   auditor: "text-[var(--foreground)]",
   target: "text-emerald-700 dark:text-emerald-400",
   system: "text-[var(--muted-foreground)]",
+  seed: "text-[var(--muted-foreground)]",
 };
 
 // =============================================================================
@@ -204,14 +236,19 @@ function MessageCardInner({ message, index }: MessageCardProps) {
   // Extract turn_id from message metadata for resampling
   const turnId = message.metadata?.turn_id;
 
+  const viewState = useViewState();
+
   const source = message.metadata?.source;
   if (!source && message.role !== "system") {
     console.warn(`Message ${message.id} (role=${message.role}) has no metadata.source — attributing as auditor`);
   }
   const isEdited = message.metadata?.edited;
 
-  const messageType: "researcher" | "auditor" | "target" | "system" =
-    source === "Researcher" ? "researcher"
+  const isInitialInstruction = index === 1 && message.role === "user" && source === "System";
+
+  const messageType: "researcher" | "auditor" | "target" | "system" | "seed" =
+    isInitialInstruction ? "seed"
+    : source === "Researcher" ? "researcher"
     : source === "Target" ? "target"
     : (source === "System" || message.role === "system") ? "system"
     : "auditor";
@@ -219,11 +256,13 @@ function MessageCardInner({ message, index }: MessageCardProps) {
   const isAuditor = messageType === "auditor";
   const isTarget = messageType === "target";
   const isSystem = messageType === "system";
-  const isInitialInstruction = index === 1 && message.role === "user" && source === "System";
-  const isEditableMessage = isInitialInstruction || isResearcher;
-  const editableOriginalContent = typeof message.content === "string"
-    ? message.content
-    : extractTextContent(message.content);
+  const isSeed = messageType === "seed";
+  const isEditableMessage = isSeed || isResearcher;
+  const editableOriginalContent = isSeed
+    ? (viewState?.initial_prompt ?? "")
+    : typeof message.content === "string"
+      ? message.content
+      : extractTextContent(message.content);
   const isDirty = isEditingContent && editedContent !== editableOriginalContent;
   const queryTargetCalls = (message.tool_calls || []).filter((tc) => tc.function === "query_target");
   const nonQueryToolCalls = (message.tool_calls || []).filter((tc) => tc.function !== "query_target");
@@ -292,7 +331,8 @@ function MessageCardInner({ message, index }: MessageCardProps) {
           isResearcher && "bg-[var(--researcher-bg)] ml-0 mr-auto max-w-[85%]",
           isAuditor && "w-full",
           isTarget && "bg-[var(--target-bg)] ml-auto mr-0 max-w-[85%]",
-          isSystem && clsx("text-[var(--muted-foreground)] italic", BODY_TEXT_CLASS)
+          isSystem && clsx("text-[var(--muted-foreground)] italic", BODY_TEXT_CLASS),
+          isSeed && clsx("text-[var(--muted-foreground)]", BODY_TEXT_CLASS)
         )}
       >
         <div
@@ -325,6 +365,7 @@ function MessageCardInner({ message, index }: MessageCardProps) {
               {isAuditor && "Auditor"}
               {isTarget && "Target"}
               {isSystem && "System"}
+              {isSeed && "Seed Instruction"}
             </span>
             {isEdited && (
               <span className="text-xs text-[var(--muted-foreground)] opacity-70">(edited)</span>
@@ -412,6 +453,8 @@ function MessageCardInner({ message, index }: MessageCardProps) {
                   </button>
                 </div>
               </div>
+            ) : isSeed ? (
+              <SeedContent text={viewState?.initial_prompt ?? ""} />
             ) : (
               <ContentRenderer content={message.content} />
             )}

@@ -1,7 +1,9 @@
 """Core data structures for the Collaborative Auditor Interface.
 
-This module defines the state management structures including Sessions, Branches,
-and AtomicEvents that enable fine-grained branching and state reconstruction.
+Event tree (git-like DAG) architecture:
+- Events form a tree with bottom-up parent pointers (immutable once created)
+- Branches are pointers to tip events + materialized state
+- Branch points are structural (multi-child nodes) — no separate bookkeeping
 """
 
 from __future__ import annotations
@@ -9,43 +11,31 @@ from __future__ import annotations
 import contextlib
 import copy
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Generator
+from collections.abc import Generator
+from typing import Any
 
 import jsonpatch
 from inspect_ai.model import ChatMessage
 from inspect_ai.tool import ToolParams
 from pydantic import BaseModel, Field, TypeAdapter
 
-# TypeAdapter for serializing/deserializing ChatMessage union types.
-# This handles ToolCall (pydantic dataclass) serialization natively,
-# eliminating the need for manual asdict() or exclude hacks.
-ChatMessageList = TypeAdapter(list[ChatMessage])
+_chat_message_list_adapter = TypeAdapter(list[ChatMessage])
+_chat_message_adapter = TypeAdapter(ChatMessage)
 
 
 def generate_id() -> str:
-    """Generate a unique ID for sessions, branches, and events."""
     return str(uuid.uuid4())
 
 
 class EventType(str, Enum):
-    """Types of atomic events for precise branching."""
-
-    AUDITOR_TURN_START = "auditor_turn_start"  # Starts a new turn, contains thinking/text
-    TOOL_CALL_ADDED = "tool_call_added"  # A tool call is added to the turn
-    TOOL_CALL_EXECUTED = "tool_call_executed"  # A tool call is executed
-    TARGET_RESPONSE = "target_response"  # Target model generated a response
-    RESEARCHER_MESSAGE = "researcher_message"  # Researcher adds feedback
-    SYSTEM_INIT = "system_init"  # Session initialization
-
-
-class BranchPointType(str, Enum):
-    """Type of branch point for proper UI indication."""
-
-    TURN = "turn"  # Branch point is a full turn resample
-    TOOL_CALL = "tool_call"  # Branch point is a tool call edit/resample
-    TARGET_RESPONSE = "target"  # Branch point is a target response resample
+    SYSTEM_INIT = "system_init"
+    AUDITOR_TURN_START = "auditor_turn_start"
+    TOOL_CALL_ADDED = "tool_call_added"
+    TOOL_CALL_EXECUTED = "tool_call_executed"
+    RESEARCHER_MESSAGE = "researcher_message"
 
 
 class ToolDefinition(BaseModel):
@@ -56,344 +46,269 @@ class ToolDefinition(BaseModel):
     parameters: ToolParams
 
 
-_ChatMessageAdapter = TypeAdapter(ChatMessage)
-
-
 def serialize_chat_message(msg: ChatMessage) -> dict[str, Any]:
-    """Serialize a ChatMessage to a JSON-safe dict.
-
-    Uses TypeAdapter which handles ToolCall pydantic dataclasses natively.
-    """
-    return _ChatMessageAdapter.dump_python(msg, mode="json")
+    return _chat_message_adapter.dump_python(msg, mode="json")
 
 
 class TargetState(BaseModel):
-    """Current state of the target model conversation.
-
-    The system prompt is the first message in the messages list if present.
-    """
+    """Current state of the target model conversation."""
 
     messages: list[ChatMessage] = Field(default_factory=list)
     tools: list[ToolDefinition] = Field(default_factory=list)
 
-    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
-        """Custom dump using TypeAdapter for ChatMessage serialization."""
+    def model_dump(self, *, mode: str = "json", **kwargs: Any) -> dict[str, Any]:
         return {
-            "messages": ChatMessageList.dump_python(self.messages, mode="json"),
-            "tools": [t.model_dump(**kwargs) for t in self.tools],
+            "messages": _chat_message_list_adapter.dump_python(self.messages, mode=mode),
+            "tools": [t.model_dump(mode=mode, **kwargs) for t in self.tools],
         }
 
 
-class AtomicEvent(BaseModel):
-    """An atomic event bundling auditor and target state changes via JSON patches.
+class EventNode(BaseModel):
+    """A single event in the shared event tree. Immutable once created.
 
-    Each event represents a single atomic change to the session state.
-    Events are recorded automatically by the track_state_changes context manager.
+    Each event stores JSON patches that describe the state change from its
+    parent's state. The parent_id forms a bottom-up pointer (like git commits).
     """
 
     id: str = Field(default_factory=generate_id)
-    seq: int = 0  # Currently unused — reserved for future reconnection sequencing
+    parent_id: str | None = None
+    event_type: EventType = EventType.SYSTEM_INIT
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    event_type: EventType = EventType.SYSTEM_INIT  # Type of this event
-    turn_id: str | None = None  # Links events in the same auditor turn
-    tool_call_id: str | None = None  # Links to specific tool call
-    parent_event_id: str | None = None  # For nested events (e.g., target response within tool call)
+    turn_id: str | None = None
+    tool_call_id: str | None = None
     auditor_patches: list[dict[str, Any]] = Field(default_factory=list)
     target_patches: list[dict[str, Any]] = Field(default_factory=list)
 
 
-class ResearcherBranch(BaseModel):
-    """A researcher-level branch that forks the entire auditor conversation.
+class Branch(BaseModel):
+    """A branch is a pointer to a tip event + materialized (current) state.
 
-    Each branch maintains its own auditor messages, target state, and event history.
-    Branches share a common prefix up to the branch point.
+    The materialized state is kept up-to-date as events are appended. It can
+    also be reconstructed from scratch by replaying patches from root to tip.
     """
 
     id: str = Field(default_factory=generate_id)
+    tip_event_id: str | None = None
     auditor_messages: list[ChatMessage] = Field(default_factory=list)
     target_state: TargetState = Field(default_factory=TargetState)
-    events: list[AtomicEvent] = Field(default_factory=list)
-
-
-class BranchPoint(BaseModel):
-    """Detailed branch point information.
-
-    Tracks where branches diverge, with support for different granularities:
-    turn-level, tool-call-level, or target-response-level branching.
-    """
-
-    id: str = Field(default_factory=generate_id)
-    branch_type: BranchPointType
-    event_id: str  # The event where branching occurs
-    message_id: str | None = None  # Message ID (for UI display)
-    tool_call_id: str | None = None  # Tool call ID (for tool-call branching)
-    turn_id: str | None = None  # Turn ID (for turn-level branching)
-    branch_ids: list[str] = Field(default_factory=list)  # Branches at this point
 
 
 class Session(BaseModel):
-    """The complete session state for a collaborative audit.
+    """A collaborative audit session.
 
-    A session contains multiple branches, with one being the current active branch.
-    Branch points are tracked to enable navigation between branches in the UI.
+    Events are stored in a shared pool (dict keyed by ID). Branches are
+    lightweight pointers into the event tree. Branch points are discovered
+    structurally by finding events with multiple children.
     """
 
     id: str = Field(default_factory=generate_id)
-    initial_prompt: str
-    auditor_model: str
-    target_model: str
+    initial_prompt: str = ""
+    auditor_model: str = ""
+    target_model: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    branches: list[ResearcherBranch] = Field(default_factory=list)
-    current_branch_index: int = 0
-
-    # Branch points with detailed type information for fine-grained branching
-    branch_points: list[BranchPoint] = Field(default_factory=list)
-
-    def current_branch(self) -> ResearcherBranch:
-        """Get the currently active branch."""
-        return self.branches[self.current_branch_index]
+    events: dict[str, EventNode] = Field(default_factory=dict)
+    branches: list[Branch] = Field(default_factory=list)
 
 
-def create_session(initial_prompt: str, auditor_model: str, target_model: str) -> Session:
-    """Create a new session with an initial empty branch.
-
-    Args:
-        initial_prompt: The researcher's initial instructions for the auditor
-        auditor_model: Name of the model to use as the auditor
-        target_model: Name of the model being audited
-
-    Returns:
-        A new Session with one empty branch
-    """
-    initial_branch = ResearcherBranch(id=generate_id())
+def create_session(
+    initial_prompt: str,
+    auditor_model: str,
+    target_model: str,
+    session_id: str | None = None,
+) -> Session:
+    """Create a new session with one empty branch."""
+    branch = Branch(id=generate_id())
     return Session(
-        id=generate_id(),
+        id=session_id or generate_id(),
         initial_prompt=initial_prompt,
         auditor_model=auditor_model,
         target_model=target_model,
-        branches=[initial_branch],
-        current_branch_index=0,
+        events={},
+        branches=[branch],
     )
 
 
+# ---------------------------------------------------------------------------
+# Serialization helpers
+# ---------------------------------------------------------------------------
+
 def _serialize_auditor(messages: list[ChatMessage]) -> list[dict[str, Any]]:
-    """Serialize auditor messages to JSON-compatible dicts."""
-    return ChatMessageList.dump_python(messages, mode="json")
+    return _chat_message_list_adapter.dump_python(messages, mode="json")
 
 
 def _serialize_target(state: TargetState) -> dict[str, Any]:
-    """Serialize target state to a JSON-compatible dict."""
     return state.model_dump()
 
 
+# ---------------------------------------------------------------------------
+# Event tree operations
+# ---------------------------------------------------------------------------
+
 @contextlib.contextmanager
 def track_state_changes(
-    branch: ResearcherBranch,
+    session: Session,
+    branch: Branch,
     event_type: EventType = EventType.SYSTEM_INIT,
     turn_id: str | None = None,
     tool_call_id: str | None = None,
-    parent_event_id: str | None = None,
 ) -> Generator[None, None, None]:
-    """Context manager that automatically records state changes as an atomic event.
+    """Record state changes as an EventNode in the shared event tree.
 
-    Usage:
-        with track_state_changes(branch, event_type=EventType.TOOL_CALL_ADDED):
-            branch.auditor_messages.append(new_message)
-            branch.target_state.messages.append(target_msg)
-        # AtomicEvent is automatically created and added to branch.events
-        # Access the created event via branch.events[-1] if needed
+    On successful exit, creates an EventNode with JSON patches describing
+    the change, adds it to session.events, and advances branch.tip_event_id.
 
-    Args:
-        branch: The branch to track changes on
-        event_type: The type of event being recorded.
-        turn_id: Optional turn ID linking events in the same auditor turn.
-        tool_call_id: Optional tool call ID linking to a specific tool call.
-        parent_event_id: Optional parent event ID for nested events.
-
-    Note: If an exception is raised inside the context, the event is NOT recorded
-    to avoid capturing partial/corrupt state in the event log.
+    If an exception occurs inside the block, no event is recorded.
     """
-    # Snapshot before
     auditor_before = _serialize_auditor(branch.auditor_messages)
     target_before = _serialize_target(branch.target_state)
+    msg_ids_before = {m.id for m in branch.auditor_messages if m.id}
 
-    exception_occurred = False
-    try:
-        yield
-    except BaseException:
-        exception_occurred = True
-        raise
-    finally:
-        # Only record event if the operation completed successfully.
-        # If an exception occurred, skip recording to avoid capturing
-        # partial/corrupt state in the event log.
-        if not exception_occurred:
-            auditor_after = _serialize_auditor(branch.auditor_messages)
-            target_after = _serialize_target(branch.target_state)
+    yield
 
-            # Compute diffs using jsonpatch.make_patch
-            auditor_patch = jsonpatch.make_patch(auditor_before, auditor_after)
-            target_patch = jsonpatch.make_patch(target_before, target_after)
+    auditor_after = _serialize_auditor(branch.auditor_messages)
+    target_after = _serialize_target(branch.target_state)
 
-            # Always record the event, even if the diff is empty.
-            # An empty-diff event is harmless when replayed but ensures
-            # callers can safely reference branch.events[-1].
-            event = AtomicEvent(
-                id=generate_id(),
-                seq=0,
-                timestamp=datetime.now(timezone.utc),
-                event_type=event_type,
-                turn_id=turn_id,
-                tool_call_id=tool_call_id,
-                parent_event_id=parent_event_id,
-                auditor_patches=auditor_patch.patch,
-                target_patches=target_patch.patch,
-            )
-            branch.events.append(event)
+    auditor_patch = jsonpatch.make_patch(auditor_before, auditor_after)
+    target_patch = jsonpatch.make_patch(target_before, target_after)
+
+    event = EventNode(
+        id=generate_id(),
+        parent_id=branch.tip_event_id,
+        event_type=event_type,
+        timestamp=datetime.now(timezone.utc),
+        turn_id=turn_id,
+        tool_call_id=tool_call_id,
+        auditor_patches=auditor_patch.patch,
+        target_patches=target_patch.patch,
+    )
+    session.events[event.id] = event
+    branch.tip_event_id = event.id
+
+    for msg in branch.auditor_messages:
+        if msg.id and msg.id not in msg_ids_before:
+            if msg.metadata is None:
+                msg.metadata = {}
+            msg.metadata["event_id"] = event.id
+
+
+def _walk_to_root(session: Session, start: str | None) -> list[str]:
+    """Walk parent pointers from *start* to the root, returning root-to-start order."""
+    path: list[str] = []
+    event_id = start
+    while event_id is not None:
+        path.append(event_id)
+        event_id = session.events[event_id].parent_id
+    path.reverse()
+    return path
+
+
+def get_branch_path(session: Session, branch: Branch) -> list[str]:
+    """Walk from branch tip to root, return event IDs in root-to-tip order."""
+    return _walk_to_root(session, branch.tip_event_id)
+
+
+class TreeIndex:
+    """Precomputed indexes over the event tree."""
+
+    __slots__ = ("children", "event_to_branch")
+
+    def __init__(self, session: Session) -> None:
+        self.children: dict[str, list[str]] = defaultdict(list)
+        for event in session.events.values():
+            if event.parent_id is not None:
+                self.children[event.parent_id].append(event.id)
+
+        self.event_to_branch: dict[str, str] = {}
+        for branch in session.branches:
+            event_id = branch.tip_event_id
+            while event_id is not None:
+                if event_id not in self.event_to_branch:
+                    self.event_to_branch[event_id] = branch.id
+                event_id = session.events[event_id].parent_id
 
 
 def reconstruct_at_event(
-    source: ResearcherBranch,
-    event_index: int,
+    session: Session,
+    target_event_id: str,
 ) -> tuple[list[ChatMessage], TargetState]:
-    """Reconstruct state by replaying events up to event_index.
+    """Reconstruct state by replaying patches from root to the target event.
 
-    Args:
-        source: The branch to reconstruct state from
-        event_index: The event index to reconstruct up to (inclusive)
-
-    Returns:
-        A tuple of (auditor_messages, target_state) at that point in time
-
-    Raises:
-        ValueError: If event_index is negative or out of range
+    Walks parent pointers to build the path, then applies patches in order.
     """
-    if event_index < 0:
-        raise ValueError(f"event_index must be non-negative, got {event_index}")
-    if event_index >= len(source.events):
-        raise ValueError(
-            f"event_index {event_index} out of range for branch with {len(source.events)} events"
-        )
+    if target_event_id not in session.events:
+        raise ValueError(f"Event not found: {target_event_id}")
+
+    path = _walk_to_root(session, target_event_id)
 
     auditor_state: list[dict[str, Any]] = []
     target_state: dict[str, Any] = TargetState().model_dump()
 
-    for event in source.events[: event_index + 1]:
+    for event_id in path:
+        event = session.events[event_id]
         auditor_state = jsonpatch.apply_patch(auditor_state, event.auditor_patches)
         target_state = jsonpatch.apply_patch(target_state, event.target_patches)
 
     return (
-        ChatMessageList.validate_python(auditor_state),
+        _chat_message_list_adapter.validate_python(auditor_state),
         TargetState.model_validate(target_state),
     )
 
 
 def create_branch(
     session: Session,
-    source_branch_id: str,
-    at_event_index: int,
-    branch_type: BranchPointType | None = None,
-    turn_id: str | None = None,
-    tool_call_id: str | None = None,
-) -> ResearcherBranch:
-    """Create a new branch from a source branch at the given event.
+    fork_event_id: str,
+) -> Branch:
+    """Create a new branch forking at the given event.
 
-    Args:
-        session: The session to create the branch in
-        source_branch_id: ID of the branch to fork from
-        at_event_index: Index of the event to branch from
-        branch_type: Type of branching (turn, tool_call, or target). Defaults to TURN.
-        turn_id: Optional turn ID for the branch point.
-        tool_call_id: Optional tool call ID for tool-call-level branching.
-
-    Returns:
-        The newly created branch
-
-    Raises:
-        ValueError: If source_branch_id not found or at_event_index is invalid
+    Reconstructs the state at fork_event_id and deep-copies it into a new
+    Branch whose tip points at the fork event. No existing events are mutated.
     """
-    if at_event_index < 0:
-        raise ValueError(f"at_event_index must be non-negative, got {at_event_index}")
+    if fork_event_id not in session.events:
+        raise ValueError(f"Event not found: {fork_event_id}")
 
-    source = None
-    for b in session.branches:
-        if b.id == source_branch_id:
-            source = b
-            break
-    if source is None:
-        raise ValueError(f"Branch not found: {source_branch_id}")
+    auditor_msgs, target_state = reconstruct_at_event(session, fork_event_id)
 
-    if at_event_index >= len(source.events):
-        raise ValueError(
-            f"at_event_index {at_event_index} out of range for branch with {len(source.events)} events"
-        )
-
-    # Reconstruct state at that point
-    auditor_msgs, target_state = reconstruct_at_event(source, at_event_index)
-
-    # Get the event at the branch point
-    branch_event = source.events[at_event_index]
-
-    # Get the PARENT message ID - the last shared message BEFORE the branch point.
-    # This is the same across all branches and serves as the anchor/reference point.
-    # The UI will show the branch indicator on the message AFTER this one.
-    if not auditor_msgs:
-        raise ValueError(
-            f"No auditor messages at event_index {at_event_index} — "
-            f"state reconstruction may be broken"
-        )
-    branch_point_msg_id = auditor_msgs[-1].id
-
-    # Determine branch type from event if not specified
-    if branch_type is None:
-        if branch_event.event_type in (EventType.TOOL_CALL_ADDED, EventType.TOOL_CALL_EXECUTED):
-            branch_type = BranchPointType.TOOL_CALL
-        elif branch_event.event_type == EventType.TARGET_RESPONSE:
-            branch_type = BranchPointType.TARGET_RESPONSE
-        else:
-            branch_type = BranchPointType.TURN
-
-    new_branch = ResearcherBranch(
+    new_branch = Branch(
         id=generate_id(),
+        tip_event_id=fork_event_id,
         auditor_messages=copy.deepcopy(auditor_msgs),
         target_state=copy.deepcopy(target_state),
-        events=copy.deepcopy(source.events[: at_event_index + 1]),
     )
-
     session.branches.append(new_branch)
-
-    # Find or create branch point
-    existing_bp = None
-    for bp in session.branch_points:
-        if bp.event_id == branch_event.id:
-            existing_bp = bp
-            break
-
-    if existing_bp:
-        # Add to existing branch point
-        if source_branch_id not in existing_bp.branch_ids:
-            existing_bp.branch_ids.append(source_branch_id)
-        if new_branch.id not in existing_bp.branch_ids:
-            existing_bp.branch_ids.append(new_branch.id)
-    else:
-        # Create new branch point
-        # Only inherit tool_call_id from event for tool-call/target branch types.
-        # Turn branch points should not have a spurious tool_call_id from the
-        # preceding event.
-        bp_tool_call_id = tool_call_id
-        if not bp_tool_call_id and branch_type in (BranchPointType.TOOL_CALL, BranchPointType.TARGET_RESPONSE):
-            bp_tool_call_id = branch_event.tool_call_id
-
-        new_bp = BranchPoint(
-            id=generate_id(),
-            branch_type=branch_type,
-            event_id=branch_event.id,
-            message_id=branch_point_msg_id,
-            tool_call_id=bp_tool_call_id,
-            turn_id=turn_id if turn_id is not None else branch_event.turn_id,
-            branch_ids=[source_branch_id, new_branch.id],
-        )
-        session.branch_points.append(new_bp)
-
     return new_branch
+
+
+def find_event_on_path(
+    session: Session,
+    branch: Branch,
+    *,
+    event_type: EventType | None = None,
+    turn_id: str | None = None,
+    tool_call_id: str | None = None,
+) -> EventNode | None:
+    """Find the first event matching criteria on a branch's path (tip to root)."""
+    event_id = branch.tip_event_id
+    while event_id is not None:
+        event = session.events[event_id]
+        if all((
+            event_type is None or event.event_type == event_type,
+            turn_id is None or event.turn_id == turn_id,
+            tool_call_id is None or event.tool_call_id == tool_call_id,
+        )):
+            return event
+        event_id = event.parent_id
+    return None
+
+
+def find_turn_start(
+    session: Session,
+    branch: Branch,
+    turn_id: str,
+) -> EventNode | None:
+    """Find the AUDITOR_TURN_START event for a given turn_id on this branch."""
+    return find_event_on_path(
+        session, branch,
+        event_type=EventType.AUDITOR_TURN_START,
+        turn_id=turn_id,
+    )

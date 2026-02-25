@@ -93,11 +93,8 @@ class SessionStore:
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 branches = data.get("branches", [])
-                current_idx = data.get("current_branch_index", 0)
-                if current_idx >= len(branches):
-                    current_idx = max(0, len(branches) - 1)
-                current_branch = branches[current_idx] if branches else None
-                msg_count = len(current_branch.get("auditor_messages", [])) if current_branch else 0
+                first_branch = branches[0] if branches else None
+                msg_count = len(first_branch.get("auditor_messages", [])) if first_branch else 0
 
                 summaries.append(SessionSummary(
                     id=data["id"],

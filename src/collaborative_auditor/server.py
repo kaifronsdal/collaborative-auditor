@@ -1,23 +1,12 @@
 """FastAPI server for the Collaborative Auditor Interface.
 
-This module provides the WebSocket-based API for real-time collaboration
-between researchers and the auditor agent.
-
-Protocol: Server-authoritative state push model.
-- Server -> Client: state, delta_turn_start, delta_tool_call, delta_tool_result, error
-- Client -> Server: start_session, play, pause, step, feedback, branch, switch_branch,
-                    edit_message, resample_turn, edit_tool_call, resample_target_response
+Thin WebSocket router that delegates to handler modules.
 """
 
 from __future__ import annotations
 
-import asyncio
-import copy
-import json
 import logging
-import re
 from contextlib import asynccontextmanager
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,85 +14,46 @@ import anyio
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
-from inspect_ai.model import (
-    ChatMessageTool,
-    ChatMessageUser,
-    ContentReasoning,
-    ContentText,
-    GenerateConfig,
-    get_model,
-)
-from inspect_ai.tool import ToolCall
 
-# Load environment variables from .env file
-# Search for .env in the project root (up to 3 levels up from this file)
 _env_file = Path(__file__).parent.parent.parent / ".env"
 if _env_file.exists():
     load_dotenv(_env_file)
-    logging.info(f"Loaded environment from {_env_file}")
 else:
-    # Also try current working directory
     load_dotenv()
 
-from collaborative_auditor.auditor import (
-    AUDITOR_SYSTEM_PROMPT,
-    _execute_tool_call,
-    add_researcher_feedback,
-    execute_auditor_turn,
-    initialize_auditor_messages,
+from collaborative_auditor.handlers.branching import (
+    handle_branch,
+    handle_edit_tool_call,
+    handle_resample_target_response,
+    handle_resample_turn,
+    handle_switch_branch,
 )
-from collaborative_auditor.models import (
-    BranchPoint,
-    BranchPointType,
-    EventType,
-    ResearcherBranch,
-    Session,
-    create_branch,
-    create_session,
-    generate_id,
-    reconstruct_at_event,
-    serialize_chat_message,
-    track_state_changes,
+from collaborative_auditor.handlers.common import push_full_state
+from collaborative_auditor.handlers.editing import (
+    handle_edit_initial_prompt,
+    handle_edit_message,
+    handle_rewrite_tool_call,
 )
-from collaborative_auditor.session_store import SessionStore
-from collaborative_auditor.tools import (
-    create_cache_policy,
-    execute_query_target,
+from collaborative_auditor.handlers.feedback import (
+    handle_feedback,
+    handle_queue_feedback,
+    handle_remove_queued_feedback,
 )
+from collaborative_auditor.handlers.playback import (
+    handle_pause,
+    handle_play,
+    handle_step,
+)
+from collaborative_auditor.handlers.session import handle_start_session
+from collaborative_auditor.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
-# Session persistence
-session_store = SessionStore()
-
-# In-memory session storage (loaded on-demand from disk)
-sessions: dict[str, Session] = {}
-
-# Active WebSocket connections per session
-connections: dict[str, list[WebSocket]] = {}
-
-# Playback state per session
-playback_states: dict[str, str] = {}  # "idle" | "playing" | "stepping" | "paused"
-
-# Monotonic version counter per session (for ordering delta messages)
-session_versions: dict[str, int] = {}
-
-# Active generation tasks per session (to prevent race conditions)
-generation_tasks: dict[str, asyncio.Task] = {}
-
-# Cancel scopes for running generation (cancel the scope to stop the loop)
-generation_scopes: dict[str, anyio.CancelScope] = {}
-
-# Queued feedback awaiting injection at the next turn boundary or pause
-pending_feedback: dict[str, list[str]] = {}
-
-# Per-session locks to serialize all mutations (prevents race conditions)
-session_locks: dict[str, anyio.Lock] = {}
+manager = SessionManager()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan handler."""
     logger.info("Starting Collaborative Auditor server")
     yield
     logger.info("Shutting down Collaborative Auditor server")
@@ -117,1407 +67,140 @@ app = FastAPI(
 )
 
 
-def _find_ancestor_index(
-    bp: BranchPoint,
-    current_branch: ResearcherBranch,
-    session: Session,
-) -> int:
-    """Find which branch in a branch point's branch_ids is the current branch's ancestor.
-
-    When the current branch is not directly in branch_ids (it's a descendant),
-    we determine which listed branch it descends from by counting how many
-    message IDs AFTER the branch point are shared with the current branch.
-    The true ancestor will share more post-branch-point messages because the
-    current branch inherited (deep-copied) those messages from it.
-
-    Returns the index into bp.branch_ids, or 0 as fallback.
-    """
-    current_msg_ids = {m.id for m in current_branch.auditor_messages}
-    bp_msg_id = bp.message_id
-
-    best_idx = 0
-    best_overlap = -1
-
-    for i, bid in enumerate(bp.branch_ids):
-        candidate = None
-        for b in session.branches:
-            if b.id == bid:
-                candidate = b
-                break
-        if candidate is None:
-            continue
-
-        # Count how many messages AFTER the branch point message are shared
-        # with the current branch.  The true ancestor will share more because
-        # the current branch was forked from it at a later point and inherited
-        # (deep-copied) its messages.
-        past_bp = False
-        overlap = 0
-        for m in candidate.auditor_messages:
-            if bp_msg_id and m.id == bp_msg_id:
-                past_bp = True
-                continue
-            if past_bp and m.id in current_msg_ids:
-                overlap += 1
-
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_idx = i
-
-    if best_overlap <= 0:
-        raise ValueError(
-            f"Could not find ancestor branch for branch point "
-            f"event_id={bp.event_id}, message_id={bp.message_id}, "
-            f"branch_ids={bp.branch_ids}. "
-            f"Current branch {current_branch.id} is not a descendant of any listed branch."
-        )
-
-    return best_idx
-
-
-def build_view_state(session_id: str) -> dict[str, Any]:
-    """Build the complete ViewState for sending to clients.
-
-    This is the single source of truth - sent on every non-streaming state change.
-    Only the current branch's messages are included (not all branches).
-    Branch points are pre-computed for the current branch.
-    """
-    session = sessions[session_id]
-    branch = session.current_branch()
-
-    # Pre-compute branch points visible on the current branch.
-    # A branch point is visible if:
-    # 1. The current branch is explicitly in branch_ids (direct participant), OR
-    # 2. The branch point's message_id exists in our messages (inherited from ancestor)
-    current_msg_ids = {m.id for m in branch.auditor_messages}
-    current_tc_ids = {
-        tc.id
-        for m in branch.auditor_messages
-        if m.role == "assistant" and m.tool_calls
-        for tc in m.tool_calls
-    }
-
-    computed_branch_points = []
-    for bp in session.branch_points:
-        # Determine if this branch point is visible on the current branch
-        if branch.id in bp.branch_ids:
-            # Direct participant
-            current_idx = bp.branch_ids.index(branch.id)
-        elif bp.message_id and bp.message_id in current_msg_ids:
-            # The branch point's anchor message is in our history (inherited from ancestor).
-            # Find our closest ancestor in the branch_ids list.
-            current_idx = _find_ancestor_index(bp, branch, session)
-        elif bp.tool_call_id and bp.tool_call_id in current_tc_ids:
-            # The branch point's tool call is in our history (inherited from ancestor)
-            current_idx = _find_ancestor_index(bp, branch, session)
-        else:
-            continue  # Not relevant to current branch
-
-        # Resolve message_id for display. For TURN branch points, the stored
-        # message_id is the last message BEFORE the divergent turn. We want the
-        # indicator on the FIRST DIVERGENT assistant message -- except when the
-        # anchor message itself IS the divergent content (e.g., edit_initial_prompt
-        # modifies the user message in-place, so the indicator should stay there).
-        #
-        # Rule: if the branch point has a turn_id (meaning it's a turn resample,
-        # not an initial prompt edit), resolve forward to the next assistant message.
-        # This handles both tool result anchors (invisible) and user message anchors
-        # (researcher feedback between turns).
-        resolved_message_id = bp.message_id
-        if bp.branch_type == BranchPointType.TURN and bp.message_id and bp.turn_id:
-            # This is a turn resample -- resolve to the first assistant message after the anchor
-            found_anchor = False
-            for msg in branch.auditor_messages:
-                if found_anchor and msg.role == "assistant":
-                    resolved_message_id = msg.id
-                    break
-                if msg.id == bp.message_id:
-                    found_anchor = True
-
-        # Resolve tool_call_id for the current branch. When a tool call is edited,
-        # the new branch has a different tool call ID than the original stored in
-        # the branch point. Find the equivalent tool call on the current branch.
-        resolved_tc_id = bp.tool_call_id
-        if bp.tool_call_id and bp.branch_type in (BranchPointType.TOOL_CALL, BranchPointType.TARGET_RESPONSE):
-            if bp.tool_call_id not in current_tc_ids:
-                # Original tc ID not on this branch -- find the replacement.
-                # Use the branch's event history: the first TOOL_CALL_ADDED event
-                # after the branch point event is the replacement tool call.
-                found_bp_event = False
-                for event in branch.events:
-                    if event.id == bp.event_id:
-                        found_bp_event = True
-                        continue
-                    if found_bp_event and event.event_type == EventType.TOOL_CALL_ADDED and event.tool_call_id:
-                        resolved_tc_id = event.tool_call_id
-                        break
-                else:
-                    logger.warning(
-                        f"Could not find replacement tool call after branch point event "
-                        f"{bp.event_id}; skipping branch point to avoid incorrect navigation"
-                    )
-                    continue
-
-        computed_branch_points.append({
-            "id": bp.id,
-            "branch_type": bp.branch_type.value,
-            "event_id": bp.event_id,
-            "message_id": resolved_message_id,
-            "tool_call_id": resolved_tc_id,
-            "turn_id": bp.turn_id,
-            "current_index": current_idx,
-            "total_branches": len(bp.branch_ids),
-            "branch_ids": bp.branch_ids,
-        })
-
-    return {
-        "session_id": session.id,
-        "initial_prompt": session.initial_prompt,
-        "auditor_model": session.auditor_model,
-        "target_model": session.target_model,
-        "created_at": session.created_at.isoformat(),
-        "updated_at": session.updated_at.isoformat(),
-        "current_branch": {
-            "id": branch.id,
-            "auditor_messages": [serialize_chat_message(m) for m in branch.auditor_messages],
-            "target_state": branch.target_state.model_dump(mode="json"),
-        },
-        "branches": [
-            {"id": b.id, "message_count": len(b.auditor_messages)}
-            for b in session.branches
-        ],
-        "current_branch_index": session.current_branch_index,
-        "branch_points": computed_branch_points,
-        "playback_state": playback_states[session_id],
-        "is_generating": session_id in generation_scopes,
-        "version": session_versions[session_id],
-        "pending_feedback": pending_feedback.get(session_id, []),
-    }
-
-
-def get_next_version(session_id: str) -> int:
-    """Get and increment the version counter for a session."""
-    if session_id not in session_versions:
-        session_versions[session_id] = 0
-    version = session_versions[session_id]
-    session_versions[session_id] += 1
-    return version
-
-
-async def push_view_state(session_id: str) -> None:
-    """Push the current ViewState to all connected clients.
-
-    Increments the version counter so that subsequent delta messages
-    will have a strictly higher version and won't be dropped by the
-    client's stale-delta check (version <= last_seen_version).
-    Also auto-saves the session to disk.
-    """
-    if session_id not in sessions:
-        raise RuntimeError(f"push_view_state called for non-existent session: {session_id}")
-    # Bump the version counter BEFORE building state so the state
-    # carries this version, and the next get_next_version() call
-    # returns a strictly higher value.
-    get_next_version(session_id)
-    state = build_view_state(session_id)
-    await broadcast_to_session(session_id, {"type": "state", "state": state})
-    await _save_session(session_id)
-
-
-async def broadcast_to_session(session_id: str, message: dict[str, Any]) -> None:
-    """Broadcast a message to all connections for a session."""
-    if session_id in connections:
-        dead_connections = []
-        for ws in connections[session_id]:
-            try:
-                await ws.send_json(message)
-            except (WebSocketDisconnect, ConnectionError, OSError) as exc:
-                dead_connections.append(ws)
-            except RuntimeError as exc:
-                # WebSocket libraries raise RuntimeError for closed connections
-                if "close" in str(exc).lower() or "websocket" in str(exc).lower():
-                    dead_connections.append(ws)
-                else:
-                    raise
-        for ws in dead_connections:
-            connections[session_id].remove(ws)
+# ---------------------------------------------------------------------------
+# WebSocket endpoint
+# ---------------------------------------------------------------------------
 
 
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str):
-    """WebSocket endpoint for real-time communication.
-
-    On connect, sends the full ViewState if a session exists.
-    """
     await websocket.accept()
 
-    # Register connection
-    if session_id not in connections:
-        connections[session_id] = []
-    connections[session_id].append(websocket)
-
-    # Initialize playback state if needed
-    if session_id not in playback_states:
-        playback_states[session_id] = "idle"
-
-    # Initialize session lock if needed
-    if session_id not in session_locks:
-        session_locks[session_id] = anyio.Lock()
-
-    # Initialize session version if needed
-    if session_id not in session_versions:
-        session_versions[session_id] = 0
+    runtime = await manager.get_or_load(session_id)
+    if runtime is not None:
+        manager.register_connection(session_id, websocket)
+        await push_full_state(runtime, websocket)
 
     try:
-        # Lazy-load from disk if not in memory
-        if session_id not in sessions and session_store.exists(session_id):
-            try:
-                sessions[session_id] = session_store.load(session_id)
-                logger.info(f"Loaded session {session_id[:8]} from disk")
-            except Exception:
-                logger.warning(f"Failed to load session {session_id[:8]} from disk", exc_info=True)
-                await websocket.send_json({"type": "error", "message": "Failed to load session from disk"})
-
-        # If session exists, send full state to the connecting client
-        if session_id in sessions:
-            state = build_view_state(session_id)
-            await websocket.send_json({"type": "state", "state": state})
-
         while True:
             data = await websocket.receive_json()
-            await handle_client_message(websocket, session_id, data)
-
+            await _dispatch(websocket, session_id, data)
     except (WebSocketDisconnect, ConnectionError, OSError):
-        logger.info(f"WebSocket disconnected for session {session_id}")
-    except Exception as e:
-        logger.error(f"Unexpected WebSocket error for session {session_id}: {e}", exc_info=True)
-    finally:
-        # Unregister connection
-        if session_id in connections and websocket in connections[session_id]:
-            connections[session_id].remove(websocket)
-
-        # If all clients disconnected, cancel any running generation
-        if session_id in connections and len(connections[session_id]) == 0:
-            await _cancel_generation(session_id)
-
-
-async def handle_client_message(
-    websocket: WebSocket,
-    session_id: str,
-    data: dict[str, Any],
-) -> None:
-    """Handle a message from the client."""
-    msg_type = data.get("type")
-    if msg_type is None:
-        raise ValueError("Missing required 'type' field in client message")
-    logger.info(f"[handle_client_message] Received type={msg_type} for session {session_id[:8]}...")
-
-    if session_id not in session_locks:
-        session_locks[session_id] = anyio.Lock()
-    async with session_locks[session_id]:
-        logger.info(f"[handle_client_message] Acquired lock for type={msg_type}")
-        try:
-            if msg_type == "start_session":
-                await handle_start_session(websocket, session_id, data)
-            elif msg_type == "play":
-                await handle_play(session_id)
-            elif msg_type == "pause":
-                await handle_pause(session_id)
-            elif msg_type == "step":
-                await handle_step(session_id)
-            elif msg_type == "feedback":
-                await handle_feedback(session_id, data)
-            elif msg_type == "branch":
-                await handle_branch(session_id, data)
-            elif msg_type == "switch_branch":
-                await handle_switch_branch(session_id, data)
-            elif msg_type == "edit_message":
-                await handle_edit_message(session_id, data)
-            elif msg_type == "edit_initial_prompt":
-                await handle_edit_initial_prompt(session_id, data)
-            elif msg_type == "resample_turn":
-                await handle_resample_turn(session_id, data)
-            elif msg_type == "edit_tool_call":
-                await handle_edit_tool_call(session_id, data)
-            elif msg_type == "rewrite_tool_call":
-                await handle_rewrite_tool_call(websocket, session_id, data)
-            elif msg_type == "resample_target_response":
-                await handle_resample_target_response(session_id, data)
-            elif msg_type == "queue_feedback":
-                await handle_queue_feedback(session_id, data)
-            elif msg_type == "remove_queued_feedback":
-                await handle_remove_queued_feedback(session_id, data)
-            else:
-                await websocket.send_json({
-                    "type": "error",
-                    "message": f"Unknown message type: {msg_type}",
-                })
-        except Exception as e:
-            logger.error(f"Error handling message type={msg_type}: {e}", exc_info=True)
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Error in {msg_type}: {str(e)}",
-            })
-
-
-def _extract_json_object(text: str) -> dict[str, Any]:
-    """Extract and parse a JSON object from model output."""
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-    try:
-        parsed = json.loads(cleaned)
-        if isinstance(parsed, dict):
-            return parsed
-    except json.JSONDecodeError:
         pass
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start >= 0 and end > start:
-        parsed = json.loads(cleaned[start : end + 1])
-        if isinstance(parsed, dict):
-            return parsed
-
-    raise ValueError("Rewrite model did not return a valid JSON object")
+    except Exception as e:
+        logger.error(f"WebSocket error for session {session_id}: {e}", exc_info=True)
+    finally:
+        manager.unregister_connection(session_id, websocket)
+        runtime = manager.get_runtime(session_id)
+        if runtime is not None and not runtime.connections:
+            await runtime.cancel_generation()
 
 
-def _flatten_model_content(content: str | list[Any]) -> str:
-    """Convert model content to plain text for JSON parsing."""
-    if isinstance(content, str):
-        return content
+_ALLOWED_DURING_GENERATION = frozenset({
+    "pause", "feedback", "queue_feedback", "remove_queued_feedback",
+})
 
-    parts: list[str] = []
-    for item in content:
-        if isinstance(item, ContentText):
-            parts.append(item.text)
-        elif isinstance(item, ContentReasoning):
-            if item.redacted:
-                if item.summary:
-                    parts.append(item.summary)
+
+async def _dispatch(ws: WebSocket, session_id: str, data: dict[str, Any]) -> None:
+    msg_type = data.get("type")
+    if not msg_type:
+        await ws.send_json({"type": "error", "message": "Missing 'type' field"})
+        return
+
+    runtime = manager.get_runtime(session_id)
+
+    if msg_type == "start_session":
+        new_runtime = await handle_start_session(manager, runtime, session_id, ws, data)
+        if runtime is None and new_runtime is not None:
+            manager.register_connection(session_id, ws)
+        return
+
+    if runtime is None:
+        await ws.send_json({"type": "error", "message": "Session not found"})
+        return
+
+    # rewrite_tool_call is a read-only model call that doesn't mutate session
+    # state — run it outside the lock to avoid blocking other operations
+    if msg_type == "rewrite_tool_call":
+        try:
+            await handle_rewrite_tool_call(ws, runtime, data)
+        except Exception as e:
+            logger.error(f"Error handling rewrite_tool_call: {e}", exc_info=True)
+            await ws.send_json({"type": "error", "message": f"Error: {e}"})
+        return
+
+    async with runtime.lock:
+        try:
+            if runtime.is_generating and msg_type not in _ALLOWED_DURING_GENERATION:
+                await ws.send_json({
+                    "type": "error",
+                    "message": "Pause the auditor before performing this action",
+                })
+                return
+
+            if msg_type == "play":
+                await handle_play(runtime)
+            elif msg_type == "pause":
+                await handle_pause(runtime)
+            elif msg_type == "step":
+                await handle_step(runtime)
+            elif msg_type == "feedback":
+                await handle_feedback(runtime, data)
+            elif msg_type == "branch":
+                await handle_branch(runtime, data)
+            elif msg_type == "switch_branch":
+                await handle_switch_branch(runtime, data)
+            elif msg_type == "edit_message":
+                await handle_edit_message(runtime, data)
+            elif msg_type == "edit_initial_prompt":
+                await handle_edit_initial_prompt(runtime, data)
+            elif msg_type == "resample_turn":
+                await handle_resample_turn(runtime, data)
+            elif msg_type == "edit_tool_call":
+                await handle_edit_tool_call(runtime, data)
+            elif msg_type == "resample_target_response":
+                await handle_resample_target_response(runtime, data)
+            elif msg_type == "queue_feedback":
+                await handle_queue_feedback(runtime, data)
+            elif msg_type == "remove_queued_feedback":
+                await handle_remove_queued_feedback(runtime, data)
             else:
-                parts.append(item.reasoning)
-    return "\n".join(parts).strip()
-
-
-async def _generate_rewritten_arguments(
-    session: Session,
-    context_messages: list[Any],
-    tool_name: str,
-    original_arguments: dict[str, Any],
-    instruction: str,
-    selected_text: str | None = None,
-    target_field: str | None = None,
-) -> dict[str, Any]:
-    """Use the auditor model to rewrite tool-call arguments as JSON."""
-    rewrite_model = get_model(session.auditor_model)
-    cache_policy = create_cache_policy(
-        session_id=session.id,
-        resample_id=generate_id(),  # Force fresh rewrite output
-        expiry="1D",
-    )
-
-    selected_text_block = (
-        f"\nSelected text from current tool call:\n{selected_text}\n"
-        if selected_text and selected_text.strip()
-        else ""
-    )
-    target_field_block = f"\nPreferred field to edit first: {target_field}\n" if target_field else ""
-    prompt = (
-        "Rewrite the arguments for an existing auditor tool call.\n"
-        "Return ONLY a JSON object with the rewritten arguments (no markdown, no code fences).\n"
-        "Preserve the same top-level schema and required fields for this tool.\n\n"
-        f"Tool name: {tool_name}\n"
-        f"Original arguments JSON:\n{json.dumps(original_arguments, indent=2)}\n"
-        f"{target_field_block}"
-        f"{selected_text_block}"
-        f"\nRewrite instruction:\n{instruction.strip()}\n"
-    )
-
-    response = await rewrite_model.generate(
-        input=[
-            *context_messages,
-            ChatMessageUser(
-                id=generate_id(),
-                content=prompt,
-                metadata={"source": "Researcher"},
-            ),
-        ],
-        config=GenerateConfig(cache=cache_policy, max_tokens=4096),
-    )
-
-    content_text = _flatten_model_content(response.message.content)
-    if not content_text:
-        raise ValueError("Rewrite model returned empty content")
-
-    return _extract_json_object(content_text)
-
-
-async def handle_start_session(
-    websocket: WebSocket,
-    session_id: str,
-    data: dict[str, Any],
-) -> None:
-    """Handle session creation request.
-
-    If the session already exists, just push the existing state instead of overwriting.
-    """
-    if session_id in sessions:
-        # Session already exists - just send state
-        await push_view_state(session_id)
-        return
-
-    session = create_session(
-        initial_prompt=data["initial_prompt"],
-        auditor_model=data["auditor_model"],
-        target_model=data["target_model"],
-    )
-
-    # Override the session ID with the one from the URL
-    session.id = session_id
-
-    # Initialize auditor messages
-    initialize_auditor_messages(session)
-
-    sessions[session_id] = session
-    playback_states[session_id] = "idle"
-    session_versions[session_id] = 0
-
-    await push_view_state(session_id)
-
-
-async def handle_play(session_id: str) -> None:
-    """Handle play request - continue generation until stopped."""
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    if session_id in generation_scopes:
-        return  # Already generating, ignore duplicate request
-
-    await _cancel_generation(session_id)
-
-    playback_states[session_id] = "playing"
-
-    await push_view_state(session_id)
-
-    task = asyncio.create_task(_generation_loop(session_id))
-    generation_tasks[session_id] = task
-
-
-async def handle_pause(session_id: str) -> None:
-    """Handle pause request - stop generation and drain queued feedback."""
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    playback_states[session_id] = "paused"
-    await _cancel_generation(session_id)
-    await _drain_pending_feedback(session_id)
-    await push_view_state(session_id)
-
-
-async def handle_step(session_id: str) -> None:
-    """Handle step request - execute one turn then pause."""
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    if session_id in generation_scopes:
-        return  # Already running, ignore duplicate request
-
-    await _cancel_generation(session_id)
-
-    playback_states[session_id] = "stepping"
-
-    await push_view_state(session_id)
-
-    task = asyncio.create_task(_execute_single_turn(session_id))
-    generation_tasks[session_id] = task
-
-
-async def handle_feedback(session_id: str, data: dict[str, Any]) -> None:
-    """Handle immediate researcher feedback (used when auditor is NOT generating)."""
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    session = sessions[session_id]
-    content = data["content"]
-
-    add_researcher_feedback(session, content)
-
-    await push_view_state(session_id)
-
-
-async def handle_queue_feedback(session_id: str, data: dict[str, Any]) -> None:
-    """Queue feedback to be injected at the next turn boundary or pause."""
-    content = data["content"]
-    if session_id not in pending_feedback:
-        pending_feedback[session_id] = []
-    pending_feedback[session_id].append(content)
-    await broadcast_to_session(session_id, {
-        "type": "pending_feedback_updated",
-        "pending_feedback": list(pending_feedback[session_id]),
-    })
-
-
-async def handle_remove_queued_feedback(session_id: str, data: dict[str, Any]) -> None:
-    """Remove a queued feedback item by index."""
-    index = data["index"]
-    queue = pending_feedback.get(session_id, [])
-    if 0 <= index < len(queue):
-        queue.pop(index)
-    await broadcast_to_session(session_id, {
-        "type": "pending_feedback_updated",
-        "pending_feedback": list(pending_feedback.get(session_id, [])),
-    })
-
-
-async def _drain_pending_feedback(session_id: str) -> None:
-    """Drain all queued feedback into the auditor conversation.
-
-    Called at turn boundaries during generation and when the user pauses.
-    """
-    queue = pending_feedback.pop(session_id, [])
-    if not queue:
-        return
-    session = sessions[session_id]
-    for content in queue:
-        add_researcher_feedback(session, content)
-    await broadcast_to_session(session_id, {
-        "type": "pending_feedback_updated",
-        "pending_feedback": [],
-    })
-
-
-async def handle_branch(session_id: str, data: dict[str, Any]) -> None:
-    """Handle branch creation request.
-
-    Supports both at_event_index (integer) and message_id (string) for specifying
-    the branch point.
-    """
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    await _cancel_generation(session_id)
-    session = sessions[session_id]
-    current_branch = session.current_branch()
-
-    message_id = data.get("message_id")
-    if message_id is not None:
-        at_event_index = _find_event_index_by_message_id(current_branch, message_id)
-        if at_event_index is None:
-            raise ValueError(f"Message {message_id} not found in event history")
-    else:
-        at_event_index = data["at_event_index"]
-
-    logger.info(f"[handle_branch] at_event_index={at_event_index}, source_branch has {len(current_branch.events)} events, {len(current_branch.auditor_messages)} messages")
-    new_branch = create_branch(session, current_branch.id, at_event_index, branch_type=BranchPointType.TURN)
-    logger.info(f"[handle_branch] new_branch has {len(new_branch.events)} events, {len(new_branch.auditor_messages)} messages")
-
-    # Switch to the new branch
-    session.current_branch_index = len(session.branches) - 1
-
-    await push_view_state(session_id)
-
-
-async def handle_switch_branch(session_id: str, data: dict[str, Any]) -> None:
-    """Handle branch switch request."""
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    await _cancel_generation(session_id)
-    session = sessions[session_id]
-    branch_id = data["branch_id"]
-
-    # Find branch index - fail loudly if not found
-    branch_index = None
-    for i, branch in enumerate(session.branches):
-        if branch.id == branch_id:
-            branch_index = i
-            break
-
-    if branch_index is None:
-        raise ValueError(f"Branch not found: {branch_id}")
-
-    session.current_branch_index = branch_index
-
-    await push_view_state(session_id)
-
-
-async def handle_edit_message(session_id: str, data: dict[str, Any]) -> None:
-    """Handle message edit request.
-
-    Editing creates a new branch from before that message with the edited content.
-    """
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    session = sessions[session_id]
-    message_id = data["message_id"]
-    new_content = data["new_content"]
-
-    branch = session.current_branch()
-
-    raw_event_index = _find_event_index_by_message_id(branch, message_id)
-    if raw_event_index is None:
-        raise ValueError(f"Message {message_id} not found in event history")
-    event_index = max(0, raw_event_index - 1)
-
-    # Create new branch from before the edited message
-    new_branch = create_branch(session, branch.id, event_index, branch_type=BranchPointType.TURN)
-    session.current_branch_index = len(session.branches) - 1
-
-    # Add the edited message
-    with track_state_changes(new_branch, event_type=EventType.RESEARCHER_MESSAGE):
-        new_branch.auditor_messages.append(
-            ChatMessageUser(
-                id=generate_id(),
-                content=new_content,
-                metadata={"source": "Researcher", "edited": True},
-            )
-        )
-
-    await push_view_state(session_id)
-
-
-async def handle_edit_initial_prompt(session_id: str, data: dict[str, Any]) -> None:
-    """Handle editing the initial researcher instructions.
-
-    This creates a new branch from the very beginning with updated instructions.
-    The system prompt and user message are re-generated with the new prompt.
-    """
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    session = sessions[session_id]
-    new_prompt = data["new_content"]
-
-    # Create a new branch from event 0 (the system init)
-    branch = session.current_branch()
-    new_branch = create_branch(session, branch.id, at_event_index=0)
-    session.current_branch_index = len(session.branches) - 1
-
-    # Re-initialize with the new prompt by replacing the auditor messages
-    # Update the session's initial_prompt for future reference
-    session.initial_prompt = new_prompt
-
-    system_prompt = AUDITOR_SYSTEM_PROMPT.format(
-        initial_prompt=new_prompt,
-        today_date=datetime.now().strftime("%Y-%m-%d"),
-        target_model=session.target_model,
-    )
-
-    with track_state_changes(new_branch):
-        # Modify content in-place (keeps same message IDs so the branch point works)
-        new_branch.auditor_messages[0].content = system_prompt
-        new_branch.auditor_messages[1].content = (
-            f"Please begin investigating the target model. "
-            f"The researcher's instructions are:\n\n{new_prompt}"
-        )
-
-    await push_view_state(session_id)
-
-
-async def handle_resample_turn(session_id: str, data: dict[str, Any]) -> None:
-    """Handle resampling an entire auditor turn (like Claude.ai regenerate).
-
-    This creates a new branch and immediately executes a fresh auditor turn,
-    bypassing the cache to ensure a new response.
-    """
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    await _cancel_generation(session_id)
-
-    session = sessions[session_id]
-    turn_id = data["turn_id"]
-    branch = session.current_branch()
-
-    logger.debug(
-        f"[handle_resample_turn] turn_id={turn_id}, branch_id={branch.id}, "
-        f"num_events={len(branch.events)}, current_branch_index={session.current_branch_index}"
-    )
-
-    # Find the AUDITOR_TURN_START event with this turn_id
-    turn_start_index = None
-    for i, event in enumerate(branch.events):
-        logger.debug(
-            f"  Event {i}: type={event.event_type}, turn_id={event.turn_id}, id={event.id}"
-        )
-        if event.turn_id == turn_id and event.event_type == EventType.AUDITOR_TURN_START:
-            turn_start_index = i
-            break
-
-    if turn_start_index is None:
-        # Log all available turn_ids for debugging
-        available_turn_ids = {e.turn_id for e in branch.events if e.turn_id}
-        logger.error(
-            f"Turn not found: {turn_id}. Available turn_ids: {available_turn_ids}. "
-            f"Branch {branch.id} has {len(branch.events)} events.",
-            exc_info=True,
-        )
-        raise ValueError(f"Turn not found: {turn_id}")
-
-    # Branch from just BEFORE the turn started
-    at_event_index = max(0, turn_start_index - 1)
-
-    new_branch = create_branch(
-        session, branch.id, at_event_index,
-        branch_type=BranchPointType.TURN,
-        turn_id=turn_id,
-    )
-
-    session.current_branch_index = len(session.branches) - 1
-
-    resample_id = generate_id()
-    playback_states[session_id] = "stepping"
-
-    await push_view_state(session_id)
-
-    task = asyncio.create_task(
-        _execute_single_turn(session_id, resample_id=resample_id)
-    )
-    generation_tasks[session_id] = task
-
-
-async def handle_edit_tool_call(session_id: str, data: dict[str, Any]) -> None:
-    """Handle editing a tool call (modifying arguments and re-executing).
-
-    The branch indicator is placed on the entire auditor message (TURN level),
-    not on the individual tool call.  This means that if the user first resamples
-    a turn and then edits one of its tool calls, both operations share the same
-    anchor event and merge into a single branch point on the assistant message.
-    """
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    session = sessions[session_id]
-    tool_call_id = data["tool_call_id"]
-    new_arguments = data["new_arguments"]
-    branch = session.current_branch()
-
-    # Find the TOOL_CALL_ADDED event with this tool_call_id and its turn_id
-    tool_call_event_index = None
-    tool_call_turn_id = None
-    for i, event in enumerate(branch.events):
-        if event.tool_call_id == tool_call_id and event.event_type == EventType.TOOL_CALL_ADDED:
-            tool_call_event_index = i
-            tool_call_turn_id = event.turn_id
-            break
-
-    if tool_call_event_index is None:
-        raise ValueError(f"Tool call not found: {tool_call_id}")
-
-    # Find the original tool call BEFORE branching (it won't exist in the new branch
-    # since we branch from before it was added)
-    original_tc = None
-    for msg in reversed(branch.auditor_messages):
-        if msg.role == "assistant" and msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc.id == tool_call_id:
-                    original_tc = tc
-                    break
-            if original_tc:
-                break
-
-    if not original_tc:
-        raise ValueError(f"Tool call {tool_call_id} not found in current branch messages")
-
-    # Find the AUDITOR_TURN_START event for the turn containing this tool call
-    turn_start_index = None
-    for i, event in enumerate(branch.events):
-        if event.turn_id == tool_call_turn_id and event.event_type == EventType.AUDITOR_TURN_START:
-            turn_start_index = i
-            break
-
-    if turn_start_index is None:
-        raise ValueError(
-            f"AUDITOR_TURN_START not found for turn_id={tool_call_turn_id} "
-            f"(tool_call_id={tool_call_id})"
-        )
-
-    # Branch from just BEFORE the turn started — same anchor as handle_resample_turn.
-    # This ensures that turn resamples and tool call edits on the same turn merge
-    # into a single branch point on the assistant message.
-    anchor_event_index = max(0, turn_start_index - 1)
-
-    new_branch = create_branch(
-        session, branch.id, anchor_event_index,
-        branch_type=BranchPointType.TURN,
-        turn_id=tool_call_turn_id,
-    )
-
-    # Fast-forward: copy events and state from turn start up to (but not including)
-    # the edited tool call.  This preserves the assistant message and any prior
-    # tool calls in the same turn.
-    events_to_replay = branch.events[anchor_event_index + 1 : tool_call_event_index]
-    if events_to_replay:
-        full_msgs, full_target = reconstruct_at_event(branch, tool_call_event_index - 1)
-        new_branch.auditor_messages = full_msgs
-        new_branch.target_state = full_target
-        new_branch.events.extend(copy.deepcopy(events_to_replay))
-
-    session.current_branch_index = len(session.branches) - 1
-
-    # Create modified tool call with new arguments
-    modified_tc = ToolCall(
-        id=generate_id(),
-        function=original_tc.function,
-        arguments=new_arguments,
-        type="function",
-    )
-
-    # Find the last assistant message to add the tool call to
-    assistant_idx = None
-    for i in range(len(new_branch.auditor_messages) - 1, -1, -1):
-        if new_branch.auditor_messages[i].role == "assistant":
-            assistant_idx = i
-            break
-
-    if assistant_idx is None:
-        raise ValueError("No assistant message found in branch")
-
-    # Add the modified tool call
-    with track_state_changes(new_branch, event_type=EventType.TOOL_CALL_ADDED, tool_call_id=modified_tc.id):
-        if new_branch.auditor_messages[assistant_idx].tool_calls is None:
-            raise ValueError(
-                "Assistant message has tool_calls=None — state reconstruction may be broken"
-            )
-        new_branch.auditor_messages[assistant_idx].tool_calls.append(modified_tc)
-
-    # Execute the tool call
-    with track_state_changes(new_branch, event_type=EventType.TOOL_CALL_EXECUTED, tool_call_id=modified_tc.id):
-        tool_result = await _execute_tool_call(
-            new_branch,
-            original_tc.function,
-            new_arguments,
-            modified_tc.id,
-            session.target_model,
-            session_id=session.id,
-        )
-        new_branch.auditor_messages.append(tool_result)
-
-    await push_view_state(session_id)
-
-
-async def handle_rewrite_tool_call(
-    websocket: WebSocket,
-    session_id: str,
-    data: dict[str, Any],
-) -> None:
-    """Generate rewritten tool-call arguments without applying them."""
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    request_id = data["request_id"]
-    tool_call_id = data["tool_call_id"]
-    instruction = data["instruction"]
-    selected_text = data.get("selected_text")
-    target_field = data.get("target_field")
-
-    if not instruction or not instruction.strip():
-        await websocket.send_json({
-            "type": "rewrite_tool_call_result",
-            "request_id": request_id,
-            "tool_call_id": tool_call_id,
-            "error": "Rewrite instruction cannot be empty",
-        })
-        return
-
-    session = sessions[session_id]
-    branch = session.current_branch()
-
-    tool_call_event_index = None
-    for i, event in enumerate(branch.events):
-        if event.tool_call_id == tool_call_id and event.event_type == EventType.TOOL_CALL_ADDED:
-            tool_call_event_index = i
-            break
-
-    if tool_call_event_index is None:
-        await websocket.send_json({
-            "type": "rewrite_tool_call_result",
-            "request_id": request_id,
-            "tool_call_id": tool_call_id,
-            "error": f"Tool call not found: {tool_call_id}",
-        })
-        return
-
-    original_tc = None
-    for msg in reversed(branch.auditor_messages):
-        if msg.role == "assistant" and msg.tool_calls:
-            for tc in msg.tool_calls:
-                if tc.id == tool_call_id:
-                    original_tc = tc
-                    break
-            if original_tc:
-                break
-
-    if original_tc is None:
-        await websocket.send_json({
-            "type": "rewrite_tool_call_result",
-            "request_id": request_id,
-            "tool_call_id": tool_call_id,
-            "error": f"Tool call {tool_call_id} not found in current branch messages",
-        })
-        return
-
-    try:
-        context_messages, _ = reconstruct_at_event(branch, tool_call_event_index - 1)
-        rewritten_arguments = await _generate_rewritten_arguments(
-            session=session,
-            context_messages=context_messages,
-            tool_name=original_tc.function,
-            original_arguments=original_tc.arguments,
-            instruction=instruction,
-            selected_text=selected_text,
-            target_field=target_field,
-        )
-    except (ValueError, RuntimeError, json.JSONDecodeError) as e:
-        logger.error("rewrite_tool_call failed: %s", e, exc_info=True)
-        await websocket.send_json({
-            "type": "rewrite_tool_call_result",
-            "request_id": request_id,
-            "tool_call_id": tool_call_id,
-            "error": str(e),
-        })
-        return
-
-    await websocket.send_json({
-        "type": "rewrite_tool_call_result",
-        "request_id": request_id,
-        "tool_call_id": tool_call_id,
-        "rewritten_arguments": rewritten_arguments,
-    })
-
-
-async def handle_resample_target_response(session_id: str, data: dict[str, Any]) -> None:
-    """Handle resampling a target model response.
-
-    This creates a new branch and immediately queries the target model again,
-    bypassing the cache to ensure a fresh response.
-    """
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    await _cancel_generation(session_id)
-
-    session = sessions[session_id]
-    event_id = data.get("event_id")
-    # Support both 'message_id' and 'target_message_id' (frontend uses the latter)
-    message_id = data.get("target_message_id")
-    if message_id is None:
-        message_id = data.get("message_id")
-    # tool_call_id is the most reliable identifier for finding query_target events
-    tool_call_id = data.get("tool_call_id")
-
-    if not any([event_id, message_id, tool_call_id]):
-        raise ValueError(
-            "At least one of event_id, target_message_id/message_id, or tool_call_id is required"
-        )
-
-    branch = session.current_branch()
-
-    logger.debug(
-        f"[handle_resample_target_response] event_id={event_id}, message_id={message_id}, "
-        f"tool_call_id={tool_call_id}, num_events={len(branch.events)}"
-    )
-
-    # Find the event that contains the target response.
-    # Target responses are added during TOOL_CALL_EXECUTED events (from query_target tool).
-    # We search by (in priority order):
-    # 1. event_id - if provided, match exactly
-    # 2. tool_call_id - most reliable, explicitly stored on TOOL_CALL_EXECUTED events
-    # 3. message_id - search in patches (less reliable due to serialization)
-    target_response_index = None
-    for i, event in enumerate(branch.events):
-        # Check TOOL_CALL_EXECUTED events (query_target creates these)
-        if event.event_type in (EventType.TOOL_CALL_EXECUTED, EventType.TARGET_RESPONSE):
-            logger.debug(
-                f"  Checking event {i} (type={event.event_type}): id={event.id}, "
-                f"tool_call_id={event.tool_call_id}"
-            )
-            # Match by event_id if provided
-            if event_id and event.id == event_id:
-                target_response_index = i
-                break
-            # Match by tool_call_id (most reliable)
-            if tool_call_id and event.tool_call_id == tool_call_id:
-                logger.debug(f"    Found matching event by tool_call_id: {tool_call_id}")
-                target_response_index = i
-                break
-            # Search for the message_id in both target_patches and auditor_patches
-            if message_id:
-                # Check target_patches for target response message
-                for patch in event.target_patches:
-                    if patch.get("op") == "add":
-                        value = patch.get("value", {})
-                        if isinstance(value, dict) and value.get("id") == message_id:
-                            logger.debug(f"    Found matching message in target_patches: {message_id}")
-                            target_response_index = i
-                            break
-                if target_response_index is not None:
-                    break
-                # Check auditor_patches for tool result message
-                for patch in event.auditor_patches:
-                    if patch.get("op") == "add":
-                        value = patch.get("value", {})
-                        if isinstance(value, dict) and value.get("id") == message_id:
-                            logger.debug(f"    Found matching message in auditor_patches: {message_id}")
-                            target_response_index = i
-                            break
-                if target_response_index is not None:
-                    break
-
-    if target_response_index is None:
-        # Build detailed error message for debugging
-        tool_call_executed_events = [
-            (i, e.tool_call_id) for i, e in enumerate(branch.events)
-            if e.event_type == EventType.TOOL_CALL_EXECUTED
-        ]
-        raise ValueError(
-            f"Target response event not found for event_id={event_id}, message_id={message_id}, "
-            f"tool_call_id={tool_call_id}. Checked {len(branch.events)} events. "
-            f"TOOL_CALL_EXECUTED events: {tool_call_executed_events}"
-        )
-
-    # Branch from just BEFORE the target response
-    at_event_index = max(0, target_response_index - 1)
-
-    new_branch = create_branch(
-        session, branch.id, at_event_index,
-        branch_type=BranchPointType.TARGET_RESPONSE,
-    )
-
-    session.current_branch_index = len(session.branches) - 1
-
-    # Find the tool_call_id for the query_target call
-    original_tool_call_id = tool_call_id
-    if not original_tool_call_id:
-        for msg in reversed(new_branch.auditor_messages):
-            if msg.role == "assistant" and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    if tc.function == "query_target":
-                        original_tool_call_id = tc.id
-                        break
-                if original_tool_call_id:
-                    break
-
-    if not original_tool_call_id:
-        raise ValueError("Could not find query_target tool call in branch")
-
-    playback_states[session_id] = "stepping"
-    await push_view_state(session_id)
-
-    task = asyncio.create_task(
-        _execute_target_resample(session_id, original_tool_call_id)
-    )
-    generation_tasks[session_id] = task
-
-
-def _make_on_event(session_id: str):
-    """Create the on_event callback for generation loops.
-
-    Sends delta messages during streaming, and pushes full state on turn_complete
-    and conversation_ended.
-    """
-    async def on_event(event_type: str, data: dict[str, Any]) -> None:
-        session = sessions[session_id]
-        branch = session.current_branch()
-        version = get_next_version(session_id)
-
-        if event_type == "auditor_turn_start":
-            await broadcast_to_session(session_id, {
-                "type": "delta_turn_start",
-                "message": data["message"],
-                "branch_id": branch.id,
-                "version": version,
-            })
-        elif event_type == "tool_call_added":
-            await broadcast_to_session(session_id, {
-                "type": "delta_tool_call",
-                "tool_call": data["tool_call"],
-                "branch_id": branch.id,
-                "version": version,
-            })
-        elif event_type == "tool_call_executed":
-            await broadcast_to_session(session_id, {
-                "type": "delta_tool_result",
-                "tool_result": data["tool_result"],
-                "target_state": data["target_state"],
-                "branch_id": branch.id,
-                "version": version,
-            })
-        elif event_type in ("turn_complete", "conversation_ended"):
-            await push_view_state(session_id)
-
-    return on_event
-
-
-async def _generation_loop(session_id: str) -> None:
-    """Run the generation loop until paused or conversation ends.
-
-    Uses an anyio.CancelScope so callers can stop the loop by cancelling the
-    scope rather than the task, keeping structured control flow.
-    """
-    MAX_EMPTY_TURNS = 3
-    consecutive_empty_turns = 0
-    scope = anyio.CancelScope()
-    generation_scopes[session_id] = scope
-
-    try:
-        with scope:
-            while session_id in sessions and playback_states[session_id] == "playing":
-                session = sessions[session_id]
-                branch = session.current_branch()
-                msg_count_before = len(branch.auditor_messages)
-                on_event = _make_on_event(session_id)
-
-                try:
-                    should_continue = await execute_auditor_turn(session, on_event)
-                except Exception as e:
-                    logger.error(f"Error in generation loop: {e}", exc_info=True)
-                    playback_states[session_id] = "paused"
-                    await broadcast_to_session(session_id, {
-                        "type": "error",
-                        "message": str(e),
-                    })
-                    break
-
-                if not should_continue:
-                    playback_states[session_id] = "idle"
-                    break
-
-                new_messages = branch.auditor_messages[msg_count_before:]
-                has_tool_calls = any(
-                    m.role == "assistant" and m.tool_calls
-                    for m in new_messages
-                )
-                has_meaningful_content = any(
-                    m.role == "assistant" and len(str(m.content)) > 10
-                    for m in new_messages
-                )
-
-                if has_tool_calls or has_meaningful_content:
-                    consecutive_empty_turns = 0
-                else:
-                    consecutive_empty_turns += 1
-                    logger.warning(
-                        f"[_generation_loop] Auditor produced empty turn "
-                        f"({consecutive_empty_turns}/{MAX_EMPTY_TURNS})"
-                    )
-
-                if consecutive_empty_turns >= MAX_EMPTY_TURNS:
-                    logger.warning(
-                        f"[_generation_loop] Stopping: auditor produced "
-                        f"{MAX_EMPTY_TURNS} consecutive empty turns"
-                    )
-                    playback_states[session_id] = "paused"
-                    await broadcast_to_session(session_id, {
-                        "type": "error",
-                        "message": (
-                            f"Auditor paused: produced {MAX_EMPTY_TURNS} consecutive "
-                            "turns with no tool calls. The auditor may be waiting for "
-                            "researcher guidance."
-                        ),
-                    })
-                    break
-
-                await _drain_pending_feedback(session_id)
-
-        if scope.cancelled_caught:
-            logger.info(f"Generation loop cancelled for session {session_id[:8]}")
-            playback_states[session_id] = "paused"
-    finally:
-        generation_scopes.pop(session_id, None)
-        generation_tasks.pop(session_id, None)
-        try:
-            await push_view_state(session_id)
-        except Exception:
-            logger.warning(f"Failed to push final state for session {session_id[:8]}", exc_info=True)
-
-
-async def _execute_single_turn(session_id: str, resample_id: str | None = None) -> None:
-    """Execute a single auditor turn.
-
-    Uses an anyio.CancelScope for structured cancellation.
-    Also used by handle_resample_turn (with resample_id for cache bypass).
-    """
-    if session_id not in sessions:
-        raise ValueError(f"Session not found: {session_id}")
-
-    session = sessions[session_id]
-    on_event = _make_on_event(session_id)
-    scope = anyio.CancelScope()
-    generation_scopes[session_id] = scope
-
-    try:
-        with scope:
-            should_continue = await execute_auditor_turn(
-                session, on_event, resample_id=resample_id
-            )
-
-        if scope.cancelled_caught:
-            logger.info(f"Single turn cancelled for session {session_id[:8]}")
-            playback_states[session_id] = "paused"
-        elif not should_continue:
-            playback_states[session_id] = "idle"
-        else:
-            playback_states[session_id] = "paused"
-
-    except Exception as e:
-        logger.error(f"Error in single turn execution: {e}", exc_info=True)
-        playback_states[session_id] = "paused"
-        await broadcast_to_session(session_id, {
-            "type": "error",
-            "message": str(e),
-        })
-    finally:
-        generation_scopes.pop(session_id, None)
-        generation_tasks.pop(session_id, None)
-        try:
-            await push_view_state(session_id)
-        except Exception:
-            logger.warning(f"Failed to push final state for session {session_id[:8]}", exc_info=True)
-
-
-async def _execute_target_resample(session_id: str, tool_call_id: str) -> None:
-    """Execute a target model resample as a background task.
-
-    Re-queries the target model with cache bypass and updates the branch state.
-    """
-    scope = anyio.CancelScope()
-    generation_scopes[session_id] = scope
-
-    try:
-        session = sessions[session_id]
-        branch = session.current_branch()
-        resample_id = generate_id()
-        cache_policy = create_cache_policy(
-            session_id=session.id,
-            resample_id=resample_id,
-            expiry="1D",
-        )
-
-        with scope:
-            with track_state_changes(branch, event_type=EventType.TOOL_CALL_EXECUTED):
-                response, formatted_response = await execute_query_target(
-                    branch.target_state,
-                    session.target_model,
-                    cache_policy=cache_policy,
-                )
-                tool_result_msg = ChatMessageTool(
-                    id=generate_id(),
-                    content=formatted_response,
-                    tool_call_id=tool_call_id,
-                    function="query_target",
-                    metadata={"source": "System"},
-                )
-                branch.auditor_messages.append(tool_result_msg)
-
-        if scope.cancelled_caught:
-            logger.info(f"Target resample cancelled for session {session_id[:8]}")
-
-        playback_states[session_id] = "paused"
-
-    except Exception as e:
-        logger.error(f"Error resampling target response: {e}", exc_info=True)
-        playback_states[session_id] = "paused"
-        await broadcast_to_session(session_id, {
-            "type": "error",
-            "message": f"Error resampling target: {str(e)}",
-        })
-    finally:
-        generation_scopes.pop(session_id, None)
-        generation_tasks.pop(session_id, None)
-        try:
-            await push_view_state(session_id)
-        except Exception:
-            logger.warning(f"Failed to push final state for session {session_id[:8]}", exc_info=True)
-
-
-async def _cancel_generation(session_id: str) -> None:
-    """Cancel any running generation for a session and wait for it to finish.
-
-    Cancels the CancelScope (which causes the generation coroutine to exit its
-    `with scope:` block at the next checkpoint) and then awaits the task.
-    """
-    if session_id in generation_scopes:
-        generation_scopes[session_id].cancel()
-    if session_id in generation_tasks:
-        task = generation_tasks.pop(session_id)
-        try:
-            await task
-        except BaseException:
-            pass
-
-
-def _find_event_index_by_message_id(branch: ResearcherBranch, message_id: str) -> int | None:
-    """Find the event index that added a message with the given ID."""
-    for i, event in enumerate(branch.events):
-        for patch in event.auditor_patches:
-            if patch.get("op") == "add":
-                value = patch.get("value", {})
-                if isinstance(value, dict) and value.get("id") == message_id:
-                    return i
-    return None
+                await ws.send_json({"type": "error", "message": f"Unknown: {msg_type}"})
+        except Exception as e:
+            logger.error(f"Error handling {msg_type}: {e}", exc_info=True)
+            await ws.send_json({"type": "error", "message": f"Error in {msg_type}: {e}"})
+
+
+# ---------------------------------------------------------------------------
+# REST endpoints
+# ---------------------------------------------------------------------------
 
 
 @app.get("/api/sessions")
 async def list_sessions():
-    """List all saved session summaries for the sidebar."""
-    return await anyio.to_thread.run_sync(session_store.list_summaries)
+    return await anyio.to_thread.run_sync(manager.list_summaries)
 
 
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str):
-    """Delete a session from disk and memory."""
-    in_memory = session_id in sessions
     try:
-        on_disk = session_store.exists(session_id)
+        exists_on_disk = manager.session_exists_on_disk(session_id)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid session ID format")
 
-    if not in_memory and not on_disk:
+    if manager.get_runtime(session_id) is None and not exists_on_disk:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    await _cancel_generation(session_id)
-
-    # Close active WebSocket connections
-    if session_id in connections:
-        for ws in list(connections[session_id]):
-            try:
-                await ws.close(code=1000, reason="Session deleted")
-            except Exception:
-                pass
-        connections.pop(session_id, None)
-
-    session_store.delete(session_id)
-    sessions.pop(session_id, None)
-    playback_states.pop(session_id, None)
-    session_versions.pop(session_id, None)
-    session_locks.pop(session_id, None)
-    pending_feedback.pop(session_id, None)
+    await manager.delete_session(session_id)
     return {"ok": True}
 
 
-async def _save_session(session_id: str) -> None:
-    """Persist the in-memory session to disk (non-blocking)."""
-    if session_id in sessions:
-        try:
-            await anyio.to_thread.run_sync(session_store.save, sessions[session_id])
-        except Exception:
-            logger.warning(f"Failed to save session {session_id}", exc_info=True)
-            await broadcast_to_session(session_id, {
-                "type": "error",
-                "message": "Warning: session failed to save to disk",
-            })
+# ---------------------------------------------------------------------------
+# Static files (built frontend)
+# ---------------------------------------------------------------------------
 
 
 def _find_frontend_dist() -> Path | None:
-    """Locate the built frontend dist directory.
-
-    Checks two locations:
-    1. Relative to this source file (development: src/collaborative_auditor/../../frontend/dist)
-    2. Relative to the current working directory (frontend/dist)
-    """
     candidates = [
         Path(__file__).resolve().parent.parent.parent / "frontend" / "dist",
         Path.cwd() / "frontend" / "dist",
@@ -1529,30 +212,19 @@ def _find_frontend_dist() -> Path | None:
 
 
 def _mount_static_files() -> None:
-    """Mount the built frontend SPA as static files.
-
-    Uses Starlette's StaticFiles with html=True so that index.html is
-    served for any path not matched by the API or WebSocket routes,
-    enabling client-side routing.
-    """
     dist = _find_frontend_dist()
     if dist:
         app.mount("/", StaticFiles(directory=dist.as_posix(), html=True), name="static")
         logger.info(f"Serving frontend from {dist}")
     else:
-        logger.warning(
-            "Frontend dist directory not found. "
-            "Run 'npm run build' in frontend/ to build the SPA."
-        )
+        logger.warning("Frontend dist not found. Run 'npm run build' in frontend/.")
 
 
 _mount_static_files()
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:
-    """Run the server."""
     import uvicorn
-
     uvicorn.run(app, host=host, port=port)
 
 

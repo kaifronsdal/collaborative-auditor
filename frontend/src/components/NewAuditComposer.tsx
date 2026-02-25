@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { v4 as uuidv4 } from "uuid";
 import { useSessionStore } from "@/store/session";
@@ -17,6 +17,68 @@ const DEFAULT_MODELS = [
 
 function formatModelLabel(model: string): string {
   return model.split("/").pop() ?? model;
+}
+
+const CHEVRON_WIDTH = 14;
+
+function ModelPicker({
+  label,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+}) {
+  const measureRef = useRef<HTMLSpanElement>(null);
+  const [width, setWidth] = useState(0);
+
+  useLayoutEffect(() => {
+    if (measureRef.current) {
+      setWidth(measureRef.current.offsetWidth + CHEVRON_WIDTH);
+    }
+  }, [value]);
+
+  return (
+    <div className="flex items-center gap-1">
+      <label className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] font-medium select-none">
+        {label}
+      </label>
+      <span className="relative inline-flex items-center">
+        <span
+          ref={measureRef}
+          aria-hidden
+          className="invisible absolute left-0 top-0 whitespace-nowrap text-xs font-medium"
+        >
+          {formatModelLabel(value)}
+        </span>
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+          style={{ width }}
+          className="text-xs bg-transparent text-[var(--foreground)] border-none focus:outline-none cursor-pointer font-medium py-0.5 appearance-none"
+        >
+          {DEFAULT_MODELS.map((m) => (
+            <option key={m} value={m}>
+              {formatModelLabel(m)}
+            </option>
+          ))}
+        </select>
+        <svg
+          className="pointer-events-none absolute right-0 text-[var(--muted-foreground)]"
+          width="10"
+          height="6"
+          viewBox="0 0 10 6"
+          fill="currentColor"
+        >
+          <path d="M0 0l5 6 5-6z" />
+        </svg>
+      </span>
+    </div>
+  );
 }
 
 export function NewAuditComposer() {
@@ -109,43 +171,19 @@ export function NewAuditComposer() {
           {/* Bottom bar: model pickers + send */}
           <div className="flex items-center justify-between px-3 pb-2.5 pt-0.5">
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1">
-                <label className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] font-medium">Target</label>
-                <select
-                  value={targetModel}
-                  onChange={(e) => setTargetModel(e.target.value)}
-                  disabled={isCreating}
-                  className="text-xs bg-transparent text-[var(--foreground)] border-none focus:outline-none cursor-pointer font-medium py-0.5 pr-4 appearance-none"
-                  style={{
-                    backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23999'/%3E%3C/svg%3E")`,
-                    backgroundRepeat: "no-repeat",
-                    backgroundPosition: "right 0 center",
-                  }}
-                >
-                  {DEFAULT_MODELS.map((m) => (
-                    <option key={m} value={m}>{formatModelLabel(m)}</option>
-                  ))}
-                </select>
-              </div>
+              <ModelPicker
+                label="Auditor"
+                value={auditorModel}
+                onChange={setAuditorModel}
+                disabled={isCreating}
+              />
               <span className="text-[var(--muted-foreground)] text-xs">&rarr;</span>
-              <div className="flex items-center gap-1">
-                <label className="text-[10px] uppercase tracking-wider text-[var(--muted-foreground)] font-medium">Auditor</label>
-                <select
-                  value={auditorModel}
-                  onChange={(e) => setAuditorModel(e.target.value)}
-                  disabled={isCreating}
-                  className="text-xs bg-transparent text-[var(--foreground)] border-none focus:outline-none cursor-pointer font-medium py-0.5 pr-4 appearance-none"
-                  style={{
-                    backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23999'/%3E%3C/svg%3E")`,
-                    backgroundRepeat: "no-repeat",
-                    backgroundPosition: "right 0 center",
-                  }}
-                >
-                  {DEFAULT_MODELS.map((m) => (
-                    <option key={m} value={m}>{formatModelLabel(m)}</option>
-                  ))}
-                </select>
-              </div>
+              <ModelPicker
+                label="Target"
+                value={targetModel}
+                onChange={setTargetModel}
+                disabled={isCreating}
+              />
             </div>
 
             <button

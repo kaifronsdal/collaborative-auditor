@@ -5,12 +5,11 @@
  */
 
 import { create } from "zustand";
+import { applyPatch } from "fast-json-patch";
 import type {
   ClientMessage,
   ViewState,
   ServerMessage,
-  ToolCall,
-  TargetState,
   ComputedBranchPoint,
   SessionSummary,
 } from "@/lib/types";
@@ -353,78 +352,24 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         break;
       }
 
-      case "delta_turn_start": {
+      case "patch": {
         const { viewState } = get();
         if (!viewState) {
-          console.error(`Received ${message.type} before initial state`);
+          console.error("Received patch before initial state");
           return;
         }
-        if (message.branch_id !== viewState.current_branch.id) return;
         if (message.version <= get().version) return;
-        set({
-          viewState: {
-            ...viewState,
-            current_branch: {
-              ...viewState.current_branch,
-              auditor_messages: [...viewState.current_branch.auditor_messages, message.message],
-            },
-            is_generating: true,
-          },
-          version: message.version,
-        });
-        break;
-      }
-
-      case "delta_tool_call": {
-        const { viewState } = get();
-        if (!viewState) {
-          console.error(`Received ${message.type} before initial state`);
-          return;
+        try {
+          const result = applyPatch(viewState, message.ops, false, false);
+          set({
+            viewState: result.newDocument,
+            version: message.version,
+            pendingFeedback: result.newDocument.pending_feedback ?? [],
+          });
+        } catch (e) {
+          console.error("Failed to apply patch:", e);
+          get().reconnect();
         }
-        if (message.branch_id !== viewState.current_branch.id) return;
-        if (message.version <= get().version) return;
-        const msgs = [...viewState.current_branch.auditor_messages];
-        // Find last assistant message
-        for (let i = msgs.length - 1; i >= 0; i--) {
-          if (msgs[i].role === "assistant") {
-            const existingToolCalls = msgs[i].tool_calls;
-            if (!existingToolCalls) {
-              console.error("tool_calls undefined on assistant message during delta_tool_call — message ordering bug");
-              set({ lastError: "Internal error: unexpected message ordering in delta_tool_call" });
-            }
-            msgs[i] = { ...msgs[i], tool_calls: [...(existingToolCalls ?? []), message.tool_call] };
-            break;
-          }
-        }
-        set({
-          viewState: {
-            ...viewState,
-            current_branch: { ...viewState.current_branch, auditor_messages: msgs },
-          },
-          version: message.version,
-        });
-        break;
-      }
-
-      case "delta_tool_result": {
-        const { viewState } = get();
-        if (!viewState) {
-          console.error(`Received ${message.type} before initial state`);
-          return;
-        }
-        if (message.branch_id !== viewState.current_branch.id) return;
-        if (message.version <= get().version) return;
-        set({
-          viewState: {
-            ...viewState,
-            current_branch: {
-              ...viewState.current_branch,
-              auditor_messages: [...viewState.current_branch.auditor_messages, message.tool_result],
-              target_state: message.target_state,
-            },
-          },
-          version: message.version,
-        });
         break;
       }
 
@@ -451,11 +396,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             },
           };
         });
-        break;
-      }
-
-      case "pending_feedback_updated": {
-        set({ pendingFeedback: message.pending_feedback });
         break;
       }
 

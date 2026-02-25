@@ -5,25 +5,37 @@ with an AI auditor agent.
 """
 
 from collaborative_auditor.models import (
-    AtomicEvent,
-    ResearcherBranch,
+    Branch,
+    EventNode,
+    EventType,
     Session,
     TargetState,
     ToolDefinition,
+    TreeIndex,
+    create_branch,
     create_session,
+    find_event_on_path,
+    find_turn_start,
     generate_id,
+    get_branch_path,
     reconstruct_at_event,
     track_state_changes,
 )
 
 __all__ = [
-    "AtomicEvent",
-    "ResearcherBranch",
+    "Branch",
+    "EventNode",
+    "EventType",
     "Session",
     "TargetState",
     "ToolDefinition",
+    "TreeIndex",
+    "create_branch",
     "create_session",
+    "find_event_on_path",
+    "find_turn_start",
     "generate_id",
+    "get_branch_path",
     "reconstruct_at_event",
     "track_state_changes",
 ]

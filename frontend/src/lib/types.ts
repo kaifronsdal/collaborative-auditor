@@ -180,13 +180,11 @@ export interface SessionSummary {
   message_count: number;
 }
 
-// ============= Server Messages (5 types) =============
+// ============= Server Messages =============
 
 export type ServerMessage =
   | { type: "state"; state: ViewState }
-  | { type: "delta_turn_start"; message: ChatMessage; branch_id: string; version: number }
-  | { type: "delta_tool_call"; tool_call: ToolCall; branch_id: string; version: number }
-  | { type: "delta_tool_result"; tool_result: ChatMessage; target_state: TargetState; branch_id: string; version: number }
+  | { type: "patch"; ops: any[]; version: number }
   | {
       type: "rewrite_tool_call_result";
       request_id: string;
@@ -194,7 +192,6 @@ export type ServerMessage =
       rewritten_arguments?: Record<string, unknown>;
       error?: string;
     }
-  | { type: "pending_feedback_updated"; pending_feedback: string[] }
   | { type: "error"; message: string };
 
 // ============= Client Messages =============
