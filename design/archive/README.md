@@ -1,0 +1,1 @@
+Superseded process records (workflow catalog rev 2, orchestrator design, UI v4 notes, mockup critique) — all load-bearing content was folded into ../DESIGN.md and ../UI.md on 2026-06-12; kept for archaeology only.

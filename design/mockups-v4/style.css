@@ -1,0 +1,374 @@
+/* Audit Workbench v3 — claude.ai-derived design system.
+   Palette extracted from the claude.ai snapshot in collaborative-auditor/refererence/.
+   Rules: state lives in typography; importance lives in a single terracotta dot;
+   detail lives behind hover/expand. Color budget per screen: ≤3 dots + 1 live action. */
+:root {
+  /* claude.ai light tokens (hsl values verbatim from snapshot) */
+  --bg-000: hsl(0 0% 100%);
+  --bg-100: hsl(48 33.3% 97.1%);   /* warm off-white page */
+  --bg-200: hsl(53 28.6% 94.5%);
+  --bg-300: hsl(48 25% 92.2%);     /* user bubble */
+  --bg-400: hsl(50 20.7% 88.6%);
+  --border: hsl(51 16.5% 84.5%);
+  --border-soft: hsl(51 16.5% 89%);
+
+  --ink: hsl(60 2.6% 7.6%);        /* near-black, warm */
+  --ink-mid: hsl(60 2.5% 23.3%);
+  --ink-dim: hsl(52 4% 44%);
+  --ink-faint: hsl(48 4.8% 59.2%);
+
+  --accent: hsl(15 63.1% 59.6%);       /* terracotta — dots + the one live action */
+  --accent-text: hsl(15 54.2% 45%);
+  --link: hsl(210 70.9% 45%);          /* claude.ai secondary blue, links only */
+  --danger: hsl(0 56.2% 45.4%);        /* destructive text actions only */
+
+  --serif: ui-serif, Georgia, "Times New Roman", serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg-100);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14.5px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- layout ---------- */
+.app { display: flex; height: 100vh; }
+.sidebar {
+  width: 252px; flex-shrink: 0; display: flex; flex-direction: column;
+  padding: 14px 10px; overflow-y: auto;
+  border-right: 1px solid var(--border-soft);
+}
+.content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.titlebar {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 14px 28px 10px; flex-shrink: 0;
+}
+.titlebar .crumb { font-size: 13.5px; color: var(--ink-dim); }
+.titlebar .crumb b { color: var(--ink); font-weight: 600; }
+.titlebar .right { margin-left: auto; font-size: 12px; color: var(--ink-faint); }
+.scroll { flex: 1; overflow-y: auto; min-height: 0; }
+.column { max-width: 740px; margin: 0 auto; padding: 12px 28px 40px; }
+
+/* ---------- sidebar ---------- */
+.wordmark { font-family: var(--serif); font-size: 17px; font-weight: 600; padding: 2px 8px 14px; }
+.side-section {
+  font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-faint); padding: 14px 8px 5px;
+}
+.side-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border-radius: 8px; font-size: 13px; color: var(--ink-mid);
+  cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.side-row:hover { background: var(--bg-300); }
+.side-row.active { background: var(--bg-300); color: var(--ink); }
+.side-row .end { margin-left: auto; font-size: 11px; color: var(--ink-faint); font-family: var(--mono); }
+
+/* tree outline in sidebar */
+.tree { font-size: 12.5px; color: var(--ink-mid); padding: 0 8px; }
+.tree .t-row {
+  display: flex; align-items: center; gap: 6px; padding: 2.5px 4px;
+  border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.tree .t-row:hover { background: var(--bg-300); }
+.tree .t-row.cur { background: var(--bg-300); color: var(--ink); }
+.tree .t-guide { color: var(--ink-faint); font-family: var(--mono); font-size: 11px; }
+.tree .t-score { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+
+/* ---------- the dot (the only color) ---------- */
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); display: inline-block; flex-shrink: 0; }
+
+/* ---------- transcript ---------- */
+.byline {
+  font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-faint); margin: 22px 0 4px;
+  display: flex; align-items: center; gap: 8px;
+}
+.turn-target { font-size: 15px; color: var(--ink); }
+.turn-target p + p { margin-top: 10px; }
+
+/* human / auditor authored messages = soft right-set bubble (claude.ai user style) */
+.bubble-wrap { display: flex; justify-content: flex-end; margin: 18px 0 4px; }
+.bubble {
+  max-width: 82%; background: var(--bg-300); border-radius: 16px;
+  padding: 10px 16px; font-size: 14.5px; color: var(--ink);
+}
+.bubble-by { text-align: right; font-size: 11px; color: var(--ink-faint); margin-top: 4px;
+  letter-spacing: .05em; text-transform: uppercase; font-weight: 600; }
+
+/* caption line under a message: scores, branch pager, hover actions */
+.caption {
+  display: flex; align-items: center; gap: 14px; margin-top: 7px;
+  font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
+}
+.caption .score b { font-weight: 400; color: var(--ink-dim); }
+.caption .actions { color: var(--ink-faint); font-family: var(--sans); }
+.caption .actions a { color: inherit; text-decoration: none; }
+.caption .actions a:hover { color: var(--ink-mid); }
+.caption .pager { letter-spacing: .05em; }
+.caption .spacer { flex: 1; }
+
+/* flag: a sentence, not a pill */
+.flagline {
+  display: flex; gap: 8px; align-items: baseline;
+  font-size: 12.5px; font-style: italic; color: var(--ink-dim); margin: 0 0 6px;
+}
+.flagline .dot { position: relative; top: -1px; }
+
+/* leak / scored span: underline, not highlight */
+.span-hot { border-bottom: 2px solid var(--accent); }
+
+/* thinking: grey collapsible, claude.ai style */
+.thinking {
+  font-size: 13px; color: var(--ink-dim); margin: 4px 0 10px;
+}
+.thinking .tg { cursor: pointer; color: var(--ink-faint); font-size: 12px; }
+.thinking .body { border-left: 2px solid var(--border); padding: 2px 0 2px 12px; margin-top: 6px; }
+
+/* ---------- cells (tool results, runs, fanouts, raw) ---------- */
+.cell {
+  border: 1px solid var(--border-soft); border-radius: 12px; background: var(--bg-000);
+  margin: 14px 0; overflow: hidden;
+}
+.cell-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 14px; font-size: 13px; color: var(--ink-mid); cursor: pointer;
+}
+.cell-head .glyph { color: var(--ink-faint); font-size: 12px; }
+.cell-head .meta { margin-left: auto; font-size: 11.5px; color: var(--ink-faint); font-family: var(--mono); }
+.cell-head .act { font-size: 12px; color: var(--ink-faint); margin-left: 12px; font-family: var(--sans); }
+.cell-body { border-top: 1px solid var(--border-soft); padding: 12px 16px; font-size: 13.5px; }
+.cell-row {
+  display: flex; align-items: baseline; gap: 10px; padding: 7px 14px;
+  border-top: 1px solid var(--border-soft); font-size: 13px; color: var(--ink-mid);
+}
+.cell-row:hover { background: var(--bg-100); }
+.cell-row .rank { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); width: 14px; }
+.cell-row .excerpt { color: var(--ink-dim); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cell-row .num { margin-left: auto; font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); flex-shrink: 0; }
+.cell-row .hov { font-size: 12px; color: var(--ink-faint); flex-shrink: 0; }
+.cell-row .hov a { color: inherit; text-decoration: none; }
+
+/* run line: one shimmering sentence */
+.runline {
+  display: flex; align-items: baseline; gap: 10px; margin: 20px 0;
+  font-size: 13px; font-style: italic; color: var(--ink-dim);
+}
+.runline .star { color: var(--accent); font-style: normal; }
+.runline .ctl { margin-left: auto; font-style: normal; font-size: 12.5px; color: var(--ink-faint); }
+.runline .ctl a { color: inherit; text-decoration: none; margin-left: 10px; }
+.runline .ctl a.live { color: var(--accent-text); }
+
+/* mono block (raw payload) */
+.raw {
+  font-family: var(--mono); font-size: 12px; color: var(--ink-mid);
+  background: var(--bg-200); border-radius: 8px; padding: 10px 12px;
+  white-space: pre-wrap; overflow-x: auto;
+}
+
+/* ---------- composer ---------- */
+.composer-zone { flex-shrink: 0; padding: 8px 28px 14px; }
+.composer-inner { max-width: 740px; margin: 0 auto; }
+.composer {
+  background: var(--bg-000); border: 1px solid var(--border);
+  border-radius: 16px; padding: 12px 16px 10px;
+  box-shadow: 0 2px 8px hsl(51 20% 50% / .06);
+}
+.composer .ph { color: var(--ink-faint); font-size: 14.5px; }
+.composer .lower {
+  display: flex; align-items: center; gap: 12px; margin-top: 14px;
+  font-size: 12.5px; color: var(--ink-dim);
+}
+.dest {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 11px; font-size: 12px; color: var(--ink-mid); cursor: pointer;
+}
+.dest:hover { background: var(--bg-200); }
+.composer .lower .send {
+  margin-left: auto; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent); color: #fff; border: none; font-size: 14px; cursor: pointer;
+}
+
+/* whisper: the single ambient line */
+.whisper {
+  max-width: 740px; margin: 8px auto 0; padding: 0 4px;
+  display: flex; gap: 8px; align-items: baseline;
+  font-size: 12px; color: var(--ink-faint);
+}
+.whisper .hot { color: var(--accent-text); }
+.whisper .sep { color: var(--border); }
+.whisper a { color: inherit; }
+.whisper .right { margin-left: auto; font-family: var(--mono); font-size: 11px; }
+
+/* ---------- generic ---------- */
+a.quiet { color: var(--ink-faint); text-decoration: none; }
+a.quiet:hover { color: var(--ink-mid); }
+a.link { color: var(--link); text-decoration: none; }
+.mono { font-family: var(--mono); }
+.dim { color: var(--ink-dim); }
+.faint { color: var(--ink-faint); }
+.serif { font-family: var(--serif); }
+kbd {
+  font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim);
+  border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px;
+  padding: 0 4px; background: var(--bg-000);
+}
+hr.rule { border: none; border-top: 1px solid var(--border-soft); margin: 18px 0; }
+
+/* divergence / section interstitial: a sentence with hairlines */
+.interstitial {
+  display: flex; align-items: center; gap: 12px; margin: 22px 0;
+  font-size: 12px; color: var(--ink-faint);
+}
+.interstitial::before, .interstitial::after { content: ""; flex: 1; border-top: 1px solid var(--border-soft); }
+
+/* ---------- tool cells (TOOLS.md) ----------
+   A cell is a live renderer over one session file. Head = tool name + prompt verbatim
+   (mono); the ⎿ line names the artifact file the call wrote. */
+.tool-head {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 9px 14px 1px; font-family: var(--mono); font-size: 12px;
+  line-height: 1.55; color: var(--ink-mid);
+}
+.tool-head .tg { color: var(--ink-dim); flex-shrink: 0; font-size: 11px; }
+.tool-head .tcall { flex: 1; min-width: 0; }
+.tool-head .tcall b { font-weight: 600; color: var(--ink); }
+.tool-head .tby {
+  font-family: var(--sans); font-size: 10px; font-weight: 600; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--ink-faint); flex-shrink: 0; white-space: nowrap;
+}
+.tool-out {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 1px 14px 8px 30px; font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint);
+}
+.tool-out .gl { flex-shrink: 0; }
+.tool-out .path { color: var(--ink-dim); }
+.tool-cap {
+  border-top: 1px solid var(--border-soft); padding: 6px 14px;
+  font-size: 12px; color: var(--ink-faint);
+}
+.tool-cap a { color: inherit; text-decoration: none; }
+.tool-cap a:hover { color: var(--ink-mid); }
+
+/* rows inside tool cells */
+.cell-row .aid { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); width: 52px; flex-shrink: 0; }
+.cell-row .seedlbl {
+  font-size: 12.5px; color: var(--ink-mid); width: 205px; flex-shrink: 0;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+}
+.cell-row .reason { flex: 1; min-width: 0; font-size: 13px; color: var(--ink-mid); }
+.cell-row.struck .aid, .cell-row.struck .excerpt { text-decoration: line-through; color: var(--ink-faint); }
+.pinmark { font-size: 11px; font-style: italic; color: var(--ink-dim); flex-shrink: 0; }
+
+/* summary rows: the two-line digest anatomy inside a tool cell */
+.sumrow { border-top: 1px solid var(--border-soft); padding: 7px 14px 8px; }
+.sumrow .l1 { display: flex; align-items: baseline; gap: 10px; }
+.sumrow .grade { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--ink-faint); flex-shrink: 0; }
+.sumrow .l2 { margin-top: 1px; font-size: 13px; line-height: 1.5; color: var(--ink-mid); }
+
+/* sheet header (full-screened cell) */
+.sheet-head {
+  display: flex; align-items: baseline; gap: 12px;
+  padding: 16px 28px 12px; border-bottom: 1px solid var(--border-soft);
+}
+.sheet-head h1 { font-family: var(--serif); font-size: 19px; font-weight: 600; }
+.sheet-head .esc { margin-left: auto; font-size: 12.5px; color: var(--ink-faint); }
+
+/* ---------- 05_analysis — analysis views: chart cells, ink ramp, snippet cards ---------- */
+:root {
+  /* 4-step ink ramp — grays/near-blacks only, no heat colors */
+  --ramp-1: hsl(50 22% 91%);
+  --ramp-2: hsl(50 10% 74%);
+  --ramp-3: hsl(52 6% 50%);
+  --ramp-4: hsl(60 3% 16%);
+}
+
+/* a chart lives inside a tool cell, between the ⎿ line and the tool-cap */
+.chart-wrap { padding: 10px 16px 2px; }
+.chart-wrap svg { display: block; width: 100%; height: auto; }
+
+/* inline svg vocabulary */
+svg.chart text { font-family: var(--mono); font-size: 10px; fill: var(--ink-faint); }
+svg.chart text.cnt { fill: var(--ink-mid); }
+svg.chart text.lab { font-family: var(--sans); font-size: 10.5px; fill: var(--ink-dim); }
+svg.chart text.ttl {
+  font-family: var(--sans); font-size: 10.5px; font-weight: 600; letter-spacing: .05em;
+  text-transform: uppercase; fill: var(--ink-dim);
+}
+svg.chart line.ax { stroke: var(--border); stroke-width: 1; }
+svg.chart line.tick { stroke: var(--border); stroke-width: 1; }
+svg.chart line.grid { stroke: var(--border-soft); stroke-width: 1; }
+svg.chart .ln { stroke: hsl(52 4% 44%); stroke-width: 1.1; fill: none; }
+svg.chart .ln.hvy { stroke: var(--ink); stroke-width: 2; }
+svg.chart .step { stroke: var(--ink-mid); stroke-width: 1.6; fill: none; }
+svg.chart .step.dash { stroke-dasharray: 5 4; }
+
+/* sentence under a chart — same anatomy as a flagline; dot only when the anomaly earns it */
+.chart-note {
+  display: flex; gap: 8px; align-items: baseline;
+  font-size: 12.5px; font-style: italic; color: var(--ink-dim);
+  padding: 4px 16px 10px;
+}
+.chart-note .dot { position: relative; top: -1px; }
+.chart-note a { color: var(--ink-mid); text-decoration: none; border-bottom: 1px dotted var(--ink-dim); font-style: normal; }
+.chart-note a:hover { border-bottom-style: solid; }
+.chart-note .faint { font-style: normal; }
+
+/* view-projection links in a tool-cap: "view as paired · table · distribution" */
+.tool-cap a.on { color: var(--ink); border-bottom: 1px solid var(--ink-dim); }
+
+/* seeds × replicates waffle grid (.gridrow) — squares carry the ink ramp, counts close each row */
+.wgrid { padding: 6px 0 0; }
+.gridrow { display: flex; align-items: center; gap: 4px; padding: 3px 16px; }
+.gridrow:hover { background: var(--bg-100); }
+.gridrow .aid { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); width: 46px; flex-shrink: 0; }
+.gridrow .wlbl {
+  width: 168px; flex-shrink: 0; font-size: 12px; color: var(--ink-dim);
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; padding-right: 8px;
+}
+.gridrow .sq { width: 15px; height: 15px; border-radius: 3px; flex-shrink: 0; }
+.sq.b1 { background: var(--ramp-1); }
+.sq.b2 { background: var(--ramp-2); }
+.sq.b3 { background: var(--ramp-3); }
+.sq.b4 { background: var(--ramp-4); }
+.gridrow .wnum { margin-left: 12px; font-family: var(--mono); font-size: 11px; color: var(--ink-dim); flex-shrink: 0; }
+.gridrow .wnote { margin-left: 12px; font-size: 11.5px; font-style: italic; color: var(--ink-dim); }
+.wlegend {
+  display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: baseline;
+  padding: 9px 16px 10px; font-size: 11.5px; color: var(--ink-dim);
+}
+.wlegend .sq { width: 11px; height: 11px; display: inline-block; vertical-align: -1.5px; margin-right: 5px; border-radius: 2px; }
+.wlegend .mono { font-size: 10.5px; color: var(--ink-faint); }
+
+/* contact sheet — three snippet cards side by side; the one sanctioned column-width violation */
+.contact { display: flex; gap: 14px; margin: 12px 0 4px; width: 960px; margin-left: calc((100% - 960px) / 2); }
+.snipcard {
+  flex: 1; min-width: 0; display: flex; flex-direction: column;
+  border: 1px solid var(--border-soft); border-radius: 12px; background: var(--bg-000);
+  padding: 10px 14px 9px;
+}
+.snip-head {
+  display: flex; gap: 8px; align-items: baseline;
+  font-size: 10px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.snip-head .ctx { margin-left: auto; font-weight: 400; letter-spacing: .05em; }
+.snip-quote { font-family: var(--serif); font-size: 13.5px; line-height: 1.6; color: var(--ink); margin: 7px 0 9px; flex: 1; }
+.snip-quote .mono { font-size: 11px; background: var(--bg-200); border-radius: 4px; padding: 0 4px; }
+.snip-cap { font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint); border-top: 1px solid var(--border-soft); padding-top: 6px; }
+.snip-act { font-size: 11.5px; color: var(--ink-faint); margin-top: 3px; }
+.snip-act a { color: inherit; text-decoration: none; }
+.snip-act a:hover { color: var(--ink-mid); }
+
+/* action line under orchestrator prose — words, not buttons */
+.actline { font-size: 13px; color: var(--ink-mid); margin: 5px 0 0; }
+.actline a { color: var(--ink-mid); text-decoration: none; border-bottom: 1px dotted var(--ink-dim); }
+.actline a:hover { border-bottom-style: solid; }
+.actline .faint { color: var(--ink-faint); }
