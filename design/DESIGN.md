@@ -176,40 +176,58 @@ change, not a data change.
 
 ## 3. Architecture
 
-### 3.1 Data model — one tree, attributed actors
+### 3.1 Data model — two trees, bound by effects
 
-Sonde's parent-pointer tree is the substrate. Collaborative-auditor's contribution is *who else*
-writes into it. Reconcile by attributing every node and keeping agent-side conversations as
-separate but linked threads:
+Sonde's parent-pointer tree is the substrate; collaborative-auditor's contribution is *who else*
+writes into it; petri's contribution is the replay machinery that keeps the two consistent. One
+`Node` type, used for **two trees per audit** — the target tree (the specimen) and the auditor
+tree (the Run's own thread, which *also* branches under edit/resample) — cross-linked by an
+ordered effect log:
 
 ```python
 class Node(BaseModel):
-    id: str
+    id: str                         # == ChatMessage.id → petri anchor for free
     parent_id: str | None
-    role: Role                      # system | user | assistant | tool
-    blocks: list[Block]             # typed content blocks — NEVER stringly XML
-    actor: ActorRef                 # human:<user> | agent:<run_id> | resolver:<kind>
-    meta: NodeMeta                  # request, usage, grades, ws_changes, flags…
+    message: ChatMessage            # inspect_ai's ChatMessage IS the payload (typed content blocks)
+    actor: ActorRef                 # human:<user> | run:<id> | resolver:<kind>
+    meta: NodeMeta                  # usage, request, grades, M-short-id, flags…
+
+class Effect(BaseModel):            # one target-mutating auditor command — a durable, replayable step
+    kind: Literal["set_system","send_message","tool_result","prefill",
+                  "add_tool","remove_tool","rollback","resume","end"]
+    payload: dict                   # serialized Command (Stage value, anchor, ToolInfo…)
+    produced: list[str]             # target node ids created (resume → assistant node)
+    recorded_output: ModelOutput | None   # for resume: the generation, replayable from store
+
+class AuditorTurn(BaseModel):       # meta on each auditor assistant Node
+    effects: list[Effect]           # ordered; the fold of these along the path IS the invariant
+    target_leaf: str | None         # derived cache: fold(effects on root→here path)
 
 class Conversation(BaseModel):
     id: str
-    nodes: dict[str, Node]          # the target-context tree (the specimen)
-    active_leaf: str | None
-    runs: dict[str, Run]            # agent processes operating on this tree
+    target: dict[str, Node]         # the specimen tree
+    auditor: dict[str, Node]        # the Run's thread tree — same Node type
+    runs: dict[str, Run]
     events: list[Event]             # append-only wall-clock log (provenance)
 ```
 
 Key decisions:
 
-- **The target tree is the single source of truth for target context.** An audit's own
-  conversation (its reasoning, its tool calls) lives in `Run.messages` and *references* the
-  target nodes it created. The UI can show either lens or both (perspective toggle, §6.1).
-- **Sonde's verbatim principle holds**: "the log is append-only and linear… the tree is a
-  projection over model contexts, not over realities." The event log records what happened; the
-  tree records what each completion was conditioned on.
-- **No XML-in-strings.** Blocks are typed pydantic models; the wire format is their JSON; the
-  frontend types are generated from the schemas (single `openapi.json` → `openapi-typescript`),
-  killing the hand-duplication problem.
+- **The linkage is an effect log, not node references.** Auditor actions don't map 1:1 to target
+  nodes — `rollback` produces none and moves the cursor; `prefill`/`add_tool` produce none but
+  change the next generation; one `resume` produces a target node *and* a formatted string inside
+  an auditor tool-result. The ordered effect list per turn is the precise statement of "what this
+  turn did to the target," and **the invariant** (`target leaf at any auditor node = fold(effects
+  along auditor path)`) is checkable data, asserted on every fork (ARCHITECTURE.md).
+- **Petri's `Trajectory` is the live replay engine, not the store.** Its recorded steps hold
+  values by reference and are never serialized; the durable effect log is what survives restart
+  and what human target-edits substitute against.
+- **`ChatMessage` is the canonical node payload.** Petri anchors are `ChatMessage.id`s, the
+  channel speaks them, `.eval` import becomes copy-not-convert. Typed content blocks (no
+  XML-in-strings); frontend types generated from the schemas (`openapi.json` →
+  `openapi-typescript`).
+- **Sonde's verbatim principle holds**: the event log records what happened; the trees record
+  what each completion was conditioned on.
 
 ### 3.2 Run — the unit of automation
 
@@ -224,16 +242,18 @@ class Run(BaseModel):
     kind: str            # "auditor" | "orchestrator"
     status: RunStatus    # queued | running | paused | done | failed | stopped
     attached: ActorRef | None     # human sitting at this Run's desk (pin) — presence, not a status
-    root_node: str       # where in the tree it operates
-    config: dict         # prompt template, model, K, n, strategy label, turn budget…
-    messages: list[ChatMessage]   # the agent's own private thread (auditor/orchestrator kinds)
-    produced: list[str]  # node ids (auditor) or run ids (orchestrator) it created
+    tree_id: str         # the agent's own thread tree (§3.1 — branches under edit/resample)
+    active_leaf: str     # the pen position
+    target_tree_id: str  # auditor: the specimen; orchestrator: none
+    config: dict         # prompt template, model, K, n, strategy label, turn budget, AnchorMap…
 ```
 
 - Runs are **pausable, steppable, killable** at turn boundaries — collaborative-auditor's
-  playback controls become generic `POST /runs/{id}/{play|pause|step|stop}`.
-- The **feedback queue** is per-Run: queued messages are injected into `Run.messages` at the next
-  turn boundary (collaborative-auditor's `queue_feedback`, kept conceptually as-is).
+  playback controls become generic `POST /runs/{id}/{play|pause|step|stop}`. "Pause now" mid-turn
+  is hard-cancel + cold replay from the last completed turn — re-derivation makes hard-kill safe;
+  there is no unwind logic.
+- The **feedback queue** is per-Run: queued messages are injected as auditor-tree user nodes at
+  the next turn boundary (collaborative-auditor's `queue_feedback`, kept conceptually as-is).
 - An audit's tools are tree-native: `send_message` / `query_target` etc. become tree operations
   (`conv.add(...)` + provider call), not a parallel state machine. Synthetic target tools and
   simulated results map onto sonde's existing `ToolSpec` + `SimulatedResolver`.
@@ -283,11 +303,16 @@ list is a thin schema over these handlers; the UI's buttons call the same routes
   belongs to a leaf audit), no writes to the specimen tree, no writes to digests, no writes to
   its own oversight config (§5.3).
 
-### 3.5 Provider layer — sonde's, wholesale
+### 3.5 Provider layer — sonde's, with one petri seam
 
-No changes. `Provider` protocol, `GenParams`, SurfaceEvent streaming, bijection tests, registry
-(zoo + direct), per-model credential overrides. Audits call targets through exactly the same
-layer as the human — that is what makes the dial seamless and provenance uniform.
+`Provider` protocol, `GenParams`, SurfaceEvent streaming, bijection tests, registry (zoo +
+direct), per-model credential overrides — sonde's, kept. Audits call targets through exactly the
+same layer as the human; that is what makes the dial seamless and provenance uniform. Embedding
+the petri loop (§3.1, ARCHITECTURE.md) creates one tension: petri's stock `target_agent` calls
+inspect's `Model.generate`. Resolution: `target_agent` is pluggable (`audit_solver(target=...)`)
+and ~65 lines — reimplement it over sonde's `Provider.stream()`, keeping `TargetContext`
+(staging/replay) intact and writing inspect `ChatMessage`s into `state.messages`. The auditor's
+own generation can stay on inspect's model API initially (it's not the specimen); unify later.
 
 ### 3.6 Sync protocol
 
@@ -299,11 +324,21 @@ server-computed and rendered from one model, never derived per-view.
 
 ### 3.7 Persistence & provenance
 
-- Conversation JSON via sonde's fsspec `Store` (local / S3) — durable, writable surface.
-- Scout `Transcript` checkpoint after every generation (sonde's `checkpoint.py`) — queryable
-  audit trail. Adopt the scout-sqlite direction when it lands; don't block on it.
-- Grades in `node.meta.grades`, digests in the summarizer's own store, run state in `run.config`/
-  `run.meta` — everything survives in both layers. Finding bundles are immutable exports (§6.4).
+The session directory is the source of truth (TOOLS.md §1), with three layers per run:
+
+- `runs/<run>/tree.json` — both trees + effects, written per mutation under a per-conversation
+  lock (sonde `store.py` fsspec atomic write). The live truth.
+- `runs/<run>/events.jsonl` — append-only wall-clock provenance log.
+- `transcripts/<audit_id>.json` — a **path projection** of one root→leaf path through the trees,
+  emitted at Run completion or human branch-promotion. Audit id is `<seed>#<replicate>` for the
+  promoted path, `<seed>#<replicate>~<branch-slug>` for siblings. Summaries/grades/selections key
+  on these path ids; *node-level* grades additionally live in `node.meta.grades` so they survive
+  re-projection and render in any lens.
+
+Scout/sqlite stays a derived index, never the truth. Finding bundles are immutable exports
+(§6.4). `.eval` is an interop format: import (`EvalSample.messages` + `timelines` → trees) and
+export, not the execution path — inspect has no pause/steer/inject path into a running sample,
+so fanout rows are workbench Runs too (ARCHITECTURE.md Q2).
 
 ### 3.8 Frontend
 
@@ -326,8 +361,10 @@ src/workbench/
   providers/                              # sonde verbatim
   runs/
     base.py          # Run lifecycle, play/pause/step, feedback queue, pen leases
-    auditor.py       # the level-1 agent loop (rebuilt on tree ops)
+    auditor.py       # the level-1 agent loop: petri target/_* + our pausable turn loop
     orchestrator.py  # the level-2 loop: same lifecycle, run-pen tool set (§5)
+    effects.py       # Effect log + the invariant fold + cold-replay adapter
+    eval_io.py       # .eval import/export (timelines ↔ trees)
   workers/           # bounded executors inside tool handlers (TOOLS.md §2):
     materialize.py  analyze.py  grade_sweep.py  …   # no pens, capped budgets, scout-traced
   digest/            # summarizer pipeline, clustering, decisive-turn extraction (§6.3)

@@ -76,12 +76,14 @@ branching/editing — the whole desk — is ours to build.
 
 ## 4. Build assessment
 
-Plausible and worth it. The shape:
+Plausible and worth it. The shape (amended by [ARCHITECTURE.md](ARCHITECTURE.md), which
+supersedes the original §4.1 below):
 
-1. **Auditor turns as `replayable()` steps.** The auditor tree becomes a petri `Trajectory`
-   tree: fork = child trajectory; edit = replay with argument overrides; resample = replay up to
-   the turn, then live. This replaces collaborative-auditor's hand-rolled event DAG + patch
-   replay.
+1. ~~The auditor tree becomes a petri `Trajectory` tree.~~ **No** — Trajectory steps are
+   by-reference, unserializable, and substitution-incapable (`_types.py:81`). Petri's replay is
+   the *target-side live engine* only; the auditor tree is store `Node`s with a durable `Effect`
+   log per turn, from which a Trajectory replay queue can be rebuilt cold (the `from_steps`
+   adapter — the one genuinely new mechanism).
 2. **Target state derived through `Controller`.** Auditor tools stage via the controller; a
    replayed auditor turn re-issues the same stage commands, so the §2 invariant holds by
    construction instead of by handler discipline. Rollback anchors come free.

@@ -27,7 +27,9 @@ session/
   seeds/<batch>.jsonl                # {id, instruction, notes?}
   runs/<run_id>/                     # run ids are meaningful slugs (authority-x5), not counters
     config.json
-    transcripts/<audit_id>.json      # appear as audits finish; audit id = <seed>#<replicate>
+    tree.json                        # both trees + effects — the live truth (DESIGN §3.7)
+    transcripts/<audit_id>.json      # path projection of one root→leaf, emitted on completion;
+                                     # audit id = <seed>#<replicate>, siblings ~<branch-slug>
   summaries/<name>.jsonl             # {audit_id, summary, quotes: [{msg, offsets}]}
   grades/<rubric>@<ver>/<name>.jsonl # {audit_id, score, rationale, quotes}
   selections/<name>.json             # {criteria, input_file, n_considered, selected: [{audit_id, reason}]}

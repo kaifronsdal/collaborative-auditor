@@ -76,6 +76,37 @@ pattern, kept).
 
 ---
 
+## (a′) Petri/inspect changes that simplify this
+
+We can modify petri (and propose to inspect). The mitigations in (c) were sized assuming a fixed
+dependency; with patch access, several collapse to small upstream changes and the workbench
+stays thin. In rough cost/benefit order:
+
+| change | where | turns into | unblocks |
+|---|---|---|---|
+| **`Trajectory.from_steps(steps)` public constructor** + serializable `Step` (drop the leading `_`, give it a `model_dump`/`model_validate`) | `petri target/_history.py` | a documented function instead of vendoring ~60 lines | cold replay (spike 4), resume-after-restart, .eval-import branching |
+| **Replay-queue value substitution**: `history.branch(anchor, current, overrides={step_idx: value})` | `petri target/_history.py` | one optional dict lookup in the replay path | human target-edits via *live* replay (eliminates the "store-backed only" carve-out in Q3) |
+| **`AnchorMap` snapshot/restore** on `Controller` | `petri target/_controller.py` | `controller.anchor_map.state()` / `.restore(state)` | M-short-ids stable after process restart; we stop persisting it in `run.config` by hand |
+| **Expose the pausable turn boundary**: split `auditor_agent`'s loop body into a public `auditor_turn(state, tools, …) -> state` | `petri _auditor/agent.py` | the loop we'd write anyway, but reusable upstream | our Run loop is `while …: await turn(); await step_gate` — no copy of compaction/continue-prompt/eager-resume logic |
+| **`ResponseOutput` kept on the resume tool result** (structured, not just the rendered string) | `petri tools/_resume.py` | one extra field on the ToolResult | the dual-rendering trap (hard problem #2) — `render(effect)` is the *only* path because the structured value is what petri itself returns |
+| **Public `init_model_roles`** | `inspect_ai model/__init__.py` | a re-export | running the loop outside an inspect task without a private import |
+| **Public `Transcript.subscribe`** | `inspect_ai log/_transcript.py` | drop the `_` | sub-tool-granularity liveness without monkeypatching |
+| **`_run_target` exported** (the rollback-respawn loop, ~30 lines) | `petri _auditor/auditor.py` | `from inspect_petri import run_target` | spike 1 imports instead of vendors |
+
+The first two are the leverage: with serializable steps + override-on-replay, **the durable
+`Effect` log and petri's `_Step` become the same type**, the cold/live distinction disappears,
+and "hardest problem #1" is solved in petri rather than worked around in the workbench. Nothing
+here changes petri's existing behaviour for existing callers — every change is additive (a
+public name, an optional argument, an extra field). The inspect_ai changes are re-exports of
+already-working private symbols.
+
+**Sequencing:** land the petri changes on a `workbench-support` branch of petri-meridian first
+(we control it), pin the workbench to that, upstream to meridianlabs in parallel. The inspect
+re-exports go as a small PR; until merged, the workbench imports the private names with a
+`# TODO upstream` comment — they're stable in practice.
+
+---
+
 ## (b) Per-question analysis
 
 ### Q1. Representing conversations/trajectories
@@ -408,7 +439,9 @@ against the same `tree.json` schema.
 
 ---
 
-## Flags: where this contradicts the design docs (to ratify into DESIGN.md)
+## Flags: where this contradicted the design docs
+
+*Ratified into DESIGN.md / TOOLS.md / TREE-IMPL.md 2026-06-13; kept here as the reasoning.*
 
 1. **DESIGN §3.2 `Run.messages: list[ChatMessage]` cannot survive Q3.** A flat list can't hold
    auditor-side branch/edit/resample. The Run's thread must be a tree (same `Node` type as the
