@@ -16,6 +16,10 @@ that keeps it all readable.
   desk, digest rungs, grade card, finding bundle).
 - `TREE-IMPL.md` — implementation recon for the tree mechanics (auditor rollbacks nesting target
   rollbacks): collaborative-auditor as-built, the invariant, what petri 3.0 carries, the M0 spike.
+- `ARCHITECTURE.md` — the level below: store data model (two node trees + durable effect log),
+  the petri/.eval seam (embed in-process; `.eval` as interop), fork mechanics walked step by
+  step, the five hardest problems, the 5-spike M0 plan. Supersedes TREE-IMPL §4.1 where they
+  conflict; ends with design-doc contradictions awaiting ratification.
 - `INSPIRATION.md` — Docent + tool-landscape analysis, reduced to adopted ideas (with landing
   spots) and rejections.
 - `mockups-v4/` — **current** mockups: the desk (manual/supervised, one audit), orchestrated
