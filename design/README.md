@@ -14,11 +14,13 @@ that keeps it all readable.
   matter.
 - `UI.md` — the visual grammar (cells, sheets, whisper, dot) and the surfaces (desk, orchestrated
   desk, digest rungs, grade card, finding bundle).
+- `TREE-IMPL.md` — implementation recon for the tree mechanics (auditor rollbacks nesting target
+  rollbacks): collaborative-auditor as-built, the invariant, what petri 3.0 carries, the M0 spike.
 - `INSPIRATION.md` — Docent + tool-landscape analysis, reduced to adopted ideas (with landing
   spots) and rejections.
-- `mockups-v4/` — **current** mockups: orchestrated desk, digest at n=500, grade card, finding
-  bundle, analysis views (paired slope / replicate grid / survival / contact sheet). Open
-  directly in a browser; no build step.
+- `mockups-v4/` — **current** mockups: the desk (manual/supervised, one audit), orchestrated
+  desk, digest at n=500, grade card, finding bundle, analysis views (paired slope / replicate
+  grid / survival / contact sheet). Open directly in a browser; no build step.
 - `mockups/` (v2 dashboard) and `mockups-v3/` (first claude.ai-style pass) — historical, kept for
   comparison.
 - `screenshots/` — rendered at 1600×1000; `screenshot.py` re-renders

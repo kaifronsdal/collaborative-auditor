@@ -565,15 +565,17 @@ does while waiting); a denial requires one line, which becomes feedback.
 The chain of custody: **span → grade → label → finding → narrative**. Every link is a door;
 descent terminates on verbatim transcript text, never on another summary.
 
-### 6.1 Spans and the citation scrub
+### 6.1 Spans and refs
 
-Adopt Docent's citation grammar wholesale (see INSPIRATION.md): block-addressed span references
-(`[T0B1:<RANGE>exact text</RANGE>]`), with a mechanical scrub that strips any cited text not
-literally present in the cited block — hallucinated quotes can't reach the UI. The scrub runs on
-**all** model-written prose before render: grader rationales, digest rows, watcher flags,
-orchestrator claims. Bound claims render as quote-chips that unfold an evidence inset in place;
-unbound numbers render italic + "unverified" (styled by the workbench, never the model). A rate
-cannot render without its clickable distribution strip.
+Adopt Docent's citation grammar (see INSPIRATION.md): block-addressed span references
+(`[T0B1:<RANGE>exact text</RANGE>]`) in all model-written prose — grader rationales, digest
+rows, watcher flags, orchestrator claims. Refs exist for **navigation, not policing**: a bound
+claim renders as a quote-chip that unfolds an evidence inset in place, and descent terminates on
+verbatim transcript text. The renderer naturally verifies the quote against the cited block when
+it builds a chip (a ref that doesn't resolve renders as plain prose, not a chip) — a free
+mechanical byproduct, not a trust pillar. Current models cite reliably; there is no scrub pass
+and no "unverified" styling police. A rate still cannot render without its clickable
+distribution strip — that rule is about aggregates, not honesty.
 
 Every transcript view states its perspective — `target sees · auditor sees · observer` — as a
 toggle on every rendering. Judging opens observer; composing into a context forces target-sees;
@@ -583,8 +585,8 @@ steering opens auditor-sees. Lens, never data.
 
 Bare floats drive every ranking, so they must be accountable:
 
-- **Grade card**: every score chip clicks through to verdict fields, rationale with
-  scrub-verified quote (the span simultaneously highlighted in the message above), rubric version
+- **Grade card**: every score chip clicks through to verdict fields, rationale with its quote
+  (the span simultaneously highlighted in the message above), rubric version
   + one-line diff vs. prior, trust word, and an agree/correct form **generated from the rubric's
   output schema** (pre-filled — correct-the-judge, not grade-cold). A correction outranks the
   float everywhere and becomes a validation label.
@@ -629,7 +631,8 @@ strategy+seed, sorts regressions first, and drills into the compare sheet.
 The deliverable of a session is a finding, not a tree. Every node, path, comparison, and digest
 row has a **"Cite this"** action emitting a frozen bundle:
 
-> claim + scrub-verified evidence spans + the distribution (n, rate, CI, median turn) +
+> claim + evidence spans resolved against the frozen transcripts + the distribution (n, rate,
+> CI, median turn) +
 > matched-seed ablation table + graders-at-freeze (version, model, calibration agree-rate) +
 > sampling params + full provenance chain (node-path ids, raw provider request/response refs into
 > the scout transcripts).
@@ -637,8 +640,8 @@ row has a **"Cite this"** action emitting a frozen bundle:
 Bundles are immutable; a later rubric bump marks them `stale — re-grade against v4 →`. They
 export as self-contained static HTML (the `inspect view bundle` pattern) for zero-infra sharing,
 and populate a findings library that seeds new sessions (§4.4). A **narrative sheet** holds prose
-with caption citations into the library; uncited sentences render italic "— unverified", and the
-styling survives export. Citing is hard-gated to humans (§5.5): a bundle is a signature.
+with caption citations into the library, and the chips survive export. Citing is hard-gated to
+humans (§5.5): a bundle is a signature.
 
 ---
 
@@ -671,7 +674,7 @@ new-session-from-trajectory, quarantine, random audit slots, catch-up briefing; 
 (clusters, matrix/map projections, batch diff); grade card, rubric sheet, finding bundles +
 static export; multi-viewer; deployment (sonde's CDK design).
 *Exit test: an overnight `autopilot` campaign ends at its stop condition with a briefing whose
-every claim passes the citation scrub, and produces a draft finding the human can sign (or
+every claim carries a resolving ref, and produces a draft finding the human can sign (or
 refuse) from the bundle alone.*
 
 **M4 — search (exploratory).** Tournament/evolve over fanouts: take top branches, mutate the
@@ -720,6 +723,5 @@ a code-style rule). Typed pydantic models end-to-end; frontend types generated, 
 hand-written. Prompts, questions, rubrics, graders, model lists: data files, not code.
 Trunk-based, squash-merge.
 
-CI invariants worth their own jobs: counts-first rate formatting, citation scrub on all
-model-written prose, trust-word rendering, and token-budget goldens for digest rows and read
-windows (§5.2).
+CI invariants worth their own jobs: counts-first rate formatting, ref resolution on quote-chips,
+trust-word rendering, and token-budget goldens for digest rows and read windows (§5.2).

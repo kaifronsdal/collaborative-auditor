@@ -152,8 +152,7 @@ server-side enforcement.
 1. **Only `run_audits` reaches a target**; only the orchestrator can call `run_audits`;
    subagents get file tools only. That one sentence is the whole agentic-depth policy.
 2. **Model prose carries refs.** Summaries, selection reasons, analyses, reports: quotes with
-   refs, or the UI styles the claim unverified. Applies to what the orchestrator reads, not just
-   what the human reads.
+   refs — refs are how descent works, for the orchestrator's reading as much as the human's.
 3. **Selection shows what it considered.** `n_considered` + `input_file` in every selection;
    passed-over rows one click away.
 4. **The human's default view is not orchestrator-authored.** The standing pipeline (default

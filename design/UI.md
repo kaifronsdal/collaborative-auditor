@@ -47,12 +47,12 @@ rates are counts-first ("complied 31/50 (62%)"), CI inline at n≥30; no bare me
 **Trust is a word, not a color**: closed vocabulary `validated (14/16) / unvalidated /
 overridden / stale`, mono, wherever a number appears (DESIGN §6.2).
 
-**Every claim is a quote or it looks unverified.** The citation scrub (DESIGN §6.1) runs on all
-model-written prose before render. Bound claims are quote-chips that unfold an evidence inset in
-place — the evidence comes to the prose; unbound numbers render italic + "unverified", styled by
-the workbench, never the model. A percentage cannot render without its clickable distribution
-strip. The workbench (not the model) inserts random `✓ Spot-check` cells sampling archived and
-graded items.
+**Every claim carries its quote.** Model prose cites by span ref (DESIGN §6.1); bound claims are
+quote-chips that unfold an evidence inset in place — the evidence comes to the prose. Refs are
+navigation, not policing: the renderer verifies the quote against the cited block when it builds
+a chip (a ref that doesn't resolve renders as plain text), and that's the whole enforcement
+story. A percentage cannot render without its clickable distribution strip. The workbench (not
+the model) inserts random `✓ Spot-check` cells sampling archived and graded items.
 
 **Charts are view specs, not images.** A plot cell renders a server-executed spec over derived
 files (TOOLS §2 `plot`); the model that requested it never touched the plotted values. Every mark
@@ -80,7 +80,7 @@ list re-sorts under an interacting cursor.
 
 ---
 
-## 2. The desk (manual → supervised)
+## 2. The desk (manual → supervised) (mockups-v4/00)
 
 The specimen — the target's context window — is the column. Messages carry hover/caption actions
 (`edit · resample · candidates · raw · cite` plus the anchored workflows of DESIGN §4.2); branch
@@ -133,7 +133,7 @@ sheet (two branches side by side, divergence point pinned, shared prefix collaps
 
 ## 5. The grade card (mockups-v4/03)
 
-Click any score chip → in-place `⎿` card: verdict fields, rationale with its scrub-verified quote
+Click any score chip → in-place `⎿` card: verdict fields, rationale with its quote
 (the span simultaneously highlighted in the message above), rubric version + one-line diff vs.
 prior, trust word, and an agree/correct form generated from the rubric's output schema —
 pre-filled, correct-the-judge. A correction outranks the float everywhere and becomes a
@@ -168,13 +168,13 @@ sheet — it is the summarize default lens grown one level.
 
 ## 7. The finding bundle (mockups-v4/04)
 
-The chain of custody rendered: claim → scrub-verified evidence spans → distribution strip (n,
+The chain of custody rendered: claim → evidence spans resolved against the frozen transcripts →
+distribution strip (n,
 rate, CI, median turn) → matched-seed ablation table → graders-at-freeze (version, model,
 calibration agree-rate) → provenance chain. Immutable; a rubric bump renders
 `stale — re-grade against v4 →`. Exports as self-contained static HTML. The findings library
 lives in the sidebar and seeds new sessions (DESIGN §4.4). The narrative sheet holds prose with
-caption citations into the library; uncited sentences render italic "— unverified", and the
-styling survives export.
+caption citations into the library, and the chips survive export.
 
 ---
 
@@ -187,4 +187,4 @@ assembly (its cells reuse M2 components), embedding pipeline (scatter last), bat
 the catch-up briefing). Implementation-phase obligations not capturable in static mockups: sort
 pinning while rows update live, clickable sparkline bars → transcript at turn N, slot/anchor
 alignment for unequal-length branches in compare, tooltips throughout. CI invariants: counts-first
-rate format, citation scrub on all prose, trust-word rendering, token-budget goldens (DESIGN §9).
+rate format, ref resolution on quote-chips, trust-word rendering, token-budget goldens (DESIGN §9).
