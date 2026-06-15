@@ -1,13 +1,14 @@
-"""Spike 1 — petri loop outside any inspect task, step-gated, τ₂ recording.
+"""Spike 1 — petri loop outside any inspect task, step-gated, audit-tape recording.
 
 Exit criteria (design/ARCHITECTURE.md §d.1, amended for resampling.md):
   - a 6-turn audit completes with no `inspect eval` anywhere
   - pause/resume at turn boundaries works (the driver releases turns one at a time)
-  - τ₂.log JSON-roundtrips (Tape.dump → json → Tape.load → identical steps)
+  - audit_tape.log JSON-roundtrips via `SerializedStep` (petri's persistence shape)
 
 Disabled for the spike: compaction, realism_filter, eager_resume, skills.
-Level-1 (target rollback) uses petri's existing History/Trajectory unchanged;
-the τ₂↔level-1 wrap composition is spike 3/4.
+The level-2 ↔ level-1 composition is now petri's own (`_run_target` takes
+`audit_tape` and `TargetContext` does `compose(node.tape, audit_tape)`), so
+the tape records auditor generates, target generates, and channel marks.
 
 Run:  uv run python -m workbench.spike1
 """
@@ -33,38 +34,20 @@ from inspect_ai.model import (
 
 # private — TODO upstream re-export (ARCHITECTURE.md §a′)
 from inspect_ai.model._model import init_active_model, init_model_roles
-from inspect_petri._auditor.auditor import _run_target  # vendored verbatim
+from inspect_petri._auditor import SerializedStep, init_audit_tape
+from inspect_petri._auditor.auditor import _run_target
 from inspect_petri._auditor.tools import auditor_tools
-from inspect_petri.target._agent import target_agent
-from inspect_petri.target._channel import Channel
-from inspect_petri.target._controller import Controller, controller, init_controller
-from inspect_petri.target._history import History
+from inspect_petri.target import (
+    Channel,
+    Controller,
+    History,
+    ReplayingModel,
+    Tape,
+    controller,
+    init_controller,
+    target_agent,
+)
 from shortuuid import uuid
-
-from .tape import Step, Tape
-
-
-# --- ReplayingModel: thin proxy wrapping .generate via τ₂ ------------------------
-
-class ReplayingModel:
-    """Proxies a `Model` with `.generate` recorded/replayed through a Tape.
-
-    Spike-1: only `.generate` and `.name` are needed (compaction is off, so
-    no `.count_tokens`/`.api`). Hazard-8 in RESAMPLING-REVIEW.md tracks the
-    full proxy.
-    """
-
-    def __init__(self, model: Model, tape: Tape, role: str) -> None:
-        self._model = model
-        self._tape = tape
-        self.name = model.name
-        # role-qualified source per RESAMPLING-REVIEW hazard 3
-        tape.role = role
-        self.generate = tape.replayable(model.generate)
-
-    def __getattr__(self, name: str) -> object:
-        return getattr(self._model, name)
-
 
 # --- our pausable auditor turn loop ---------------------------------------------
 
@@ -80,7 +63,7 @@ Seed: {seed}"""
 async def run_auditor_loop(
     *,
     state: AgentState,
-    agent_model: ReplayingModel,
+    agent_model: Model,
     max_turns: int,
     seed: str,
     target_name: str,
@@ -155,9 +138,12 @@ async def main(max_turns: int = 6) -> None:
     init_controller(Controller(ch))
     history = History()
 
-    # τ₂ — the level-2 tape (resampling.md)
-    tau2 = Tape(role="auditor")
-    agent_model = ReplayingModel(auditor_model, tau2, role="auditor")
+    # the audit-level tape (resampling.md). `init_audit_tape` sets the
+    # contextvar `recording()` reads; the spike uses ReplayingModel directly
+    # so the auditor wrap is explicit.
+    audit_tape = Tape()
+    init_audit_tape(audit_tape)
+    agent_model = ReplayingModel(auditor_model, audit_tape, source_prefix="auditor")
 
     # state + step gate
     auditor_state = AgentState(messages=[])
@@ -169,7 +155,7 @@ async def main(max_turns: int = 6) -> None:
         n_target = len(ch.state.messages or [])
         print(
             f"[turn {turn}] auditor msgs={len(state.messages)} "
-            f"target msgs={n_target} τ₂.log={len(tau2.log)} ended={ended}"
+            f"target msgs={n_target} audit_tape.log={len(audit_tape.log)} ended={ended}"
         )
         turn_log.append({"turn": turn, "auditor_msgs": len(state.messages), "target_msgs": n_target})
 
@@ -188,7 +174,7 @@ async def main(max_turns: int = 6) -> None:
             await anyio.sleep(0.1)
 
     async with anyio.create_task_group() as tg:
-        tg.start_soon(_run_target, target_agent(), ch, None, history, target_span)
+        tg.start_soon(_run_target, target_agent(), ch, None, history, audit_tape, target_span)
         tg.start_soon(
             functools.partial(
                 run_auditor_loop,
@@ -204,21 +190,30 @@ async def main(max_turns: int = 6) -> None:
         tg.start_soon(drive)
 
     # --- exit criteria checks --------------------------------------------------
-    print(f"\n✓ audit completed: {len(turn_log)} turns, τ₂.log has {len(tau2.log)} steps")
+    print(f"\n✓ audit completed: {len(turn_log)} turns, audit_tape.log has {len(audit_tape.log)} steps")
 
-    # τ₂.log JSON-roundtrip
-    dumped = tau2.dump()
-    (OUT / "tau2.json").write_text(json.dumps(dumped, indent=2))
-    reloaded = Tape.load(json.loads((OUT / "tau2.json").read_text()), role="auditor")
-    assert len(reloaded.pending) == len(tau2.log), "roundtrip lost steps"
-    for orig, back in zip(tau2.log, reloaded.pending, strict=True):
+    # audit_tape.log JSON-roundtrip via petri's SerializedStep
+    dumped = [SerializedStep.from_step(s).model_dump() for s in audit_tape.log]
+    (OUT / "audit_tape.json").write_text(json.dumps(dumped, indent=2))
+    reloaded = [
+        SerializedStep.model_validate(d).to_step()
+        for d in json.loads((OUT / "audit_tape.json").read_text())
+    ]
+    assert len(reloaded) == len(audit_tape.log), "roundtrip lost steps"
+    for orig, back in zip(audit_tape.log, reloaded, strict=True):
         assert orig.source == back.source and orig.sync == back.sync
         assert orig.message_id == back.message_id
         if isinstance(orig.value, ModelOutput):
             assert isinstance(back.value, ModelOutput)
             assert orig.value.message.id == back.value.message.id
             assert orig.value.message.content == back.value.message.content
-    print(f"✓ τ₂.log JSON-roundtrips ({len(dumped)} steps, {OUT / 'tau2.json'})")
+        else:
+            assert orig.value == back.value
+    n_served = sum(1 for s in reloaded if s.value is not None)
+    print(
+        f"✓ audit_tape.log JSON-roundtrips ({len(dumped)} steps, "
+        f"{n_served} value-bearing, {OUT / 'audit_tape.json'})"
+    )
 
     # dump auditor + target message lists for inspection
     (OUT / "auditor_messages.json").write_text(
