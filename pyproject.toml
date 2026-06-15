@@ -5,13 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "anthropic>=0.83.0",
+    "aisitools",
+    "anthropic>=0.109.1",
     "fastapi>=0.132.0",
     "inspect-ai>=0.3.180",
+    "inspect-petri",
     "jsonpatch>=1.33",
     "openai>=2.24.0",
     "pydantic>=2.12.5",
     "python-dotenv>=1.2.1",
+    "shortuuid>=1.0.13",
     "uvicorn>=0.41.0",
     "websockets>=16.0",
 ]
@@ -22,3 +25,13 @@ collaborative-auditor = "collaborative_auditor.server:run_server"
 [build-system]
 requires = ["uv_build>=0.9.26,<0.10.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = ["collaborative_auditor", "workbench"]
+
+[tool.uv.sources]
+inspect-petri = { path = "../petri-meridian", editable = true }
+aisitools = { git = "ssh://git@github.com/AI-Safety-Institute/aisi-inspect-tools.git" }
+
+[tool.uv]
+exclude-newer-package = { aisitools = false, anthropic = false, openai = false }
