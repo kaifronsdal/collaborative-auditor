@@ -14,9 +14,10 @@ The core insight is **right and elegant**: resume-from-`.eval` and target-rollba
 record/replay idea at different nesting depths, and unifying them removes real duplication. The
 `nondet(c,k)` framing correctly captures *why* the channel can run live during a level-2 replay
 (the auditor restarts and re-supplies it). **But the design oversells its own generality and
-understates two concrete hazards in the code it builds on:** (1) the single-τ₂ safety argument
-is broken by `execute_tools`'s **concurrent** parallel-tool stages; (2) the realism approver
-calls a model **outside** `ReplayingModel`. The workbench's actual need (edit-and-resample) is
+has completeness gaps:** the realism approver calls a model outside `ReplayingModel`, and
+variable-call-count paths (compaction's `count_tokens` loop) can desync without the guard
+catching it. (An earlier draft of this review claimed `execute_tools` parallel stages were a
+blocker; that was a misread — `parallel` defaults to `False`, see C2.) The workbench's actual need (edit-and-resample) is
 **always truncate-at-edit**, which simplifies the mechanism. The n-level recursion is more
 machinery than petri (n=2) or the workbench (n=3) justifies. **Recommend:** keep the
 `nondet`/`sync` formalism and the `Tape` primitive; drop the recursive `wrap` for explicit
@@ -33,19 +34,16 @@ prefix first because target's pending₂ reads can't happen until after rendezvo
 (`nondet(·,2)=F`, never popped); `target.generate` is an L1 call, not τ₂. Documentation
 precision, not a mechanism bug, but it masks C2.
 
-**C2 — Concurrent parallel-tool execution desynchronizes channel ordering. BLOCKER.**
-`execute_tools` runs consecutive `parallel=True` tools concurrently
-(`inspect_ai/model/_call_tools.py:506-515`). Every petri auditor tool defaults `parallel=True`
-(`tool/_tool.py:228,241`). So `[send_tool_call_result(a), send_tool_call_result(b), resume]` —
-the *normal* turn shape eager_resume produces — runs all three concurrently, hitting the channel
-in scheduler-dependent order. Auditor-side results splice back in declared order so the auditor's
-messages are stable, but **the target's `wait_for_resume` dispatch sees Stage/Resume in a
-different order**, producing different `_staged` state at the moment resume lands.
-`ReplayDesyncError` won't catch it: target's channel reads are `_mark`ed (`value=None`, only the
-`sync` tag is checked, identical for all). The doc's "rendezvous keeps the coroutines lock-step"
-is false for a multi-call parallel stage. *Mitigation is cheap* — mark petri's mutating tools
-`parallel=False`, or serialize channel ops behind a per-channel lock — but the design's
-correctness depends on it and doesn't mention it.
+**C2 — ~~Concurrent parallel-tool execution desynchronizes channel ordering.~~ WITHDRAWN.**
+The reviewer misread `tool/_tool.py:228` — `tool_parallel = parallel is True` evaluates to
+**`False`** when `parallel=None` (the `@tool` default). Parallel tool calling landed in inspect
+#4013 (2026-05-22) but is opt-in; every petri tool is bare `@tool`/`@tool(viewer=…)` with no
+`parallel=` arg, so all run sequentially in declared order. The doc's "rendezvous keeps
+lock-step" holds. (A per-channel lock wouldn't help against the hypothetical anyway — it would
+serialize the calls but not which coroutine reaches the lock first.) The only residual is
+documentation: petri's channel-mutating tools depend on `parallel=False` and nothing says so;
+worth a comment on `Channel.request` and/or an explicit `parallel=False` on the decorators as
+intent.
 
 **C3 — `nondet(c,k)` is not transitive through arguments; variable call counts desync.**
 `count_tokens` is wrapped `nondet=T`, served from `pending₂`. Compaction calls it a *variable*
@@ -162,10 +160,10 @@ every step"; enumerate wrapped primitives; CI fails on a new unwrapped one.**
 
 ## Implementation hazards (ranked)
 
-1. **Parallel-tool concurrency (C2/M3)** — blocker; silent corruption. Fix: `parallel=False` on
-   mutating tools, or per-channel lock.
-2. **Realism model bypass (M1)** — blocker for `realism_filter=True`. Fix: thread `model=`
-   through `realism_approver`/`_check_realism`/`generate_answer`.
+1. ~~Parallel-tool concurrency~~ — withdrawn (see C2). `parallel` defaults to `False`; petri's
+   tools run sequentially. Residual: a comment on `Channel.request` documenting the dependency.
+2. **Realism model bypass (M1)** — blocker for `realism_filter=True`. Fix: wrap `_check_realism`
+   as one τ₂ step (record the `Approval`), or run resumable audits with `realism_filter=False`.
 3. **`ReplayDesyncError` source non-uniqueness** — auditor-generate vs realism-generate are both
    `"Model.generate"`, `sync=None`, on τ₂. Guard gives false confidence. Fix: `source = (role,
    qualname)`.
@@ -188,8 +186,10 @@ every step"; enumerate wrapped primitives; CI fails on a new unwrapped one.**
 1. **Drop recursive `wrap`/`replayₖ`; keep the formalism, write explicit 2/3-level wiring.** The
    recursion is the doc's intellectual centerpiece and its biggest liability — composed-closure
    stack traces for an `n` no one needs. The reasoning survives intact.
-2. **Fix concurrency (C2) + strengthen the desync guard (role-qualified source, Temporal-style
-   per-step assert, CI enumerate-wrapped-primitives).** Determinism that isn't tested rots.
+2. **Strengthen the desync guard (role-qualified source, Temporal-style per-step assert, CI
+   enumerate-wrapped-primitives).** Determinism that isn't tested rots. Adopt the
+   wrap-the-decision pattern — `_check_realism`, compaction's compact-or-not become single τ₂
+   steps — so variable internal call counts (C3/M1/M7) can't desync.
 3. **Rewrite around truncate-at-edit; unify `Step` with `Effect`.** The honest mechanism is
    `log[:edit_idx]` + boundary override + live; arbitrary mid-tape substitution is a phantom
    requirement. One durable serializable type unblocks the workbench's edit-turn-k with the least
