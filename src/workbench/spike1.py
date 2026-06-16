@@ -31,7 +31,10 @@ from inspect_ai.model import (
     get_model,
 )
 
+from inspect_ai.util import span
+
 # private — TODO upstream re-export (ARCHITECTURE.md §a′)
+from inspect_ai.log._transcript import Transcript, init_transcript
 from inspect_ai.model._model import init_active_model, init_model_roles
 from inspect_petri._auditor import init_audit_tape
 from inspect_petri._auditor.auditor import _run_target
@@ -68,9 +71,32 @@ async def run_auditor_loop(
     target_name: str,
     permits: anyio.Semaphore,
     on_turn: Callable[..., None],
+    span_id: str,
 ) -> None:
     """The pausable turn loop — petri's `auditor_agent.execute` body, minus
-    compaction/realism/eager_resume, plus a per-turn semaphore acquire."""
+    compaction/realism/eager_resume, plus a per-turn semaphore acquire.
+
+    Runs inside ``span(name="auditor")`` so every event emitted here carries
+    a `span_id` distinguishable from the target's — the workbench routes the
+    transcript stream by span ancestry (STREAMING.md §B).
+    """
+    async with span(name="auditor", id=span_id):
+        await _auditor_loop_body(
+            state=state, generate=generate, max_turns=max_turns, seed=seed,
+            target_name=target_name, permits=permits, on_turn=on_turn,
+        )
+
+
+async def _auditor_loop_body(
+    *,
+    state: AgentState,
+    generate: Callable[..., Awaitable[ModelOutput]],
+    max_turns: int,
+    seed: str,
+    target_name: str,
+    permits: anyio.Semaphore,
+    on_turn: Callable[..., None],
+) -> None:
     tools = auditor_tools(rollback=True, target_tools="synthetic")
 
     state.messages[:] = [
@@ -126,6 +152,13 @@ OUT = Path("spike1_out")
 async def main(max_turns: int = 6) -> None:
     OUT.mkdir(exist_ok=True)
 
+    # transcript — explicit, set BEFORE any task group so the auditor and
+    # target sibling tasks share it (STREAMING.md §B / red-team F2: on
+    # current inspect main the lazy `transcript()` default would otherwise
+    # give each `tg.start_soon` task its own Transcript).
+    session_transcript = Transcript()
+    init_transcript(session_transcript)
+
     # models — outside any inspect task
     auditor_model = get_model("anthropic/claude-sonnet-4-6")
     target_model = get_model("anthropic/claude-haiku-4-5-20251001")
@@ -160,6 +193,7 @@ async def main(max_turns: int = 6) -> None:
         )
         turn_log.append({"turn": turn, "auditor_msgs": len(state.messages), "target_msgs": n_target})
 
+    auditor_span = uuid()
     target_span = uuid()
 
     async def drive() -> None:
@@ -186,6 +220,7 @@ async def main(max_turns: int = 6) -> None:
                 target_name=target_model.name,
                 permits=permits,
                 on_turn=on_turn,
+                span_id=auditor_span,
             )
         )
         tg.start_soon(drive)
@@ -211,6 +246,51 @@ async def main(max_turns: int = 6) -> None:
     print(
         f"✓ audit_tape.log JSON-roundtrips ({len(dumped)} steps, "
         f"{n_served} value-bearing, {OUT / 'audit_tape.json'})"
+    )
+
+    # transcript shared across sibling tasks + span routing (STREAMING.md §B)
+    from inspect_ai.event import ModelEvent, SpanBeginEvent
+    from inspect_ai.log import transcript
+
+    assert transcript() is session_transcript, "init_transcript did not stick in parent ctx"
+    events = list(session_transcript.events)
+    assert events, "transcript is empty — sibling tasks did not share it (F2 regressed)"
+
+    span_parent: dict[str, str | None] = {}
+    span_name: dict[str, str] = {}
+    for ev in events:
+        if isinstance(ev, SpanBeginEvent):
+            span_parent[ev.id] = ev.parent_id
+            span_name[ev.id] = ev.name
+
+    def root_role(span_id: str | None) -> str | None:
+        s = span_id
+        while s is not None and s not in (auditor_span, target_span):
+            s = span_parent.get(s)
+        if s == auditor_span:
+            return "auditor"
+        if s == target_span:
+            return "target"
+        return None
+
+    model_events = [e for e in events if isinstance(e, ModelEvent)]
+    by_role: dict[str, int] = {"auditor": 0, "target": 0}
+    for me in model_events:
+        r = root_role(me.span_id)
+        assert r is not None, (
+            f"ModelEvent {me.uuid} span_id={me.span_id!r} "
+            f"(name={span_name.get(me.span_id or '')!r}) does not resolve to auditor or target span"
+        )
+        by_role[r] += 1
+    assert by_role["auditor"] > 0, "no auditor ModelEvents reached the shared transcript"
+    assert by_role["target"] > 0, "no target ModelEvents reached the shared transcript"
+    assert auditor_span in span_name and span_name[auditor_span] == "auditor"
+    assert target_span in span_name and span_name[target_span] == "target"
+    traj_spans = [sid for sid, n in span_name.items() if n == "trajectory"]
+    print(
+        f"✓ transcript shared & span-routable: {len(events)} events, "
+        f"{len(model_events)} ModelEvents → auditor={by_role['auditor']} "
+        f"target={by_role['target']}; trajectory spans={len(traj_spans)}"
     )
 
     # dump auditor + target message lists for inspection
