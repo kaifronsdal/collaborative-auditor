@@ -26,9 +26,10 @@ doesn't stream at all) and collapse to a final message — no per-token hook. `M
 carries the complete output; the only seam is whole-call `on_pending`/`on_complete`. The
 Textual viewer skips pending events entirely (`transcript.py:293-294`).
 
-**To stream the target, bypass `Model.generate`** — which DESIGN §3.5 already plans (sonde
-provider layer for the target). Auditor streaming is blocked on the §3.5 unification; inspect
-can't stream it today.
+**The plumbing exists; the wire-up doesn't.** Providers already hold the pending `ModelEvent`
+(via `_active_model_event`) and `_event_updated` already notifies the live-view buffer — the PR
+is connecting "SDK chunk arrived" → "mutate `event.output` → `_event_updated`" inside loops the
+providers already have. Both auditor and target stream through the same path once that lands.
 
 ## What sonde provides — the API we adopt
 
@@ -40,9 +41,8 @@ Transport is SSE + a server-side `apply_to_node` accumulator (`base.py:77-114`) 
 into the persisted Node; partials persist on disconnect; a property test asserts the
 accumulator equals the SDK's own `get_final_message()`.
 
-**We adopt the provider stream + SurfaceEvent shape, not the SSE transport** — DESIGN §3.6
-already replaces SSE-per-generation with WS+JSON-Patch ViewState (SSE can't represent multiple
-concurrent Runs).
+**Reference only.** Sonde's `SurfaceEvent` delta shape informed how to think about chunk
+kinds; the layer itself is not adopted (DESIGN §3.5 — one provider stack, inspect's).
 
 ## Approach — inspect PR: mutate the pending `ModelEvent` from inside the provider stream
 
@@ -102,7 +102,8 @@ diff). The final `ModelOutput` push reconciles. Needs one ViewState addition: an
 "active-generation" buffer field on the node (`status: streaming`, like sonde's
 `AssistantMessageItem.status`).
 
-**Target streaming first; auditor streaming deferred** to the §3.5 sonde-provider unification.
+**Both auditor and target stream via the same hook** — there's no longer a target-first /
+auditor-deferred split.
 
 ## Replay appears instantly — no fake-stream
 
@@ -120,8 +121,8 @@ so. (A client-side cosmetic reveal animation, if anyone wants one, is independen
   precedent; providers already produce the final `ModelOutput`.
 - **Workbench data layer:** subscribe → replace events array → render. **~0.5 d.**
 - **inspect-view shows streaming for free** (no workbench-side work for that).
-- ts-mono submodule + theme + `ComponentStateProvider` glue is M0 frontend work, not part of
-  the streaming PR.
+- The frontend (built from scratch over inspect's event types, §3.5a) consumes the
+  accumulating `event.output` by replacing the events array per update.
 
 ## Tests — deterministic, no sleeps
 

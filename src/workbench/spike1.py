@@ -3,7 +3,7 @@
 Exit criteria (design/ARCHITECTURE.md §d.1, amended for resampling.md):
   - a 6-turn audit completes with no `inspect eval` anywhere
   - pause/resume at turn boundaries works (the driver releases turns one at a time)
-  - audit_tape.log JSON-roundtrips via `SerializedStep` (petri's persistence shape)
+  - audit_tape.log JSON-roundtrips via `Step.dump()/load()` (petri's persistence shape)
 
 Disabled for the spike: compaction, realism_filter, eager_resume, skills.
 The level-2 ↔ level-1 composition is now petri's own (`_run_target` takes
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import functools
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 
 import anyio
@@ -26,7 +26,6 @@ from inspect_ai.model import (
     ChatMessageSystem,
     ChatMessageUser,
     GenerateConfig,
-    Model,
     ModelOutput,
     execute_tools,
     get_model,
@@ -34,14 +33,14 @@ from inspect_ai.model import (
 
 # private — TODO upstream re-export (ARCHITECTURE.md §a′)
 from inspect_ai.model._model import init_active_model, init_model_roles
-from inspect_petri._auditor import SerializedStep, init_audit_tape
+from inspect_petri._auditor import init_audit_tape
 from inspect_petri._auditor.auditor import _run_target
 from inspect_petri._auditor.tools import auditor_tools
 from inspect_petri.target import (
     Channel,
     Controller,
     History,
-    ReplayingModel,
+    Step,
     Tape,
     controller,
     init_controller,
@@ -63,7 +62,7 @@ Seed: {seed}"""
 async def run_auditor_loop(
     *,
     state: AgentState,
-    agent_model: Model,
+    generate: Callable[..., Awaitable[ModelOutput]],
     max_turns: int,
     seed: str,
     target_name: str,
@@ -86,7 +85,7 @@ async def run_auditor_loop(
     for turn in range(max_turns):
         await permits.acquire()  # ← the step gate
 
-        state.output = await agent_model.generate(input=state.messages, tools=tools)
+        state.output = await generate(input=state.messages, tools=tools)
         state.messages.append(state.output.message)
 
         if state.output.message.tool_calls:
@@ -139,11 +138,13 @@ async def main(max_turns: int = 6) -> None:
     history = History()
 
     # the audit-level tape (resampling.md). `init_audit_tape` sets the
-    # contextvar `recording()` reads; the spike uses ReplayingModel directly
-    # so the auditor wrap is explicit.
+    # contextvar so any auditor-side code can reach it; here we wrap
+    # generate explicitly (same pattern auditor_agent uses).
     audit_tape = Tape()
     init_audit_tape(audit_tape)
-    agent_model = ReplayingModel(auditor_model, audit_tape, source_prefix="auditor")
+    generate = audit_tape.replayable(
+        auditor_model.generate, source="auditor:Model.generate"
+    )
 
     # state + step gate
     auditor_state = AgentState(messages=[])
@@ -179,7 +180,7 @@ async def main(max_turns: int = 6) -> None:
             functools.partial(
                 run_auditor_loop,
                 state=auditor_state,
-                agent_model=agent_model,
+                generate=generate,
                 max_turns=max_turns,
                 seed=SEED,
                 target_name=target_model.name,
@@ -192,16 +193,13 @@ async def main(max_turns: int = 6) -> None:
     # --- exit criteria checks --------------------------------------------------
     print(f"\n✓ audit completed: {len(turn_log)} turns, audit_tape.log has {len(audit_tape.log)} steps")
 
-    # audit_tape.log JSON-roundtrip via petri's SerializedStep
-    dumped = [SerializedStep.from_step(s).model_dump() for s in audit_tape.log]
+    # audit_tape.log JSON-roundtrip via Step.dump()/load()
+    dumped = [s.dump() for s in audit_tape.log]
     (OUT / "audit_tape.json").write_text(json.dumps(dumped, indent=2))
-    reloaded = [
-        SerializedStep.model_validate(d).to_step()
-        for d in json.loads((OUT / "audit_tape.json").read_text())
-    ]
+    reloaded = [Step.load(d) for d in json.loads((OUT / "audit_tape.json").read_text())]
     assert len(reloaded) == len(audit_tape.log), "roundtrip lost steps"
     for orig, back in zip(audit_tape.log, reloaded, strict=True):
-        assert orig.source == back.source and orig.sync == back.sync
+        assert orig.source == back.source and orig.boundary == back.boundary
         assert orig.message_id == back.message_id
         if isinstance(orig.value, ModelOutput):
             assert isinstance(back.value, ModelOutput)
