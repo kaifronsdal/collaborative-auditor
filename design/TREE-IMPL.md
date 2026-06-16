@@ -1,5 +1,11 @@
 # Tree mechanics: what exists, what's hard, what petri 3.0 carries
 
+> **Status: superseded by petri PR #110 + [resampling.md](resampling.md).** This was the
+> early recon; the answer it was reaching for landed as `Tape`/`Step`/`Node` in
+> `petri-meridian/src/inspect_petri/target/_history.py` @ `4f4aa50`. §1 (collaborative-auditor
+> as-built) and §2 (the invariant) remain accurate and useful background. §3 describes
+> pre-PR-#110 petri; §4 is collapsed to a pointer.
+
 *Implementation recon for the hardest part of the build: auditor rollbacks nesting target
 rollbacks, plus the resampling/editing machinery — a better version of what collaborative-auditor
 already does. Companion to [DESIGN.md](DESIGN.md) §3 and §7 (M0). File refs checked 2026-06-13.*
@@ -50,7 +56,10 @@ replay of the *edited* path — while sibling branches keep theirs. Collaborativ
 this implicitly via dual patch streams + deep copies; the successor should enforce it
 structurally: **the target state is derived, never independently mutated.**
 
-## 3. What petri 3.0 (petri-meridian 3.0.11) provides
+## 3. What petri provided pre-PR-#110 (petri-meridian 3.0.11)
+
+*Historical — `Trajectory`/`_Step` below became `Node`/`Tape`/`Step` (public, serializable)
+in PR #110. See [resampling.md](resampling.md) §Implementation for what's there now.*
 
 - **`Trajectory` + `replayable()`** (`src/inspect_petri/target/_history.py:43-187`) — recorded
   conversation spans forming a tree; a child trajectory replays ancestor steps to the branch
@@ -76,27 +85,11 @@ branching/editing — the whole desk — is ours to build.
 
 ## 4. Build assessment
 
-Plausible and worth it. The shape (amended by [ARCHITECTURE.md](ARCHITECTURE.md), which
-supersedes the original §4.1 below):
-
-1. ~~The auditor tree becomes a petri `Trajectory` tree.~~ **No** — Trajectory steps are
-   by-reference, unserializable, and substitution-incapable (`_types.py:81`). Petri's replay is
-   the *target-side live engine* only; the auditor tree is store `Node`s with a durable `Effect`
-   log per turn, from which a Trajectory replay queue can be rebuilt cold (the `from_steps`
-   adapter — the one genuinely new mechanism).
-2. **Target state derived through `Controller`.** Auditor tools stage via the controller; a
-   replayed auditor turn re-issues the same stage commands, so the §2 invariant holds by
-   construction instead of by handler discipline. Rollback anchors come free.
-3. **The `Run` (DESIGN §3.2) binds the pair.** One abstraction owning (auditor trajectory,
-   target trajectory), enforcing the invariant, exposing pen/pause-at-turn-boundary. Pin = a
-   lease on one (auditor, target) pair; this is new code, on petri rails.
-4. **Reuse, don't rebuild:** anchor/short-id assignment, replay queue management, rollback
-   atomicity, timeline rendering substrate.
-
-Still from scratch: the Run/pen/lease layer, turn-level grouping of multi-tool auditor turns
-under replay, the consistency validator, and the view-state projection (branch points, `‹ 1/2 ›`
-indicators, candidates picker) over dual trajectories rather than one timeline.
-
-**M0 consequence:** the riskiest slice to spike first is a `Run` wrapping petri trajectories
-with one edit-with-replay round trip — auditor edit at turn k → target state provably equal to
-the replayed path — rendered as a two-branch tree in any UI at all.
+**This became `Tape`/`Step`/`Node` — see [resampling.md](resampling.md) and DESIGN.md §3.1.**
+PR #110 made petri's own steps public, frozen, and serializable (`Step.dump()/load()`), so the
+"durable `Effect` log + cold-replay adapter" this section anticipated collapsed into petri's
+one record/replay mechanism: `Tape(pending=seed)` is the cold-replay path, `Tape.replayable` /
+`Tape.compose` are the public API, `Node` is `Tape` + tree pointers, and the §2 invariant is
+the tape's correctness property (proven by the PR's e2e record→resample test). What remains
+workbench-side: the `Run`/pen/lease layer (DESIGN §3.2/§3.3) and the view-state projection
+(branch points, `‹ 1/2 ›` indicators, candidates picker) over the two `Node` trees.

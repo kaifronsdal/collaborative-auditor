@@ -11,7 +11,7 @@ AISI researchers probing frontier models.*
 
 Two primitives, one actor pattern applied twice. Read this before anything else.
 
-- **The tree** (from sonde): target-context nodes, faithful provider layer, branching, tool-result
+- **The tree** (from sonde): target-context nodes, branching, tool-result
   resolvers, graders. The substrate everything writes into. Tree + human holding the pen = the
   fully-manual level (sonde today).
 - **The Run** (from collaborative-auditor): a long-lived agent process holding a *pen* —
@@ -85,26 +85,24 @@ frontend; Python↔TypeScript types duplicated by hand; 1000-line god components
 sessions with no provenance story; a single hardcoded auditor prompt; `inspect_ai` model types
 threaded throughout; no tests of substance.
 
-### 1.2 sonde — the tree and the provider layer
+### 1.2 sonde — the tree and the specimen lens
 
-A branching red-team **chat workbench**: the human talks to the target directly. Its core asset
-is a *faithful provider layer* (Anthropic / OpenAI Responses / OpenAI Chat / Google) with
-bijection-tested lossless round-trips — thinking signatures, content filters, prefill, inline
-system messages all survive untouched ("if the provider rejects inline system, the user sees the
-400"). Conversations are parent-pointer trees where every edit/regen creates a sibling and edits
-carry the suffix. Every model call is checkpointed to a scout `TranscriptsDB` (parquet) for
-provenance. Questions, rubrics, and graders are *data* (fsspec JSONL + scout `@scanner`s), not
-code. Tool calls round-trip fully, with pluggable result resolvers (manual / LLM-simulated /
-resource / local-exec) and git-backed per-conversation workspaces. ~300 tests incl. Playwright.
+A branching red-team **chat workbench**: the human talks to the target directly. Conversations
+are parent-pointer trees where every edit/regen creates a sibling and edits carry the suffix.
+Every model call is checkpointed to a scout `TranscriptsDB` for provenance. Questions, rubrics,
+and graders are *data* (fsspec JSONL + scout `@scanner`s), not code. Tool calls round-trip
+fully, with pluggable result resolvers (manual / LLM-simulated / resource / local-exec) and
+git-backed per-conversation workspaces. ~300 tests incl. Playwright.
 
-**Kept:** nearly everything in the backend — provider protocol + bijection tests, the tree model,
-scout checkpointing, data-driven questions/rubrics/graders, resolver strategies, the registry,
-`n>1` parallel generation, live-run intervention (`@approver`), and the "specimen lens"
-philosophy: the target's context window is the object on the table; you rearrange it at will.
+**Kept:** the tree model and store discipline (fsspec atomic write), data-driven
+questions/rubrics/graders, resolver strategies, `n>1` parallel generation, live-run
+intervention, and the **"specimen lens" philosophy**: the target's context window is the object
+on the table; you rearrange it at will. Sonde's `SurfaceEvent` delta shape informed inspect's
+streaming PR (§3.5).
 
-**Discarded:** the no-build vanilla-JS frontend (already at its complexity ceiling — the
-tool-call/workspace/live-run panels strain it) and SSE-per-generation sync, which cannot survive
-multiple concurrent Runs mutating one conversation (§3.6).
+**Not adopted:** sonde's own provider layer (inspect's is used end-to-end — its conversions are
+faithful enough, and one stack keeps auditor and target on the same path); the no-build
+vanilla-JS frontend; SSE-per-generation sync (cannot survive multiple concurrent Runs, §3.6).
 
 ### 1.3 The synthesis in one sentence
 
@@ -176,58 +174,55 @@ change, not a data change.
 
 ## 3. Architecture
 
-### 3.1 Data model — two trees, bound by effects
+### 3.1 Data model — two trees over one tape mechanism
 
 Sonde's parent-pointer tree is the substrate; collaborative-auditor's contribution is *who else*
-writes into it; petri's contribution is the replay machinery that keeps the two consistent. One
-`Node` type, used for **two trees per audit** — the target tree (the specimen) and the auditor
-tree (the Run's own thread, which *also* branches under edit/resample) — cross-linked by an
-ordered effect log:
+writes into it; **petri's `Tape`/`Node` is the record/replay mechanism** that keeps everything
+consistent (landed in petri PR #110; see [resampling.md](resampling.md) for the formalism). The
+workbench holds **two trees per audit** — the target tree (the specimen) and the auditor tree
+(the Run's own thread, which *also* branches under edit/resample) — both built from petri's
+`Node`, with a workbench-side wrapper carrying actor/grades/meta:
 
 ```python
-class Node(BaseModel):
-    id: str                         # == ChatMessage.id → petri anchor for free
+@dataclass(frozen=True)
+class Step:                         # petri's — the one durable, serializable record type
+    value: Any | None               # ModelOutput | scalar | None at the persisted (audit) level
+    source: str; boundary: Literal["in","out"] | None; message_id: str | None
+    def dump(self) -> dict: ...     # serialization lives on Step itself
+
+class Tape:                         # petri's — one level's log + pending replay queue
+    log: list[Step]; pending: deque[Step]
+    def replayable(self, fn, *, boundary=None, source=None) -> wrapped_fn
+    def compose(self, *outer: Tape) -> Replayable
+
+class Node:                         # petri's — Tape + tree pointers per branch
+    tape: Tape; parent: Node | None; children: list[Node]
+    prefix_len: int; branched_from: str | None; span_id: str
+
+class WBNode(BaseModel):            # workbench's per-message wrapper (one per ChatMessage)
+    id: str                         # == ChatMessage.id → anchor for free
     parent_id: str | None
     message: ChatMessage            # inspect_ai's ChatMessage IS the payload (typed content blocks)
     actor: ActorRef                 # human:<user> | run:<id> | resolver:<kind>
-    meta: NodeMeta                  # usage, request, grades, M-short-id, flags…
-
-class Effect(BaseModel):            # one target-mutating auditor command — a durable, replayable step
-    kind: Literal["set_system","send_message","tool_result","prefill",
-                  "add_tool","remove_tool","rollback","resume","end"]
-    payload: dict                   # serialized Command (Stage value, anchor, ToolInfo…)
-    produced: list[str]             # target node ids created (resume → assistant node)
-    recorded_output: ModelOutput | None   # for resume: the generation, replayable from store
-
-class AuditorTurn(BaseModel):       # meta on each auditor assistant Node
-    effects: list[Effect]           # ordered; the fold of these along the path IS the invariant
-    target_leaf: str | None         # derived cache: fold(effects on root→here path)
-
-class Conversation(BaseModel):
-    id: str
-    target: dict[str, Node]         # the specimen tree
-    auditor: dict[str, Node]        # the Run's thread tree — same Node type
-    runs: dict[str, Run]
-    events: list[Event]             # append-only wall-clock log (provenance)
+    meta: NodeMeta                  # grades, M-short-id, flags…
 ```
 
 Key decisions:
 
-- **The linkage is an effect log, not node references.** Auditor actions don't map 1:1 to target
-  nodes — `rollback` produces none and moves the cursor; `prefill`/`add_tool` produce none but
-  change the next generation; one `resume` produces a target node *and* a formatted string inside
-  an auditor tool-result. The ordered effect list per turn is the precise statement of "what this
-  turn did to the target," and **the invariant** (`target leaf at any auditor node = fold(effects
-  along auditor path)`) is checkable data, asserted on every fork (ARCHITECTURE.md).
-- **Petri's `Trajectory` is the live replay engine, not the store.** Its recorded steps hold
-  values by reference and are never serialized; the durable effect log is what survives restart
-  and what human target-edits substitute against.
-- **`ChatMessage` is the canonical node payload.** Petri anchors are `ChatMessage.id`s, the
-  channel speaks them, `.eval` import becomes copy-not-convert. Typed content blocks (no
-  XML-in-strings); frontend types generated from the schemas (`openapi.json` →
-  `openapi-typescript`).
-- **Sonde's verbatim principle holds**: the event log records what happened; the trees record
-  what each completion was conditioned on.
+- **The linkage is the tape, not a bespoke effect log.** What an auditor turn did to the target
+  is exactly the `Step`s the audit-level tape recorded for it; the invariant (`target state at
+  any auditor node = replay of the audit-tape prefix to here`) is the tape's correctness
+  property, checked by petri's tests. There is no separate `Effect` type — `Step` is the one
+  durable record, with `dump()/load()` handling `ModelOutput` directly.
+- **Edit = truncate the tape and go live.** A human edit at turn k seeds a fresh branch with
+  `tape.log[:k]` (or with the boundary value substituted); replay rebuilds both trees to that
+  point with zero model calls, then continues. There is no separate "cold replay adapter" —
+  `Tape(pending=seed)` IS the cold-replay path.
+- **`ChatMessage` is the canonical message payload.** Petri anchors are `ChatMessage.id`s, the
+  channel speaks them, `.eval` import is copy-not-convert. Typed content blocks (no
+  XML-in-strings); frontend types generated from inspect's schemas.
+- **The verbatim principle holds**: `tape.log` records what happened; the trees record what
+  each completion was conditioned on.
 
 ### 3.2 Run — the unit of automation
 
@@ -303,17 +298,34 @@ list is a thin schema over these handlers; the UI's buttons call the same routes
   belongs to a leaf audit), no writes to the specimen tree, no writes to digests, no writes to
   its own oversight config (§5.3).
 
-### 3.5 Provider layer — inspect's, with a streaming PR
+### 3.5 Provider layer — inspect's
 
 One provider stack: inspect's `Model.generate`. Its provider conversions are faithful enough
 for the specimen, and using one stack keeps auditor and target on the same path (the dial is
-seamless because both go through `get_model(role=…)`). Streaming lands as an inspect upstream
-PR — `GenerateConfig.on_content: Callable[[ContentDelta], None] | None`, called per chunk from
-the SDK streams the providers already open ([STREAMING.md](STREAMING.md)). `tape.replayable`
-records the final `ModelOutput`; the callback is a UI side-channel inside the wrapped call.
-Sonde's `Provider.stream` / `SurfaceEvent` shape informed `ContentDelta` but is not adopted as
-a layer; sonde's registry/credential machinery is consumed where useful, not as a provider
-stack.
+seamless because both go through `get_model(role=…)`). Streaming rides inspect's existing
+event system — providers mutate the pending `ModelEvent.output` from inside the SDK stream
+loop and call `transcript()._event_updated()`, the same pattern `set_active_model_event_call`
+already uses; reaches inspect-view's live buffer for free
+([STREAMING.md](STREAMING.md)). `tape.replayable` records the final `ModelOutput` only; the
+event-update is a side-effect inside the wrapped call. Sonde's provider layer is not adopted.
+
+### 3.5a Frontend — built over inspect's event types; ts-mono as reference
+
+The workbench is its own React app built from scratch over inspect's event/message types
+(`ModelEvent`/`ToolEvent`/`ChatMessage`/`Content*`/`ModelOutput` — which we already consume via
+petri). `@tsmono/inspect-components` is **a reference, not a dependency**: its content-block
+renderers are the only reuse candidate, and once we're composing our own message row (no action
+slot in theirs), pulling in submodule + Bootstrap + heavy peers to get markdown/code rendering
+costs more than a ~1-2 day content switch (`react-markdown` + `prism-react-renderer` over
+`ContentText`/`ContentReasoning`/`ContentImage`/`ToolCall`). The mockups' visual grammar
+(claude.ai serif, one column, accent-dot, counts-first) is a different design language than
+inspect-view's Bootstrap; re-theming someone else's component library to it would eat the
+savings. ts-mono is consulted for edge-case handling (truncated tool output, reasoning toggles,
+attachment resolution).
+
+The data layer holds inspect events as immutable arrays replaced per update (the streaming PR
+delivers accumulating `ModelEvent.output`; the workbench's transcript subscriber replaces the
+events array, React diffs).
 
 ### 3.6 Sync protocol
 
@@ -327,8 +339,8 @@ server-computed and rendered from one model, never derived per-view.
 
 The session directory is the source of truth (TOOLS.md §1), with three layers per run:
 
-- `runs/<run>/tree.json` — both trees + effects, written per mutation under a per-conversation
-  lock (sonde `store.py` fsspec atomic write). The live truth.
+- `runs/<run>/tree.json` — both trees + the audit-tape `Step`s (`Step.dump()`), written per
+  mutation under a per-conversation lock (fsspec atomic write). The live truth.
 - `runs/<run>/events.jsonl` — append-only wall-clock provenance log.
 - `transcripts/<audit_id>.json` — a **path projection** of one root→leaf path through the trees,
   emitted at Run completion or human branch-promotion. Audit id is `<seed>#<replicate>` for the
@@ -358,25 +370,24 @@ Visual grammar and surfaces are specified in [UI.md](UI.md).
 
 ```
 src/workbench/
-  tree.py  store.py  events.py            # sonde, lightly renamed
-  providers/                              # sonde verbatim
+  tree.py  store.py                       # WBNode tree + fsspec atomic store (sonde-derived)
   runs/
     base.py          # Run lifecycle, play/pause/step, feedback queue, pen leases
-    auditor.py       # the level-1 agent loop: petri target/_* + our pausable turn loop
-    orchestrator.py  # the level-2 loop: same lifecycle, run-pen tool set (§5)
-    effects.py       # Effect log + the invariant fold + cold-replay adapter
-    eval_io.py       # .eval import/export (timelines ↔ trees)
+    auditor.py       # petri's audit loop with our step gate; audit_tape = inspect_petri.Tape
+    orchestrator.py  # level-3 loop: same lifecycle, run-pen tool set (§5)
+    eval_io.py       # .eval import/export via inspect_petri load_tape / AuditTape
+  stream.py          # transcript subscriber → ViewState targeted append-patch (§3.5/STREAMING.md)
   workers/           # bounded executors inside tool handlers (TOOLS.md §2):
-    materialize.py  analyze.py  grade_sweep.py  …   # no pens, capped budgets, scout-traced
+    materialize.py  analyze.py  grade_sweep.py  …   # no pens, capped budgets
   digest/            # summarizer pipeline, clustering, decisive-turn extraction (§6.3)
-  graders/  questions.py  resolvers.py  workspace.py  registry.py   # sonde
+  graders/  questions.py  resolvers.py  workspace.py
   server/
     app.py  ws.py  view_state.py
     handlers/        # ONE handler per operation; UI routes and agent tools both land here
     acl.py           # actor rings, gates (auto|propose|notify), pin leases
   prompts/           # named auditor/orchestrator prompt templates (data)
-frontend/            # React+TS+Vite, generated types
-tests/               # sonde's fixture/bijection/Playwright discipline + token-budget goldens
+frontend/            # React+TS+Vite over inspect's event types; generated types; ts-mono as reference
+tests/               # fixture + Playwright discipline + token-budget goldens
 ```
 
 ---
@@ -685,16 +696,20 @@ humans (§5.5): a bundle is a signature.
 
 ## 7. Plan
 
-**M0 — tree parity (≈1–2 wk).** Fork sonde's backend into the §3.9 layout; add `actor` to
-`Node`; swap SSE → WS+JSON-Patch view-state sync; scaffold the React frontend with generated
-types; port sonde's core UI (tree chat, edit-carries-suffix, params panel).
-*Exit test: sonde feature parity on the new stack, tests green.*
+**M0 — substrate (≈1–2 wk).** Land the inspect streaming PR (event-mutation, §3.5). On the
+workbench side: the §3.9 layout with petri (`tape-replay`) as a path dep; `WBNode` tree +
+fsspec store; WS+JSON-Patch view-state with the transcript subscriber feeding it; scaffold the
+React frontend with generated types over inspect's event types; the manual desk (mockup 00 —
+tree chat, edit-carries-suffix, params panel) rendering live with streaming.
+*Exit test: a 6-turn audit runs in-process with the step-gate (spike 1 already proves this);
+the desk shows the target conversation streaming token-by-token; an edit at turn k truncates
+the audit tape and replays the prefix with zero model calls.*
 
 **M1 — the pen, twice (≈2–3 wk).** `Run` lifecycle + playback controls + feedback queue; the
-audit loop on tree ops with prompts-as-data (collaborative-auditor parity, now on faithful
-providers with provenance); a *skeleton* orchestrator (spawn/steer/stop/read over the same
-handlers, no digest yet); pin leases, turn-boundary interlocks, and mirror events (§3.3) — the
-fiddliest code in the design, built before anything depends on it.
+audit loop with prompts-as-data (collaborative-auditor parity); a *skeleton* orchestrator
+(spawn/steer/stop/read over the same handlers, no digest yet); pin leases, turn-boundary
+interlocks, and mirror events (§3.3) — the fiddliest code in the design, built before anything
+depends on it.
 *Exit test: a human pins a still-running audit mid-orchestration, steers it and edits a turn
 (the audit never stops unless the human pauses it), detaches, and both the audit's next turn and
 the orchestrator's next decision provably condition on the intervention (the mirror events and
@@ -755,7 +770,7 @@ agentic-harness behavior, reward hacking — or perfectly benign interaction stu
 
 ## 9. Conventions
 
-uv + Python 3.12, ruff, mypy strict, pytest (fixture + bijection + Playwright tiers, per sonde).
+uv + Python 3.12, ruff, mypy strict, pytest (fixture + Playwright tiers).
 Fail fast — no defensive try/except that hides provider errors (sonde's faithfulness rule is also
 a code-style rule). Typed pydantic models end-to-end; frontend types generated, never
 hand-written. Prompts, questions, rubrics, graders, model lists: data files, not code.

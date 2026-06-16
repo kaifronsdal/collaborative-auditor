@@ -149,7 +149,7 @@ def History.branch(message_id: str, from_node: Node) -> Node:
 
 Slicing `origin.tape.log` (not `from_node.tape.log`) is required: the origin's log is complete through M by definition, but the current node's replayed prefix may not carry M forward (a restart branch has `prefix_len=0`). `_locate` returns just the origin `Node`; the tree exists only so `_locate` can find it in a sibling branch (cross-branch rollback). It is in-memory only — on an outer-level replay it is rebuilt from scratch.
 
-**`cutoff`** picks where to end the prefix so the next replayed call is a safe re-sync point — a call whose `nondet(c, k) = T` only at `k = h` and which *blocks* on level `h+1` (i.e. an incoming-from-`h+1` call). In code we tag such calls `sync = "in"` and `cutoff` advances from the last `message_id == at` step to just before the next `sync == "in"` step. This subsumes the old `deterministic` flag.
+**`cutoff`** picks where to end the prefix so the next replayed call is a safe re-sync point — a call whose `nondet(c, k) = T` only at `k = h` and which *blocks* on level `h+1` (i.e. an incoming-from-`h+1` call). In code we tag such calls `boundary = "in"` and `cutoff` advances from the last `message_id == at` step to just before the next `boundary == "in"` step. This subsumes the old `deterministic` flag.
 
 ---
 
@@ -158,7 +158,7 @@ Slicing `origin.tape.log` (not `from_node.tape.log`) is required: the origin's l
 ```
               ┌──────────── level 2: audit (restarts on resume) ────────────┐
               │           audit_tape : Tape  (single, both tasks)            │
-              │       ▲ via compose(node.tape, audit_tape)   ▲ via recording │
+              │   ▲ via node.tape.compose(audit_tape)  ▲ via tape.replayable │
    ┌──────────┴──────────────┴──┐         ┌────────────┴────────────────────┤
    │ target coroutine            │         │ auditor coroutine               │
    │  ┌─ level 1: Node tree ──┐  │         │  (home = 2; no level-1 tape)    │
@@ -187,17 +187,21 @@ Slicing `origin.tape.log` (not `from_node.tape.log`) is required: the origin's l
 ### `Tape`
 
 ```python
-Sync = Literal["in", "out"] | None        # external(c) ⟺ sync ≠ None; "in" marks re-sync points for cutoff
+Boundary = Literal["in", "out"] | None    # external(c) ⟺ boundary ≠ None; "in" marks re-sync points for cutoff
 
 class Replayable(Protocol):
-    def __call__(self, fn, *, sync: Sync = ..., source: str | None = ...) -> Callable[..., Awaitable]: ...
+    def __call__(self, fn, *, boundary: Boundary = ..., source: str | None = ...) -> Callable[..., Awaitable]: ...
 
 @dataclass(frozen=True, slots=True, eq=False)
 class Step:
     value: Any | None       # None where nondet(c, k) = F (value not needed for replay there)
     source: str             # desync-guard key — fn.__qualname__ unless overridden
-    sync: Sync = None
+    boundary: Boundary = None
     message_id: str | None = None   # branch/truncation key
+
+    def dump(self) -> dict: ...     # ModelOutput | int | float | str | None — the only persisted-tape values
+    @staticmethod
+    def load(d: dict) -> Step: ...
 
 
 class Tape:
@@ -205,72 +209,69 @@ class Tape:
         self.log: list[Step] = []
         self.pending: deque[Step] = deque(pending)
 
-    def pop(self, src: str, sync: Sync) -> Step | None:
-        if not self.pending:
-            return None
-        s = self.pending.popleft()
-        if s.source != src or s.sync != sync:
-            raise ReplayDesyncError(...)
-        if s.value is None:
-            raise ReplayDesyncError(...)   # seed must be filtered to value-bearing steps
-        return s
+    def replayable(self, fn, *, boundary: Boundary = None, source: str | None = None):
+        """nondet(c, k) = T at this level: serve from pending if available, else live; log full value.
 
-    def serve(self, fn, *, sync: Sync = None, source: str | None = None):
-        """nondet(c, k) = T at this level: serve from pending if available, else live; log full value."""
+        The single-level public entry point — symmetric with `TargetContext.replayable`."""
         src = source if source is not None else fn.__qualname__
         @functools.wraps(fn)
         async def w(*a, **kw):
-            if (s := self.pop(src, sync)) is not None:
+            if self.pending:
+                s = self.pending.popleft()
+                if s.source != src or s.boundary != boundary:
+                    raise ReplayDesyncError(...)
+                if s.value is None:
+                    raise ReplayDesyncError(...)   # seed must be filtered to value-bearing steps
                 self.log.append(s)
                 return isolate(s.value)
             v = await fn(*a, **kw)
-            self.log.append(Step(isolate(v), src, sync, _extract_message_id(v)))
+            self.log.append(Step(isolate(v), src, boundary, _extract_message_id(v)))
             return v
         return w
 
-    def mark(self, fn, *, sync: Sync, source: str | None = None):
-        """nondet(c, k) = F at this level: never serve; log metadata only."""
+    def compose(self, *outer: Tape) -> Replayable:
+        """Build the Replayable for calls whose home level is `self`, with `outer` tapes above it."""
+        r: Replayable = self.replayable
+        for t in outer:
+            r = t._wrap(r)
+        return r
+
+    def _mark(self, fn, *, boundary: Boundary, source: str | None = None):
+        """nondet(c, k) = F at this level: never serve; log metadata only. Reached only via compose."""
         src = source if source is not None else fn.__qualname__
         @functools.wraps(fn)
         async def w(*a, **kw):
             v = await fn(*a, **kw)
-            self.log.append(Step(None, src, sync, _extract_message_id(v)))
+            self.log.append(Step(None, src, boundary, _extract_message_id(v)))
             return v
         return w
 
-    def wrap(self, inner: Replayable) -> Replayable:
-        """Return a Replayable where `self` is one level outer than `inner`'s home."""
-        def composed(fn, *, sync: Sync = None, source: str | None = None):
-            outer = self.serve(fn, source=source) if sync is None else self.mark(fn, sync=sync, source=source)
-            return inner(outer, sync=sync, source=source)
+    def _wrap(self, inner: Replayable) -> Replayable:
+        """One level of compose: apply this tape's serve-or-mark (by boundary), then inner."""
+        def composed(fn, *, boundary: Boundary = None, source: str | None = None):
+            o = self.replayable(fn, source=source) if boundary is None else self._mark(fn, boundary=boundary, source=source)
+            return inner(o, boundary=boundary, source=source)
         return composed
-
-
-def compose(home: Tape, *outer: Tape) -> Replayable:
-    r: Replayable = home.serve
-    for t in outer:
-        r = t.wrap(r)
-    return r
 ```
 
 `nondet(c, k)` is never a parameter — it is determined by *how* the tape is reached:
 
 | route | `nondet(c, k)` | primitive |
 |---|---|---|
-| home level (`compose` starts at `home.serve`) | `T` — this is the home level | `serve` |
-| via `wrap`, `sync is None` | `T` — internal calls are nondet at every level | `serve` |
-| via `wrap`, `sync ≠ None` | `F` — external calls are det at every outer level | `mark` |
+| home level (`compose` starts at `self.replayable`) | `T` — this is the home level | `replayable` |
+| via `_wrap`, `boundary is None` | `T` — internal calls are nondet at every level | `replayable` |
+| via `_wrap`, `boundary ≠ None` | `F` — external calls are det at every outer level | `_mark` |
 
 Nesting is composed **purely** — there is no composition state on `Tape`, so double-composition is structurally impossible (no `_wrapped` guard needed):
 
 ```python
-replay₁ = compose(L1, L2, ..., Ln)      # home = L1
-replay₂ = compose(L2, ..., Ln)          # home = L2 (auditor uses this)
+replay₁ = L1.compose(L2, ..., Ln)      # home = L1
+replay₂ = L2.compose(..., Ln)          # home = L2 (auditor uses this)
 ```
 
-`replay₁(fn, sync=S)` expands to `L1.serve(L2.{serve|mark}(...Ln.{serve|mark}(fn)...))` — exactly `replayₕ` from the formalism. `compose(L2)` is just `L2.serve`, so code at home level 2 (the auditor) uses that directly.
+`replay₁(fn, boundary=B)` expands to `L1.replayable(L2.{replayable|_mark}(...Ln.{replayable|_mark}(fn)...))` — exactly `replayₕ` from the formalism. `L2.compose()` with no outer is just `L2.replayable`, so code at home level 2 (the auditor) calls `audit_tape.replayable(fn, source=…)` directly.
 
-`Step` is frozen and has no `__post_init__` — `serve`/`mark` compute `message_id` (via `_extract_message_id(value)`, which reads `value.message.id` or `value.value.id`) and pass it explicitly. `source` defaults to `fn.__qualname__` but takes an optional override so two wrapped functions sharing a qualname (e.g. several `Model.generate` instances on one tape) can be distinguished by the desync guard.
+`Step` is frozen and has no `__post_init__` — `replayable`/`_mark` compute `message_id` (via `_extract_message_id(value)`, which reads `value.message.id` or `value.value.id`) and pass it explicitly. `source` defaults to `fn.__qualname__` but takes an optional override so two wrapped functions sharing a qualname (e.g. several `Model.generate` instances on one tape) can be distinguished by the desync guard. Serialization lives on `Step` itself (`dump()`/`load()`); there is no separate `SerializedStep` type.
 
 ### Isolation
 
@@ -278,14 +279,14 @@ replay₂ = compose(L2, ..., Ln)          # home = L2 (auditor uses this)
 
 ### Seeding
 
-`Tape(pending=seed)` with `log=[]`. `seed` for level `k` is a prefix of a previous run's `logₖ`, **filtered to steps with `value is not None`** — only steps that were nondeterministic at `k` are replayable there; `mark` steps (`value=None`) are present in `logₖ` for truncation lookup but are never served, so they are dropped from `pending` (and `pop` raises if one slips through). After replay `logₖ = [popped refs…, fresh…]` — re-persistable as-is.
+`Tape(pending=seed)` with `log=[]`. `seed` for level `k` is a prefix of a previous run's `logₖ`, **filtered to steps with `value is not None`** — only steps that were nondeterministic at `k` are replayable there; `_mark` steps (`value=None`) are present in `logₖ` for truncation lookup but are never served, so they are dropped from `pending` (and `replayable` raises if one slips through). After replay `logₖ = [popped refs…, fresh…]` — re-persistable as-is.
 
 ### Petri wiring
 
 ```python
 # audit_solver
 audit_tape = Tape(pending=_read_resume_seed(state))   # filtered to value-bearing
-init_audit_tape(audit_tape)                           # contextvar — recording() reads it
+init_audit_tape(audit_tape)                           # contextvar — audit_tape() reads it
 history = History()
 
 # target task — TargetContext composes; target/_agent.py is unchanged
@@ -304,25 +305,31 @@ while node is not None:
 `TargetContext.__init__(channel, node: Node, *outer: Tape, messages, tools)` keeps `self._node` (for cross-branch rollback validation via `node.message_in_history(id)`) and builds the composed `Replayable` once, held on the context (not on any `Tape`):
 
 ```python
-self._replay        = compose(node.tape, *outer)
-self._next_command  = self._replay(channel.next_command,  sync="in")
-self._send_response = self._replay(channel.send_response, sync="out")
+self._replay        = node.tape.compose(*outer)
+self._next_command  = self._replay(channel.next_command,  boundary="in")
+self._send_response = self._replay(channel.send_response, boundary="out")
 
 def replayable(self, fn) -> ...:
-    return self._replay(fn, sync=None)
+    return self._replay(fn, boundary=None)
 ```
 
-The auditor side reaches `audit_tape` via a contextvar rather than parameter threading: `audit_solver` calls `init_audit_tape(audit_tape)`, and `auditor_agent.execute` calls
+The auditor side reaches `audit_tape` via a contextvar rather than parameter threading: `audit_solver` calls `init_audit_tape(audit_tape)`, and `auditor_agent.execute` wraps the *function*, not the model object — symmetric with `context.replayable()`:
 
 ```python
-agent_model = recording(get_model(role="auditor"), source_prefix="auditor")
+agent_model = get_model(role="auditor")
+tape = audit_tape()
+generate = (
+    tape.replayable(agent_model.generate, source="auditor:Model.generate")
+    if tape is not None
+    else agent_model.generate
+)
 ```
 
-`recording(model, *, source_prefix)` returns a `ReplayingModel(model, audit_tape, source_prefix=...)` if a tape is set, else `model` unchanged — so `auditor_agent` runs standalone outside `audit_solver` with no tape and no behaviour change. `ReplayingModel` subclasses `Model` (so inspect's `isinstance` checks pass), wraps only `.generate` via `compose(tape)(inner.generate, source=f"{prefix}:Model.generate")`, and delegates everything else (`.api`, `.config`, `.name`, `.count_tokens`, …) via `__getattr__`. Compaction receives `agent_model` so its summarisation generate also lands on the tape.
+There is no `ReplayingModel` subclass and no `recording()` helper — the auditor and target use the same one wrapping pattern (`tape.replayable(fn, source=…)`). When `audit_tape()` returns `None` (running `auditor_agent` standalone outside `audit_solver`), `agent_model.generate` is used unwrapped with no behaviour change. Compaction's summarisation generate is wrapped the same way so it also lands on the tape.
 
 ### Persistence
 
-`AuditTape(StoreModel)` with `steps: list[SerializedStep]`, `seed_instructions: str`, `today_date: str`, `config_digest: str`, `synthetic: bool`. `SerializedStep = {source, sync, message_id, value}` where `value: ModelOutput | int | float | str | None`. Steps with `nondet(·, 2) = F` have `value = None`, so `Slot`/`Stage`/`Command` never need serialising. `audit_solver` writes `AuditTape().steps = [SerializedStep.from_step(s) for s in audit_tape.log]` in its `finally` block.
+`AuditTape(StoreModel)` with `steps: list[dict]`, `seed_instructions: str`, `today_date: str`, `config_digest: str`, `synthetic: bool`. Each dict is `Step.dump() = {source, boundary, message_id, value}` where `value: ModelOutput | int | float | str | None`. Steps with `nondet(·, 2) = F` have `value = None`, so `Slot`/`Stage`/`Command` never need serialising. `audit_solver` writes `AuditTape().steps = [s.dump() for s in audit_tape.log]` in its `finally` block.
 
 `config_digest = config_digest(max_turns, eager_resume, realism_filter, compaction is not False, system_message, user_message, auditor_model.name, target_model.name)` is computed in `auditor_agent.execute`: stored on first run, compared on resume so a mismatch raises `ValueError` immediately instead of desyncing mid-replay. `synthetic=True` is set by `tape_from_messages` so a `ReplayDesyncError` on a synthetic tape can give a "your message list doesn't match `target_agent`'s loop shape" diagnosis.
 
@@ -330,8 +337,8 @@ agent_model = recording(get_model(role="auditor"), source_prefix="auditor")
 
 Same discipline as the target — every nondeterministic call goes through the tape:
 
-- auditor model calls via `recording(get_model(role="auditor"), source_prefix="auditor")`.
-- `_eager_resume_inject(output, turn)`: deterministic id `f"eager-resume-{turn}"`; mutates `output.message.tool_calls` in place *after* `recording()` has deep-copied into the tape, so the recorded value is the pre-injection output and replay reproduces the same injection.
+- auditor model calls via `tape.replayable(agent_model.generate, source="auditor:Model.generate")`.
+- `_eager_resume_inject(output, turn)`: deterministic id `f"eager-resume-{turn}"`; mutates `output.message.tool_calls` in place *after* `replayable` has deep-copied into the tape, so the recorded value is the pre-injection output and replay reproduces the same injection.
 - `skills.py`: stable temp dir.
 - `today_date`: read from `AuditTape().today_date` (set by `_read_resume_seed` on resume, `today_default()` on first run), not `datetime.now()`.
 - `seed_instructions`: persisted on `AuditTape` so the resample task can re-use it as the sample input.
@@ -349,13 +356,12 @@ def resample(ref: str, at: str | None = None, **audit_kwargs) -> Task: ...
 inspect eval inspect_petri/resample -T ref=<viewer-url-or-log-path> -T at=<msg-id> --epochs 10
 ```
 
-- `parse_viewer_ref(ref) -> (log_path, sample_id, message_id)`; accepts a viewer URL (`…/logs/<log>.eval?sample=<id>&message=<mid>` or `?event=<uuid>`), `<log>#<sample>@<id>`, or a bare log path.
+- `parse_viewer_ref(ref) -> (log_path, sample_id, message_id)`; accepts an inspect-view "copy link" URL (hash-routed: `…#/logs/<log>/samples/sample/<sid>/<epoch>/<tab>?message=<mid>` or `?event=<eid>`), `<log>#<sample>@<id>`, or a bare log path.
 - `load_tape(log, sample_id=None) -> AuditTape` — reads `sample.store_as(AuditTape)` from one sample of a `.eval` log; `sample_id=None` reads the first sample.
-- `truncate_serialized(steps: list[SerializedStep], at: str | None) -> list[SerializedStep]` — `steps[:idx]` (exclusive — `at` is the message regenerated); `at=None` returns the full list (resume at the end and continue live).
-- `truncate_at(steps: Sequence[Step], message_id: str) -> list[Step]` — the in-memory `Step` variant (uses `_find_cutoff`'s sync-`"in"` advance), exported from `inspect_petri.target`.
-- **Mode B**: `tape_from_messages(messages, *, tools=(), seed_instructions="", today_date="") -> AuditTape` — synthesise auditor `ModelOutput` steps with `tool_calls = [set_system_message, create_tool*, send_message, resume]` (turn 0) or `[send_tool_call_result*, send_message?, resume]` (later); target steps wrap each assistant message; channel `mark` placeholders carry `value=None` and the message ids from `messages`. Returns a tape with `synthetic=True`.
+- `truncate_serialized(steps: list[dict], at: str | None) -> list[dict]` — `steps[:idx]` (exclusive — `at` is the message regenerated); `at=None` returns the full list (resume at the end and continue live). In-process branching uses `_find_cutoff` directly via `History.branch`; there is no separate exported `truncate_at`.
+- **Mode B**: `tape_from_messages(messages, *, tools=(), seed_instructions="", today_date="") -> AuditTape` — synthesise auditor `ModelOutput` steps with `tool_calls = [set_system_message, create_tool*, send_message, resume]` (turn 0) or `[send_tool_call_result*, send_message?, resume]` (later); target steps wrap each assistant message; channel `_mark` placeholders carry `value=None` and the message ids from `messages`. Returns a tape with `synthetic=True`.
 
-The `resample` task builds a single-sample dataset with `metadata={"resume": [s.model_dump() for s in seed], "today_date": ..., "config_digest": ..., "synthetic": ...}` and delegates to `audit_solver`; `_read_resume_seed` lifts those into `AuditTape()` and returns the value-bearing steps for `Tape(pending=...)`.
+The `resample` task builds a single-sample dataset with `metadata={"resume": seed, "today_date": ..., "config_digest": ..., "synthetic": ...}` (where `seed` is already the `Step.dump()` dict list from `truncate_serialized`) and delegates to `audit_solver`; `_read_resume_seed` lifts those into `AuditTape()` and returns the value-bearing steps (via `Step.load`) for `Tape(pending=...)`.
 
 ---
 

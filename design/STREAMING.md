@@ -4,12 +4,15 @@
 collaborative-auditor. The question: how do tokens reach the UI as the model generates, and
 how does that compose with `tape.replayable`?*
 
-**Decision (2026-06-16): one provider stack — inspect's.** inspect's provider conversions are
-faithful enough; the earlier plan to adopt sonde's `Provider.stream` for the target is dropped.
-Streaming lands as an **inspect PR** (per-chunk callback the providers invoke from the SDK
-streams they already open), so both auditor and target stream through the same path with no
-`target_agent` reimplementation. The §"What sonde provides" section below is kept as design
-reference for the delta-event shape only.
+**Decision (2026-06-16, revised): event-mutation, not a callback.** Providers stream by
+mutating the **pending `ModelEvent.output`** (already reachable via `_active_model_event`
+ContextVar) and calling `transcript()._event_updated(event)` per coalesced flush. This is the
+*existing* `set_active_model_event_call` pattern (`log/_samples.py:415-430`, already called
+mid-generate by the Anthropic provider) applied to `output`. No new public API; the live-view
+buffer subscriber (`run.py:1063`) already consumes `_event_updated`, so **inspect-view shows
+streaming for free**. One provider stack (inspect's); both auditor and target stream through
+the same path. The §"What sonde provides" section below is kept as design reference for delta
+shapes only.
 
 ---
 
@@ -41,36 +44,55 @@ accumulator equals the SDK's own `get_final_message()`.
 already replaces SSE-per-generation with WS+JSON-Patch ViewState (SSE can't represent multiple
 concurrent Runs).
 
-## Approach — inspect PR: per-chunk callback on `GenerateConfig`
+## Approach — inspect PR: mutate the pending `ModelEvent` from inside the provider stream
 
-`GenerateConfig` grows one optional field; each provider's existing SDK-stream loop calls it
-per chunk while it accumulates the final `ModelOutput`:
-
-```python
-class ContentDelta(BaseModel):
-    kind: Literal["text", "thinking", "tool_input"]
-    index: int          # content-block index
-    delta: str
-
-# GenerateConfig
-on_content: Callable[[ContentDelta], None] | None = None
-```
-
-Providers already open the SDK stream (Anthropic when reasoning is on or `max_tokens≥8192`;
-Google opt-in); the PR just adds `if config.on_content: config.on_content(delta)` inside those
-loops, and forces the streaming path on when `on_content` is set. OpenAI's chat path needs
-`stream=True` added. `Model.generate` returns `ModelOutput` exactly as before.
-
-Both sides then read identically — `tape.replayable` records the final value, the callback is
-the UI side-channel inside the wrapped call:
+The pending `ModelEvent` is bound *before* `api.generate` (`_model.py:1115`) and held in
+`_active_model_event` ContextVar across the call (`log/_samples.py:397-408`) — provider code
+can already reach it. The Anthropic SDK exposes an accumulating `stream.current_message_snapshot`
+on every iteration. The PR adds, inside the existing stream loop (`anthropic.py:~3647`):
 
 ```python
-generate = tape.replayable(agent_model.generate, source="…")
-state.output = await generate(input=msgs, tools=tools, config=GenerateConfig(on_content=sink))
+if _should_flush(sdk_event):                   # ~10Hz coalesce on content_block_delta
+    me = _active_model_event.get()
+    if me is not None:
+        partial, _ = await model_output_from_message(
+            client, model_name, stream.current_message_snapshot, tools, ...)
+        me.output = partial
+        transcript()._event_updated(me)
 ```
 
-The workbench's Run loop sets `sink` per generation (knows which node id is being filled),
-buffers per-node, flushes at ~10 Hz as one targeted append-patch op.
+`_event_updated` (`_transcript.py:594-605`) fans out to all subscribers — including the
+live-view buffer subscriber (`_eval/task/run.py:1063-1088`) → SQLite sample_buffer →
+inspect-view's poll. **No `GenerateConfig` change, no `ModelAPI.generate` change.** Same
+pattern for Google (`generate_content_stream`) and OpenAI (enable `stream=True`, add the loop).
+Throttle lives provider-side in `_should_flush`.
+
+`tape.replayable` is unaffected: it wraps `model.generate`, which still returns the final
+`ModelOutput`; the streaming is a side-effect inside that call.
+
+## Workbench consumption
+
+The workbench subscribes to `transcript()` (private `_subscribe`, on the upstream-ask list)
+or, when running as an inspect task, gets the same updates via the buffer. Per update it
+**replaces** the events array (the ts-mono renderer memoizes on identity, not deep-equals —
+`TranscriptVirtualList.tsx:318`); the active node's text is whatever `event.output` currently
+holds. The 10 Hz throttle is provider-side, so the workbench just renders what arrives.
+
+## ts-mono — reference, not dependency
+
+`@tsmono/inspect-components` was evaluated and **not adopted as a dependency**. It's reusable
+in principle (`ChatMessageRow`/`ModelEventView`/`TranscriptViewNodes`, prop-driven) but: no npm
+(git submodule + pnpm workspace, raw `.ts` exports), Bootstrap CSS baseline + heavy peer deps
+(`react-router-dom`/`react-virtuoso`/`prismjs`/`mathjax`/`@vscode-elements`), no per-message
+action slot (`RenderedEventNode` is a hardcoded switch — we'd compose our own row anyway), and
+re-theming Bootstrap to the claude.ai grammar (serif, one-column, accent-dot) would eat the
+savings. Once we're building our own row, the only reuse is content-block rendering — and a
+~1-2 day switch over `ContentText`/`ContentReasoning`/`ContentImage`/`ToolCall` with
+`react-markdown` + `prism-react-renderer` is cheaper than the dependency cost.
+
+**Kept as a reference** for edge-case handling: truncated tool output, reasoning toggles,
+attachment resolution. The workbench renders inspect's *event types* directly (which we already
+consume via petri) with its own components per UI.md.
 
 **UI hop:** do **not** emit a JSON-Patch op per token — `push_view_state` diffs the full
 serialized state (`common.py:71-93`, O(branches×messages); ARCHITECTURE.md melt-risk). Instead:
@@ -90,16 +112,16 @@ latency, make branch forks crawl through already-seen content, require fabricate
 conflate "settled" with "generating now." Replayed content *is* settled; instant rendering says
 so. (A client-side cosmetic reveal animation, if anyone wants one, is independent of this.)
 
-## Effort — ~2–3 days
+## Effort — ~2 days for streaming; ts-mono integration is its own M0/M1 line
 
-- **inspect PR:** `ContentDelta` type + `GenerateConfig.on_content` + per-provider loop hook
-  (Anthropic/Google: add the callback inside the existing stream consumer; OpenAI chat +
-  responses: enable `stream=True` and add the consumer). mockllm grows a `stream_chunks` mode
-  for tests. **~1–1.5 d.** Low risk — providers already produce the final `ModelOutput`; the
-  callback is a side-effect inside that loop.
-- **Workbench:** sink + 10 Hz coalescer + ViewState active-generation field + targeted
-  append-patch + finalize-on-complete. **~1–1.5 d.**
-- Auditor streaming comes for free (same `GenerateConfig` field).
+- **inspect PR:** per-provider flush hook in the existing stream loop + force streaming on
+  when `_active_model_event` is set; make `Transcript.subscribe` public; mockllm grows a
+  `stream_chunks` mode. **~1–1.5 d.** Low risk — `set_active_model_event_call` is the existing
+  precedent; providers already produce the final `ModelOutput`.
+- **Workbench data layer:** subscribe → replace events array → render. **~0.5 d.**
+- **inspect-view shows streaming for free** (no workbench-side work for that).
+- ts-mono submodule + theme + `ComponentStateProvider` glue is M0 frontend work, not part of
+  the streaming PR.
 
 ## Tests — deterministic, no sleeps
 

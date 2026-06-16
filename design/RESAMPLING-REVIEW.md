@@ -1,5 +1,12 @@
 # Red-team review of `resampling.md`
 
+> **Findings addressed in PR #110 commits `8ad04b3..4f4aa50`; kept as the review record.**
+> The three recommended changes (drop recursive `wrap` as the public surface; strengthen the
+> desync guard with role-qualified `source`; truncate-at-edit + unify `Step` with `Effect`)
+> all landed. `serve`→`replayable`, `sync`→`boundary`, `compose` is a `Tape` method,
+> `_mark`/`_wrap` private, `ReplayingModel`/`recording()` deleted in favour of one wrapping
+> pattern, `Step.dump()/load()` replaces `SerializedStep`. Names below are pre-refactor.
+
 *Adversarial review of the n-level Tape / `nondet(c,k)` / recursive `replayₖ` design,
 2026-06-15. Grounded in petri-meridian @ `origin/controller-refactor`, inspect_ai main, and
 ARCHITECTURE.md. The central claim — the channel can run live during a level-2 replay because

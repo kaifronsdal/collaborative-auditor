@@ -1,5 +1,11 @@
 # Implementation architecture — store, petri seam, fork mechanics
 
+> **Status: superseded by petri PR #110 + DESIGN.md §3.1.** Kept as the reasoning that led
+> there. The `Effect`/`AuditorTurn` data model in §(a), the §(a′) petri-changes table, and the
+> §(d) spike plan were the *route* to what landed — petri's `Tape`/`Step`/`Node` (see
+> [resampling.md](resampling.md) and `petri-meridian/src/inspect_petri/target/_history.py` @
+> `4f4aa50`). Read DESIGN.md §3.1/§3.5/§3.7 for the current position; read this for why.
+
 *The level below [TREE-IMPL.md](TREE-IMPL.md): the concrete data model, the inspect/.eval seam,
 and the rollback/resample/edit code paths. Produced by an architecture brainstorm grounded in
 source (refs checked 2026-06-13: petri-meridian @ 556c68d / inspect_petri 3.0.x,
@@ -11,12 +17,24 @@ at the end and need ratifying into DESIGN.md.*
 
 ## (a) Recommended architecture — one page
 
+> **Landed differently.** The `Effect`/`AuditorTurn` types below were a placeholder for "a
+> durable, serializable record of what the audit did." PR #110 landed that as **petri's own
+> `Step`** (`target/_history.py`): `Step` IS the durable serializable type (frozen dataclass
+> with `dump()`/`load()` handling `ModelOutput` directly), `Tape` is the per-level log+replay
+> queue, `Node` is `Tape` + tree pointers. There is no separate `Effect` log and no
+> `AuditorTurn.effects` — what an auditor turn did to the target is exactly the `Step`s the
+> audit-level tape recorded for it, and the invariant below is the tape's own correctness
+> property (checked by petri's e2e tests: record→resample with zero model calls in the
+> prefix). The "cold replay adapter" this section anticipated doesn't exist as a separate
+> thing: `Tape(pending=seed)` IS the cold-replay path. See DESIGN.md §3.1 for the current data
+> model. The two-trees-per-audit shape, `ChatMessage` as canonical payload, and the `Run`
+> sketch all survive.
+
 **Canonical store: two sonde-style node trees per audit (target tree = the specimen; auditor
-tree = the Run's thread), bound by a durable, replayable effect log.** Petri's
-`Trajectory`/`Channel`/`Controller` machinery is the **runtime replay engine**, not the store —
-its recorded steps hold values *by reference* and are explicitly never serialized
-(`petri-meridian/src/inspect_petri/target/_types.py:81`), so it cannot be the persistence layer.
-Everything petri records in memory, we project into the store as typed JSON.
+tree = the Run's thread), bound by a durable, replayable ~~effect log~~ tape.** Petri's
+~~`Trajectory`~~ `Tape`/`Channel`/`Controller` machinery is ~~the runtime replay engine, not
+the store~~ **both** — PR #110 made `Step` serializable, so the in-memory record and the
+persisted record are the same type.
 
 ```python
 class Node(BaseModel):                      # one type, both trees (sonde tree.py:20 + actor)
@@ -77,6 +95,15 @@ pattern, kept).
 ---
 
 ## (a′) Petri/inspect changes that simplify this
+
+> **Obsolete — PR #110 landed a coherent refactor instead of this piecemeal table.** The
+> first two rows ("serializable `Step`" + "replay-queue value substitution") were the leverage
+> and are exactly what landed: `Step.dump()/load()`, `Tape(pending=…)`, `Tape.replayable` /
+> `Tape.compose`, `History.branch` over `Node`. The rest either landed alongside
+> (`audit_tape()` contextvar; `_run_target` as `auditor.py:_run_trajectory`), became
+> unnecessary (no `from_steps` adapter — `Tape(pending=seed)` is it), or remain as the two
+> small inspect_ai re-export asks (`init_model_roles`, `Transcript.subscribe`). Kept below as
+> the wishlist that shaped the PR.
 
 We can modify petri (and propose to inspect). The mitigations in (c) were sized assuming a fixed
 dependency; with patch access, several collapse to small upstream changes and the workbench
@@ -233,18 +260,17 @@ JSON Patch, collaborative-auditor's refactored protocol — `common.py:71-93` co
 granularity (streaming target tokens come later via sonde-style provider streaming in the target
 agent).
 
-**Provider-layer tension (design contradiction, see flags):** DESIGN §3.5 says "sonde's provider
-layer, wholesale", but embedding petri means target generations go through inspect's
-`Model.generate` (`target/_agent.py:19-20`). The clean reconciliation: `target_agent` is
-pluggable (`audit_solver(target=...)`, `auditor.py:38`) and only 65 lines — reimplement it over
-sonde's `Provider.stream()`, keeping `TargetContext` (staging/replay) intact and writing inspect
-`ChatMessage`s into the shared `state.messages` list. That preserves "audits call targets
-through exactly the same layer as the human." The auditor's own generation can stay on inspect's
-model API initially (it's not the specimen), unify later. Corollary: **adopt inspect's
-`ChatMessage` as the canonical node payload** — petri anchors are `ChatMessage.id`s
-(`_history.py:21-26`), the channel speaks them, and `.eval` import becomes copy-not-convert;
-sonde providers gain a ChatMessage↔native mapping (their `to_request`/`from_request` bijection
-discipline already does the hard half).
+~~**Provider-layer tension (design contradiction, see flags):** DESIGN §3.5 says "sonde's
+provider layer, wholesale", but embedding petri means target generations go through inspect's
+`Model.generate`. The clean reconciliation: reimplement the 65-line `target_agent` over sonde's
+`Provider.stream()`…~~ **Resolved the other way (DESIGN §3.5, 2026-06-16):** one provider
+stack — inspect's. Both auditor and target go through `get_model(role=…)` and wrap
+`model.generate` via `tape.replayable(fn, source=…)` — symmetric. Sonde's
+`Provider.stream`/`SurfaceEvent`/bijection-tests are **not adopted**; inspect's provider
+conversions are faithful enough for the specimen, and streaming rides inspect's existing
+event-mutation path ([STREAMING.md](STREAMING.md)). The corollary survives on its own merits:
+**inspect's `ChatMessage` is the canonical node payload** — petri anchors are `ChatMessage.id`s,
+the channel speaks them, `.eval` import is copy-not-convert.
 
 ### Q3. Rollback/resample/edit mechanics
 
@@ -395,6 +421,14 @@ every branch tip has at most one.
 
 ## (d) M0 spike plan — the riskiest vertical slice
 
+> **Status:** spike 1 passed (petri loop runs in plain asyncio outside an inspect task).
+> Spikes 2–5 are now mostly **covered by PR #110's own tests** rather than workbench spikes:
+> `Step.dump()` is the store projection (spike 2's `Effect` log doesn't exist as a separate
+> thing); `dd4a39d` is the e2e test asserting record→resample makes zero model calls in the
+> prefix (spikes 3+4's exit criteria); `tape_from_messages` + `load_tape` are the `.eval`
+> import path (spike 5). What remains workbench-side from this plan: the pausable `step_gate`
+> Run loop, and the `tree.json` writer. Kept below as the original plan.
+
 Goal (per TREE-IMPL §4): **a `Run` wrapping the petri runtime, one auditor-edit-at-turn-k round
 trip, invariant provably held, two-branch tree rendered — plus the cold-replay variant nobody
 has built.** No frontend, no ACL, no orchestrator. ~3-5 days.
@@ -441,24 +475,28 @@ against the same `tree.json` schema.
 
 ## Flags: where this contradicted the design docs
 
-*Ratified into DESIGN.md / TOOLS.md / TREE-IMPL.md 2026-06-13; kept here as the reasoning.*
+*Ratified into DESIGN.md / TOOLS.md / TREE-IMPL.md 2026-06-13; updated 2026-06-16 against
+petri PR #110 + DESIGN.md §3.1/§3.5. Kept as the reasoning.*
 
 1. **DESIGN §3.2 `Run.messages: list[ChatMessage]` cannot survive Q3.** A flat list can't hold
-   auditor-side branch/edit/resample. The Run's thread must be a tree (same `Node` type as the
-   specimen). Amend §3.1/§3.2.
+   auditor-side branch/edit/resample. The Run's thread must be a tree. **Landed:** DESIGN §3.1
+   — both trees built from petri's `Node`; `Run.tree_id`/`active_leaf`.
 2. **DESIGN §3.1 "Run *references* the target nodes it created" is insufficient** for the
    invariant — rollback/prefill/add_tool mutate target state while producing no node. The
-   linkage must be the ordered effect log.
-3. **TREE-IMPL §4.1 "the auditor tree becomes a petri `Trajectory` tree" — overruled.**
-   Trajectory steps are by-reference, unserializable, private, and substitution-incapable. Use
-   petri's replay as the *target-side live engine* only; the auditor tree is store nodes. The
-   rest of TREE-IMPL §4 survives intact.
-4. **DESIGN §3.5 "sonde provider layer, wholesale" conflicts with embedding petri** (target
-   generates via inspect's `Model.generate`). Resolution: reimplement the 65-line `target_agent`
-   on sonde providers (the `target=` plug point exists), and adopt inspect `ChatMessage` as the
-   canonical node payload — which also amends §3.1's `blocks: list[Block]` sketch.
+   linkage must be ~~the ordered effect log~~ the audit-level tape. **Landed:** the linkage IS
+   the tape's `Step` log; no separate `Effect` type (DESIGN §3.1 first bullet).
+3. **TREE-IMPL §4.1 "the auditor tree becomes a petri `Trajectory` tree" — overruled** (steps
+   were by-reference, unserializable, private). **Landed differently:** PR #110 fixed exactly
+   that — `Step` is now public, frozen, serializable (`dump()/load()`), so petri's own `Node`
+   tree IS usable as the replay substrate at both levels. The "store nodes vs. live engine"
+   split this flag drew no longer exists.
+4. ~~**DESIGN §3.5 "sonde provider layer, wholesale" conflicts with embedding petri.**
+   Resolution: reimplement `target_agent` on sonde providers.~~ **Moot — resolved the other
+   way:** DESIGN §3.5 now says one provider stack (inspect's); sonde's provider layer is not
+   adopted. `ChatMessage` as canonical payload survives independently.
 5. **TOOLS.md §1 "transcript per audit" needs a branch-id story** — transcripts are path
-   projections; `seed#replicate~branch` ids, with the tree file as live truth.
+   projections; `seed#replicate~branch` ids, with the tree file as live truth. **Landed:**
+   DESIGN §3.7.
 6. **DESIGN §3.3's punch-down rules out inspect-task fanouts** — inspect has no
    pause/steer/inject path into a running sample. Fanout rows run on the workbench runtime;
-   `inspect eval` is an interop format and an optional non-interactive overnight tier.
+   `inspect eval` is an interop format. **Landed:** DESIGN §3.7 last paragraph.
