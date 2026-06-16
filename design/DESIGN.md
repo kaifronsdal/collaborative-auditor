@@ -303,16 +303,17 @@ list is a thin schema over these handlers; the UI's buttons call the same routes
   belongs to a leaf audit), no writes to the specimen tree, no writes to digests, no writes to
   its own oversight config (§5.3).
 
-### 3.5 Provider layer — sonde's, with one petri seam
+### 3.5 Provider layer — inspect's, with a streaming PR
 
-`Provider` protocol, `GenParams`, SurfaceEvent streaming, bijection tests, registry (zoo +
-direct), per-model credential overrides — sonde's, kept. Audits call targets through exactly the
-same layer as the human; that is what makes the dial seamless and provenance uniform. Embedding
-the petri loop (§3.1, ARCHITECTURE.md) creates one tension: petri's stock `target_agent` calls
-inspect's `Model.generate`. Resolution: `target_agent` is pluggable (`audit_solver(target=...)`)
-and ~65 lines — reimplement it over sonde's `Provider.stream()`, keeping `TargetContext`
-(staging/replay) intact and writing inspect `ChatMessage`s into `state.messages`. The auditor's
-own generation can stay on inspect's model API initially (it's not the specimen); unify later.
+One provider stack: inspect's `Model.generate`. Its provider conversions are faithful enough
+for the specimen, and using one stack keeps auditor and target on the same path (the dial is
+seamless because both go through `get_model(role=…)`). Streaming lands as an inspect upstream
+PR — `GenerateConfig.on_content: Callable[[ContentDelta], None] | None`, called per chunk from
+the SDK streams the providers already open ([STREAMING.md](STREAMING.md)). `tape.replayable`
+records the final `ModelOutput`; the callback is a UI side-channel inside the wrapped call.
+Sonde's `Provider.stream` / `SurfaceEvent` shape informed `ContentDelta` but is not adopted as
+a layer; sonde's registry/credential machinery is consumed where useful, not as a provider
+stack.
 
 ### 3.6 Sync protocol
 

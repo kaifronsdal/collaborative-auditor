@@ -1,8 +1,15 @@
 # Streaming model generation for the workbench UI
 
-*Design memo, 2026-06-16. Grounded in inspect_ai main, sonde-alpha-may-2026, petri-meridian
-`tape-replay`, collaborative-auditor. The question: how do tokens reach the UI as the model
-generates, and how does that compose with `tape.replayable`?*
+*Design memo, 2026-06-16. Grounded in inspect_ai main, petri-meridian `tape-replay`,
+collaborative-auditor. The question: how do tokens reach the UI as the model generates, and
+how does that compose with `tape.replayable`?*
+
+**Decision (2026-06-16): one provider stack — inspect's.** inspect's provider conversions are
+faithful enough; the earlier plan to adopt sonde's `Provider.stream` for the target is dropped.
+Streaming lands as an **inspect PR** (per-chunk callback the providers invoke from the SDK
+streams they already open), so both auditor and target stream through the same path with no
+`target_agent` reimplementation. The §"What sonde provides" section below is kept as design
+reference for the delta-event shape only.
 
 ---
 
@@ -34,25 +41,36 @@ accumulator equals the SDK's own `get_final_message()`.
 already replaces SSE-per-generation with WS+JSON-Patch ViewState (SSE can't represent multiple
 concurrent Runs).
 
-## Approach — stream inside the wrapped fn (option c)
+## Approach — inspect PR: per-chunk callback on `GenerateConfig`
 
-The stream happens *inside* the replayable-wrapped target agent: it consumes `provider.stream`,
-pushes deltas to a side-channel, accumulates into a `ModelOutput`, returns it.
-`context.replayable(...)` records only the final value — `tape.replayable` is single-value
-(`_history.py:137-183`) and stays untouched. Reject (a) (two model calls, breaks provenance)
-and (b) (rewrites the replay contract the rollback/resume invariant depends on).
-
-**Side-channel = a contextvar sink**, set by the Run loop around each generation:
+`GenerateConfig` grows one optional field; each provider's existing SDK-stream loop calls it
+per chunk while it accumulates the final `ModelOutput`:
 
 ```python
-StreamSink = Callable[[StreamDelta], None]   # {node_id, kind: text|thinking|tool_input, delta}
-_active_sink: ContextVar[StreamSink | None]
-@contextmanager
-def stream_to(sink: StreamSink): ...
+class ContentDelta(BaseModel):
+    kind: Literal["text", "thinking", "tool_input"]
+    index: int          # content-block index
+    delta: str
+
+# GenerateConfig
+on_content: Callable[[ContentDelta], None] | None = None
 ```
 
-Threading a `stream_to=` kwarg through every call site (and across the `replayable` boundary)
-is invasive; the contextvar matches how inspect resolves model roles/transcripts.
+Providers already open the SDK stream (Anthropic when reasoning is on or `max_tokens≥8192`;
+Google opt-in); the PR just adds `if config.on_content: config.on_content(delta)` inside those
+loops, and forces the streaming path on when `on_content` is set. OpenAI's chat path needs
+`stream=True` added. `Model.generate` returns `ModelOutput` exactly as before.
+
+Both sides then read identically — `tape.replayable` records the final value, the callback is
+the UI side-channel inside the wrapped call:
+
+```python
+generate = tape.replayable(agent_model.generate, source="…")
+state.output = await generate(input=msgs, tools=tools, config=GenerateConfig(on_content=sink))
+```
+
+The workbench's Run loop sets `sink` per generation (knows which node id is being filled),
+buffers per-node, flushes at ~10 Hz as one targeted append-patch op.
 
 **UI hop:** do **not** emit a JSON-Patch op per token — `push_view_state` diffs the full
 serialized state (`common.py:71-93`, O(branches×messages); ARCHITECTURE.md melt-risk). Instead:
@@ -72,16 +90,16 @@ latency, make branch forks crawl through already-seen content, require fabricate
 conflate "settled" with "generating now." Replayed content *is* settled; instant rendering says
 so. (A client-side cosmetic reveal animation, if anyone wants one, is independent of this.)
 
-## Effort — ~4–6 days; risk in the target-agent reimplementation
+## Effort — ~2–3 days
 
-- Sonde-backed `target_agent` over `Provider.stream`, accumulating to `ModelOutput`, keeping
-  `TargetContext`/replay intact: **2–3 d**. Riskiest piece — accumulated `ModelOutput` must be
-  byte-equivalent to a non-streaming call (port sonde's `get_final_message()` property test);
-  `ChatMessage.id` anchors and staging through the new agent are where replay-invariant bugs
-  hide.
-- Contextvar sink + `StreamDelta` + 10 Hz coalescer: **0.5 d**.
-- ViewState active-generation field + targeted append-patch + finalize-on-complete: **1–1.5 d**.
-- Auditor streaming: deferred.
+- **inspect PR:** `ContentDelta` type + `GenerateConfig.on_content` + per-provider loop hook
+  (Anthropic/Google: add the callback inside the existing stream consumer; OpenAI chat +
+  responses: enable `stream=True` and add the consumer). mockllm grows a `stream_chunks` mode
+  for tests. **~1–1.5 d.** Low risk — providers already produce the final `ModelOutput`; the
+  callback is a side-effect inside that loop.
+- **Workbench:** sink + 10 Hz coalescer + ViewState active-generation field + targeted
+  append-patch + finalize-on-complete. **~1–1.5 d.**
+- Auditor streaming comes for free (same `GenerateConfig` field).
 
 ## Tests — deterministic, no sleeps
 
