@@ -18,6 +18,7 @@ broadcast.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -79,6 +80,41 @@ class Session:
         self._send, self._recv = anyio.create_memory_object_stream[dict[str, Any]](
             max_buffer_size=float("inf")
         )
+
+        # `drain` is owned by the session, not by any one branch (STREAMING.md
+        # §B; footgun #12): a single drain task per session consumes `_recv`,
+        # so concurrent or successive branches share one broadcast loop instead
+        # of each starting their own and splitting wire messages. `start()`
+        # opens this; `close()` shuts it down.
+        self._closed = anyio.Event()
+        self._run_task: asyncio.Future[None]
+
+    # -- drain lifecycle (session-owned, STREAMING.md §B) ---------------------
+
+    async def start(self) -> None:
+        """Open the session-level task group and start the single `drain` task.
+
+        Returns once `drain` is running. The task group stays open until
+        `close()` is called; until then `drain` consumes every wire message the
+        sync `_on_event` handler enqueues and broadcasts it to all connections.
+        """
+        started = anyio.Event()
+        self._run_task = asyncio.ensure_future(self._run(started))
+        await started.wait()
+
+    async def _run(self, started: anyio.Event) -> None:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(self.drain)
+            started.set()
+            await self._closed.wait()
+            # `drain`'s `async for` exits when `_send` is closed; closing it
+            # here lets the task group finish cleanly without a cancel scope.
+            await self._send.aclose()
+
+    async def close(self) -> None:
+        """Shut down the drain task: close the send stream so `drain` exits."""
+        self._closed.set()
+        await self._run_task
 
     # -- message pool ---------------------------------------------------------
 

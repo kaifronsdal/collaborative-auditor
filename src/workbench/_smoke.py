@@ -44,6 +44,7 @@ def _expand_refs(refs: list[list[int]], pool: list[dict]) -> list[dict]:
 
 async def _amain(dump_path: Path | None = None) -> None:
     session = Session()
+    await session.start()  # session owns the single drain task now
     conn = FakeConn()
     session.connections.append(conn)
 
@@ -62,6 +63,7 @@ async def _amain(dump_path: Path | None = None) -> None:
     await session.push_full_state(conn)
     branch.play()
     await branch.run()
+    await session.close()  # stop drain so all queued wire messages flush
 
     # --- assertions ----------------------------------------------------------
     kinds = [m["t"] for m in conn.sent]

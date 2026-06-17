@@ -25,10 +25,14 @@ app = FastAPI(title="Audit Workbench", version="0.1.0")
 sessions: dict[str, Session] = {}
 
 
-def _get_or_create(session_id: str) -> Session:
+async def _get_or_create(session_id: str) -> Session:
     sess = sessions.get(session_id)
     if sess is None:
         sess = Session()
+        # start the session-owned drain task once, on first connect, so the
+        # single broadcast loop is live before any branch runs (STREAMING.md
+        # §B; petri footgun #12 — never one drain per branch).
+        await sess.start()
         sessions[session_id] = sess
     return sess
 
@@ -36,7 +40,7 @@ def _get_or_create(session_id: str) -> Session:
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
-    session = _get_or_create(session_id)
+    session = await _get_or_create(session_id)
     session.connections.append(websocket)
     await session.push_full_state(websocket)
 

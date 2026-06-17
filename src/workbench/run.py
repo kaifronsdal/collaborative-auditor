@@ -16,22 +16,28 @@ clears the flag — the next turn waits.
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 import anyio
+from inspect_ai.event import ModelEvent
 from inspect_ai.model import (
     CachePolicy,
     ChatMessage,
+    GenerateConfig,
+    Model,
     ModelOutput,
     get_model,
 )
 from inspect_ai.tool import Tool
+from inspect_ai.util import Store
 from inspect_petri._auditor import audit_context, auditor_agent, run_audit
 from inspect_petri.target import (
     Channel,
     Controller,
     History,
+    Step,
     Tape,
     target_agent,
 )
@@ -53,6 +59,7 @@ class Branch:
         auditor_model: str,
         target_model: str,
         max_turns: int,
+        resume: list[Step] | None = None,
     ) -> None:
         self.session = session
         self.branch_id = branch_id
@@ -60,12 +67,26 @@ class Branch:
         self.auditor_model = auditor_model
         self.target_model = target_model
         self.max_turns = max_turns
+        self.resume = resume
 
-        # petri target plumbing
+        # per-branch Store: `AuditTape` is a StoreModel, so without a branch-
+        # private store every branch in this process would read/write the
+        # process-global default and cross-contaminate `config_digest`/`steps`
+        # (petri footgun #5). `audit_context(store=...)` installs it per branch.
+        self.store = Store()
+
+        # petri target plumbing. On resume, seed the audit tape's replay queue
+        # from the parent branch's recorded steps (value-bearing only — the
+        # `value is not None` filter matches petri's `_read_resume_seed`), so
+        # the prefix replays from `pending` instead of re-calling the model.
         self.channel = Channel(seed_instructions=seed)
         self.controller = Controller(self.channel)
         self.history = History()
-        self.audit_tape = Tape()
+        self.audit_tape = (
+            Tape(pending=deque(s for s in resume if s.value is not None))
+            if resume is not None
+            else Tape()
+        )
 
         # step gate — the loop awaits `_gate.wait()` each turn then clears it.
         # `play()` sets `_free_running`; the loop re-sets the gate itself after
@@ -128,37 +149,86 @@ class Branch:
 
         self.status = "running"
 
+        # On resume, synthesise the replayed prefix's events onto the wire
+        # before the live run starts, so the frontend shows the parent branch's
+        # turns in this branch's columns (STREAMING.md §"Replay"). Done inside
+        # the store-bearing context so any store reads behave like a real event.
         # F2: every contextvar children inherit must be set in THIS parent
         # context, before create_task_group(). `audit_context()` is petri's
         # single CM for that. The session installed `transcript` already (it
         # owns and subscribes to it across branches), so we don't pass it here.
+        # `store=self.store` installs a branch-private Store so this branch's
+        # `AuditTape` doesn't read/write a sibling's (petri footgun #5).
+        # Drain is owned by the Session (started in `Session.start()`), not by
+        # this branch (petri footgun #12), so `run()` just runs the audit.
         with audit_context(
             controller=self.controller,
             audit_tape=self.audit_tape,
+            store=self.store,
             active_model=target_model,
             model_roles={"auditor": auditor_model, "target": target_model},
         ):
-            async with anyio.create_task_group() as outer:
-                outer.start_soon(self.session.drain)
+            if self.resume is not None:
+                self._synthesize_prefix_events(auditor_model, target_model)
 
-                await run_audit(
-                    auditor=auditor,
-                    target=target_agent(),
-                    channel=self.channel,
-                    history=self.history,
-                    audit_tape=self.audit_tape,
-                    auditor_span_id=self.auditor_span_id,
-                    target_span_id=self.target_span_id,
-                )
+            await run_audit(
+                auditor=auditor,
+                target=target_agent(),
+                channel=self.channel,
+                history=self.history,
+                audit_tape=self.audit_tape,
+                auditor_span_id=self.auditor_span_id,
+                target_span_id=self.target_span_id,
+                # name timelines per branch: multiple branches share the
+                # session's one Transcript, so the default ("target"/"auditor")
+                # collides on the second branch's `add_timeline`.
+                audit_name=self.branch_id,
+            )
 
-                self.status = "ended"
-                self.generating = None
-                self._free_running = False
-                # let drain flush anything still queued from the final events,
-                # then cancel it so run() returns. (Closing the send stream
-                # would be cleaner but `drain` is Session-owned and shared.)
-                await anyio.sleep(0.1)
-                outer.cancel_scope.cancel()
+        self.status = "ended"
+        self.generating = None
+        self._free_running = False
+
+    def _synthesize_prefix_events(
+        self, auditor_model: Model, target_model: Model
+    ) -> None:
+        """Replay the resume prefix onto the wire as settled `ModelEvent`s.
+
+        STREAMING.md §"Replay" promises the workbench synthesises the prefix's
+        events from `audit_tape.log` so a resumed branch's columns are not blank
+        before the first live turn — but the record/replay machinery serves
+        replayed calls from `pending` without emitting events (the sink never
+        fires). This walks the resume steps and feeds one settled `ModelEvent`
+        per recorded `ModelOutput` through the session, routed to this branch's
+        auditor or target column by `span_id`.
+
+        The synthesised events carry `input=[]` — we don't reconstruct the input
+        for replayed turns, so the `ModelEventRow` input-tail is empty for them.
+        That is acceptable: they are the *replayed* prefix the user already saw
+        in the parent branch, not freshly generated content.
+        """
+        assert self.resume is not None
+        for step in self.resume:
+            if not isinstance(step.value, ModelOutput):
+                continue
+            if step.source == "auditor:Model.generate":
+                span_id, role, model = self.auditor_span_id, "auditor", auditor_model
+            elif step.source == "Model.generate":
+                span_id, role, model = self.target_span_id, "target", target_model
+            else:
+                continue
+            ev = ModelEvent(
+                model=model.name,
+                role=role,
+                input=[],
+                tools=[],
+                tool_choice="auto",
+                config=GenerateConfig(),
+                output=step.value,
+                pending=False,
+                span_id=span_id,
+            )
+            self.session._on_event(ev)  # noqa: SLF001
 
     async def _gated_generate(
         self,
