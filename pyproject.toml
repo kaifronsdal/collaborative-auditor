@@ -30,8 +30,9 @@ build-backend = "uv_build"
 module-name = ["collaborative_auditor", "workbench"]
 
 [tool.uv.sources]
+inspect-ai = { path = "../inspect_ai", editable = true }
 inspect-petri = { path = "../petri-meridian", editable = true }
 aisitools = { git = "ssh://git@github.com/AI-Safety-Institute/aisi-inspect-tools.git" }
 
 [tool.uv]
-exclude-newer-package = { aisitools = false, anthropic = false, openai = false }
+exclude-newer-package = { aisitools = false, anthropic = false, inspect-ai = false, openai = false }

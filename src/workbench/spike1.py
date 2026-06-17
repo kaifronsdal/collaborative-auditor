@@ -159,9 +159,26 @@ async def main(max_turns: int = 6) -> None:
     session_transcript = Transcript()
     init_transcript(session_transcript)
 
-    # models — outside any inspect task
-    auditor_model = get_model("anthropic/claude-sonnet-4-6")
-    target_model = get_model("anthropic/claude-haiku-4-5-20251001")
+    # streaming capture (STREAMING.md §A): record every (uuid, pending,
+    # text-length) the subscriber sees so we can verify that partial-output
+    # flushes arrived per ModelEvent while pending, before completion.
+    from inspect_ai.event import ModelEvent as _ME
+
+    stream_log: list[tuple[str, bool | None, int]] = []
+
+    def _on_event(ev: object) -> None:
+        if isinstance(ev, _ME):
+            stream_log.append(
+                (ev.uuid, ev.pending, len(ev.output.completion or ""))
+            )
+
+    session_transcript._subscribe(_on_event)  # noqa: SLF001
+
+    # models — outside any inspect task. `streaming=True` forces the provider
+    # onto its `messages.stream` path so partial-output flushes fire (default
+    # is "auto", which only streams with reasoning or max_tokens≥8192).
+    auditor_model = get_model("anthropic/claude-sonnet-4-6", streaming=True)
+    target_model = get_model("anthropic/claude-haiku-4-5-20251001", streaming=True)
     init_model_roles({"auditor": auditor_model, "target": target_model})
     init_active_model(target_model, GenerateConfig())  # some inspect internals consult active
 
@@ -291,6 +308,49 @@ async def main(max_turns: int = 6) -> None:
         f"✓ transcript shared & span-routable: {len(events)} events, "
         f"{len(model_events)} ModelEvents → auditor={by_role['auditor']} "
         f"target={by_role['target']}; trajectory spans={len(traj_spans)}"
+    )
+
+    # streaming flushes (STREAMING.md §A): each ModelEvent should have ≥1
+    # update with pending=True and growing text, then exactly one terminal
+    # (pending falsy) whose text ≥ the last partial.
+    from collections import defaultdict
+
+    per_uuid: dict[str, list[tuple[bool | None, int]]] = defaultdict(list)
+    for uid, pending, n in stream_log:
+        per_uuid[uid].append((pending, n))
+    me_uuids = {me.uuid for me in model_events}
+    streamed_uuids = {uid for uid in per_uuid if uid in me_uuids}
+    assert streamed_uuids == me_uuids, (
+        f"some ModelEvents never reached the subscriber: "
+        f"{me_uuids - streamed_uuids}"
+    )
+    n_with_partials = 0
+    total_partials = 0
+    for uid in me_uuids:
+        seq = per_uuid[uid]
+        partials = [n for p, n in seq if p]
+        terminals = [n for p, n in seq if not p]
+        assert len(terminals) == 1, f"{uid}: expected exactly 1 terminal, got {len(terminals)}"
+        # partials are monotone non-decreasing (snapshot grows)
+        assert partials == sorted(partials), f"{uid}: partial lengths not monotone: {partials}"
+        # text-bearing partials never exceed the terminal (terminal may add
+        # nothing if the message is tool-calls only, since .completion is
+        # text-only; in that case all partials are 0 too)
+        text_partials = [n for n in partials if n > 0]
+        if text_partials:
+            assert terminals[0] >= text_partials[-1], (
+                f"{uid}: terminal {terminals[0]} < last partial {text_partials[-1]}"
+            )
+            n_with_partials += 1
+        total_partials += len(partials)
+    assert n_with_partials > 0, (
+        "no ModelEvent received a text-bearing partial — provider stream hook "
+        "did not fire (is streaming=True reaching the provider?)"
+    )
+    print(
+        f"✓ streaming flushes: {total_partials} partial updates across "
+        f"{len(me_uuids)} generates ({n_with_partials} with text); "
+        f"all monotone, all pending=True, 1 terminal each"
     )
 
     # dump auditor + target message lists for inspection
