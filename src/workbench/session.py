@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from fastapi import WebSocketDisconnect
 from inspect_ai.event import Event, ModelEvent, SpanBeginEvent
 from inspect_ai.event._pool import _compress_refs, _msg_hash  # noqa: PLC2701
 from inspect_ai.log._transcript import Transcript, init_transcript
@@ -61,7 +62,6 @@ class Session:
 
         # event store + span routing (STREAMING.md §B)
         self.events: dict[str, dict[str, Any]] = {}  # uuid → dumped event
-        self.seen: set[str] = set()  # event uuids (update vs first-seen)
         self.span_role: dict[str, tuple[str, Role]] = {}  # span_id → (branch, role)
         self.span_parent: dict[str, str | None] = {}  # from SpanBeginEvent
 
@@ -112,8 +112,7 @@ class Session:
         return dumped
 
     def _on_event(self, ev: Event) -> None:
-        is_update = ev.uuid in self.seen
-        self.seen.add(ev.uuid)
+        is_update = ev.uuid in self.events
 
         if isinstance(ev, SpanBeginEvent):
             self.span_parent[ev.id] = ev.parent_id
@@ -163,7 +162,8 @@ class Session:
         for conn in self.connections:
             try:
                 await conn.send_json(msg)
-            except (ConnectionError, OSError, RuntimeError):
+            except (WebSocketDisconnect, ConnectionError, OSError) as exc:
+                logger.debug("dropping dead connection: %r", exc)
                 dead.append(conn)
         for conn in dead:
             self.connections.remove(conn)
