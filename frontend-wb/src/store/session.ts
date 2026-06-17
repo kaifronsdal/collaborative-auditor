@@ -21,7 +21,7 @@ import {
   resolveRole,
   type EventsByRole,
 } from "../lib/events";
-import type { BranchId, Down, QueuedMap, Role, Up } from "../lib/wire";
+import type { BranchId, Down, QueuedMap, Role, Status, Up } from "../lib/wire";
 
 export type SessionState = {
   pool: ChatMessage[];
@@ -39,6 +39,8 @@ export type SessionState = {
   queued: QueuedMap;
   version: number;
   current: string | null;
+  /** Lifecycle status of the current branch (idle/running/paused/ended). */
+  status: Status | null;
   ws: WebSocket | null;
   /** Id of the session the current socket is for; guards idempotent connect. */
   sessionId: string | null;
@@ -111,8 +113,8 @@ export const useSession = create<SessionState>((set, get) => ({
   queued: {},
   version: 0,
   current: null,
+  status: null,
   ws: null,
-
   sessionId: null,
 
   apply: (msg: Down) =>
@@ -140,8 +142,13 @@ export const useSession = create<SessionState>((set, get) => ({
             spanParent,
             queued: msg.queued,
             current: msg.current,
+            status: msg.status,
             version: msg.v,
           };
+        }
+
+        case "status": {
+          return { status: msg.status, version: msg.v };
         }
 
         case "pool": {

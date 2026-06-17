@@ -152,8 +152,54 @@ body {
   max-height: 320px; overflow: auto;
 }
 
-.event-stub {
-  font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
-  background: var(--bg-200); border-radius: 8px; padding: 8px;
-  margin: 8px 0; white-space: pre-wrap; max-height: 200px; overflow: auto;
+/* ---------- composer zone: runline + composer card (mockups-v4) ---------- */
+.composer-zone {
+  flex-shrink: 0; padding: 8px 22px 14px;
+  border-top: 1px solid var(--border-soft);
 }
+
+/* runline: one quiet italic status sentence with controls on the right. */
+.runline {
+  display: flex; align-items: baseline; gap: 10px; margin: 4px 0 12px;
+  font-size: 13px; font-style: italic; color: var(--ink-dim);
+}
+.runline .star { color: var(--accent); font-style: normal; }
+.runline.status-running .star { animation: pulse 1.4s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+.runline .runtext { min-width: 0; }
+.runline .ctl { margin-left: auto; font-style: normal; display: flex; gap: 12px; }
+.runline .ctl button {
+  border: none; background: none; cursor: pointer; font: inherit;
+  font-size: 12.5px; color: var(--ink-faint); padding: 0;
+}
+.runline .ctl button.live { color: var(--accent-text); }
+.runline .ctl button:hover:not(:disabled) { color: var(--ink-mid); }
+.runline .ctl button:disabled { opacity: .45; cursor: default; }
+
+/* composer card: rounded, soft shadow, circular accent send (mockups-v4). */
+.composer {
+  background: var(--bg-000); border: 1px solid var(--border);
+  border-radius: 16px; padding: 10px 14px 8px;
+  box-shadow: 0 2px 8px hsl(51 20% 50% / .06);
+}
+.composer-input {
+  width: 100%; border: none; outline: none; resize: none;
+  background: transparent; font: inherit; color: var(--ink);
+  font-size: 14.5px; line-height: 1.5;
+}
+.composer-input::placeholder { color: var(--ink-faint); }
+.composer-lower {
+  display: flex; align-items: center; gap: 12px; margin-top: 8px;
+}
+.composer-lower .dest {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 2px 11px; font-size: 12px; color: var(--ink-mid);
+}
+.composer-lower .send {
+  margin-left: auto; width: 28px; height: 28px; border-radius: 50%;
+  background: var(--accent); color: #fff; border: none; font-size: 14px;
+  cursor: pointer; line-height: 1; display: flex; align-items: center;
+  justify-content: center;
+}
+.composer-lower .send:disabled { opacity: .4; cursor: default; }

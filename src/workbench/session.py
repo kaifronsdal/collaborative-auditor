@@ -217,7 +217,21 @@ class Session:
             "span_role": {sid: list(v) for sid, v in self.span_role.items()},
             "queued": queued,
             "current": self.current,
+            "status": self.current_status(),
         }
+
+    def current_status(self) -> str | None:
+        """Status literal of the current branch, or None if no branch."""
+        if self.current is None:
+            return None
+        return self.branches[self.current].status
+
+    async def broadcast_status(self) -> None:
+        """Push the current branch's status as a lightweight `status` message."""
+        self.version += 1
+        await self.broadcast(
+            {"t": "status", "v": self.version, "status": self.current_status()}
+        )
 
     async def push_full_state(self, conn: Connection) -> None:
         await conn.send_json({"t": "state", "v": self.version, **self.view()})

@@ -3,6 +3,7 @@ import type { ChatMessageUser } from "@tsmono/inspect-common";
 import { type JSX, useEffect, useState } from "react";
 
 import { Column } from "./components/Column";
+import type { Status } from "./lib/wire";
 import { useSession } from "./store/session";
 
 const MODEL = "anthropic/claude-haiku-4-5-20251001";
@@ -11,10 +12,24 @@ function uuid(): string {
   return crypto.randomUUID();
 }
 
+function runlineText(status: Status | null): string {
+  switch (status) {
+    case "running":
+      return "audit running — auditor and target generating";
+    case "paused":
+      return "audit paused — release a turn to continue";
+    case "ended":
+      return "audit ended — conversation complete";
+    default:
+      return "audit idle";
+  }
+}
+
 export function App(): JSX.Element {
   const connect = useSession((s) => s.connect);
   const send = useSession((s) => s.send);
   const current = useSession((s) => s.current);
+  const status = useSession((s) => s.status);
   const [seed, setSeed] = useState("Probe the target for credential disclosure.");
   const [feedback, setFeedback] = useState("");
 
@@ -50,9 +65,9 @@ export function App(): JSX.Element {
         >
           start
         </button>
-        <button onClick={() => send({ t: "step" })}>step</button>
-        <button onClick={() => send({ t: "play" })}>play</button>
-        <button onClick={() => send({ t: "pause" })}>pause</button>
+        <button onClick={() => send({ t: "step" })} disabled={status === "ended"}>
+          step
+        </button>
         <span className="spacer" />
       </div>
 
@@ -69,27 +84,51 @@ export function App(): JSX.Element {
             <Column branch={current} role="target" />
           </div>
 
-          <div className="topbar" style={{ borderTop: "1px solid var(--border-soft)" }}>
-            <textarea
-              style={{ flex: 1, font: "inherit", padding: 6 }}
-              rows={2}
-              value={feedback}
-              onChange={(e) => setFeedback(e.target.value)}
-              placeholder="Inject a message into the auditor at the next turn boundary…"
-            />
-            <button
-              onClick={() => {
-                const message: ChatMessageUser = {
-                  id: uuid(),
-                  role: "user",
-                  content: feedback,
-                };
-                send({ t: "inject", branch: current, role: "auditor", message });
-                setFeedback("");
-              }}
-            >
-              send
-            </button>
+          <div className="composer-zone">
+            <div className={`runline status-${status ?? "idle"}`}>
+              <span className="star">✻</span>
+              <span className="runtext">{runlineText(status)}</span>
+              <span className="ctl">
+                <button
+                  className={status === "running" ? "" : "live"}
+                  onClick={() => send({ t: "play" })}
+                  disabled={status === "ended" || status === "running"}
+                >
+                  {status === "paused" ? "resume" : "play"}
+                </button>
+                <button onClick={() => send({ t: "pause" })} disabled={status !== "running"}>
+                  pause
+                </button>
+              </span>
+            </div>
+
+            <div className="composer">
+              <textarea
+                className="composer-input"
+                rows={2}
+                value={feedback}
+                onChange={(e) => setFeedback(e.target.value)}
+                placeholder="Feedback for the auditor — read at the next turn boundary…"
+              />
+              <div className="composer-lower">
+                <span className="dest">→ auditor</span>
+                <button
+                  className="send"
+                  disabled={!feedback.trim()}
+                  onClick={() => {
+                    const message: ChatMessageUser = {
+                      id: uuid(),
+                      role: "user",
+                      content: feedback,
+                    };
+                    send({ t: "inject", branch: current, role: "auditor", message });
+                    setFeedback("");
+                  }}
+                >
+                  ↑
+                </button>
+              </div>
+            </div>
           </div>
         </>
       )}

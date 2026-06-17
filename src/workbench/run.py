@@ -110,16 +110,22 @@ class Branch:
 
     def step(self) -> None:
         """Release one auditor turn."""
+        if self.status != "ended":
+            self.status = "running"
         self._gate.set()
 
     def play(self) -> None:
         """Run freely: each turn re-arms the gate itself until `pause()`."""
         self._free_running = True
+        if self.status != "ended":
+            self.status = "running"
         self._gate.set()
 
     def pause(self) -> None:
         """Stop after the current turn; the next gate wait blocks."""
         self._free_running = False
+        if self.status != "ended":
+            self.status = "paused"
 
     async def _await_turn(self) -> None:
         await self._gate.wait()
@@ -147,7 +153,13 @@ class Branch:
             eager_resume=True,
         )
 
-        self.status = "running"
+        # The auditor blocks on the step gate before its first turn, so the
+        # branch is "paused" (awaiting play/step) until a turn is released — not
+        # "running". play()/step() flip it to "running". Broadcast so a client
+        # that connected on the `start` snapshot (which still read "idle", as
+        # this detached task hadn't run yet) learns the paused state.
+        self.status = "paused"
+        await self.session.broadcast_status()
 
         # On resume, synthesise the replayed prefix's events onto the wire
         # before the live run starts, so the frontend shows the parent branch's
@@ -188,6 +200,7 @@ class Branch:
         self.status = "ended"
         self.generating = None
         self._free_running = False
+        await self.session.broadcast_status()
 
     def _synthesize_prefix_events(
         self, auditor_model: Model, target_model: Model

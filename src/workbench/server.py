@@ -84,6 +84,7 @@ async def _dispatch(session: Session, data: dict) -> None:
                 logger.warning("%r before start — dropping", cmd)
                 return
             getattr(session.branches[session.current], cmd)()
+            await session.broadcast_status()
         case "inject":
             branch_id = data["branch"]
             role = data["role"]

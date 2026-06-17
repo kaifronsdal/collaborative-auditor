@@ -11,6 +11,7 @@ import type { ChatMessage, Event } from "@tsmono/inspect-common";
 
 export type Role = "auditor" | "target";
 export type BranchId = string;
+export type Status = "idle" | "running" | "paused" | "ended";
 
 /** Per-branch, per-role queued (user-injected, not yet generated) messages. */
 export type QueuedMap = Record<BranchId, Record<Role, ChatMessage[]>>;
@@ -24,10 +25,12 @@ export type Down =
       span_role: Record<string, [BranchId, Role]>;
       queued: QueuedMap;
       current: string | null;
+      status: Status | null;
     }
   | { t: "pool"; v: number; from: number; entries: ChatMessage[] }
   | { t: "event"; v: number; event: Event }
   | { t: "update"; v: number; event: Event }
+  | { t: "status"; v: number; status: Status | null }
   | {
       t: "queued";
       v: number;
