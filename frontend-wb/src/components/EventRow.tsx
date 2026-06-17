@@ -13,10 +13,11 @@ export function EventRow({ ev, prevInputLen }: Props): JSX.Element | null {
       return <ModelEventRow ev={ev} prevInputLen={prevInputLen} />;
     case "tool":
       return <ToolEventRow ev={ev} />;
-    case "span_begin":
-    case "span_end":
-      return null;
     default:
-      return <pre className="event-stub">{JSON.stringify(ev, null, 2)}</pre>;
+      // Every other inspect event (span_begin/end, state, store, info, step,
+      // logger, …) is internal bookkeeping, not conversation content — the M0
+      // columns show model output and tool calls only. Dumping the raw JSON
+      // (the old behaviour) littered the target column with state/store blobs.
+      return null;
   }
 }
