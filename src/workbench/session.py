@@ -25,7 +25,10 @@ import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from fastapi import WebSocketDisconnect
 from inspect_ai.event import Event, ModelEvent, SpanBeginEvent
-from inspect_ai.event._pool import _compress_refs, _msg_hash  # noqa: PLC2701
+from inspect_ai.event._pool import (  # noqa: PLC2701
+    _msg_hash,
+    condense_model_event_inputs_with_lookup,
+)
 from inspect_ai.log._transcript import Transcript, init_transcript
 from inspect_ai.model import ChatMessage
 
@@ -79,37 +82,33 @@ class Session:
 
     # -- message pool ---------------------------------------------------------
 
-    def _intern(self, msgs: list[ChatMessage]) -> list[list[int]]:
-        """Intern messages into the pool, returning run-length-encoded refs.
+    def _lookup(self, msg: ChatMessage) -> int:
+        """Intern a message into the pool, returning its index.
 
-        Each message is content-hashed (excluding `id`, matching inspect's
-        `event/_pool.py`); unseen messages are appended to `self.pool`. Returns
-        `[[start, end_excl], ...]` ranges into the pool — the same wire shape
-        `expandEvents` resolves on the frontend.
+        The hash matches inspect's `.eval` recorder (`event/_pool.py`), so the
+        wire encoding is byte-identical to what `expandEvents` resolves.
         """
-        raw_indices: list[int] = []
-        for msg in msgs:
-            h = _msg_hash(msg)
-            idx = self.pool_idx.get(h)
-            if idx is None:
-                idx = len(self.pool)
-                self.pool_idx[h] = idx
-                self.pool.append(msg)
-            raw_indices.append(idx)
-        return [list(r) for r in _compress_refs(raw_indices)]
+        h = _msg_hash(msg)
+        idx = self.pool_idx.get(h)
+        if idx is None:
+            idx = len(self.pool)
+            self.pool_idx[h] = idx
+            self.pool.append(msg)
+        return idx
 
     # -- event handling (sync, fast, inline in the generating task) -----------
 
-    def _condense(self, ev: ModelEvent) -> dict[str, Any]:
-        """Dump a `ModelEvent`, interning its input into the pool.
+    def _condense(self, ev: Event) -> dict[str, Any]:
+        """Dump an event, interning `ModelEvent.input` into the pool.
 
-        Replaces the (re-sent-every-flush) `input` history with `input_refs`
-        ranges so `update`s don't re-ship the full conversation.
+        Delegates to inspect's `condense_model_event_inputs_with_lookup` — a
+        typed `model_copy` that sets `input_refs` and clears `input`, so the
+        wire shape tracks inspect's own `.eval` condensation rather than a
+        hand-patched dict.
         """
-        dumped = ev.model_dump(mode="json")
-        dumped["input_refs"] = self._intern(ev.input)
-        dumped["input"] = []
-        return dumped
+        return condense_model_event_inputs_with_lookup(ev, self._lookup).model_dump(
+            mode="json"
+        )
 
     def _on_event(self, ev: Event) -> None:
         is_update = ev.uuid in self.events
@@ -117,12 +116,9 @@ class Session:
         if isinstance(ev, SpanBeginEvent):
             self.span_parent[ev.id] = ev.parent_id
 
-        if isinstance(ev, ModelEvent):
-            dumped = self._condense(ev)
-            if not is_update:
-                self._emit_pool_delta()
-        else:
-            dumped = ev.model_dump(mode="json")
+        dumped = self._condense(ev)
+        if isinstance(ev, ModelEvent) and not is_update:
+            self._emit_pool_delta()
 
         self.events[ev.uuid] = dumped
         self.version += 1
