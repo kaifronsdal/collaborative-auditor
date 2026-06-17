@@ -1,0 +1,9 @@
+packages:
+  - "."
+  - "../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/*"
+  - "../../inspect_ai/src/inspect_ai/_view/ts-mono/tooling/*"
+# Vite/vitest need esbuild's native binary built on install; the oxc resolver
+# needs unrs-resolver. The ts-mono workspace (consumed for @tsmono/inspect-common)
+# transitively pulls a second esbuild major, so we allow all build scripts here
+# rather than pin exact versions.
+dangerouslyAllowAllBuilds: true

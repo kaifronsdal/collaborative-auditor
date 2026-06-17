@@ -12,6 +12,7 @@ wheels/
 # Frontend build output
 frontend/dist/
 frontend/node_modules/
+frontend-wb/node_modules/
 
 # Environment
 .env
