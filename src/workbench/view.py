@@ -1,37 +1,14 @@
-"""Wire types for the audit-workbench backend → frontend protocol.
+"""Shared literals for the audit-workbench backend.
 
-STREAMING.md §C. The frontend never sees inspect event types, span trees, or
-`ModelEvent.input`; it sees `ChatMessage[]` per (branch, role), serialized via
-inspect's own `.model_dump()`.
+STREAMING.md §C. The wire `state` snapshot is built inline by `Session.view()`
+as a plain dict (pool + events + span_role + queued) — there is no backend
+message derivation, so no per-role `ChatMessage[]` view type. This module keeps
+only the `Role`/`Status` literals shared by `session.py` and `run.py`.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from inspect_ai.model import ChatMessage
-from pydantic import BaseModel
-
 Role = Literal["auditor", "target"]
 Status = Literal["idle", "running", "paused", "ended"]
-
-
-class BranchView(BaseModel):
-    auditor: list[ChatMessage]
-    target: list[ChatMessage]
-    status: Status
-    generating: Role | None  # which role's ModelEvent is currently pending
-
-
-class SessionView(BaseModel):
-    branches: dict[str, BranchView]
-    current: str
-
-
-def dump_message(msg: ChatMessage) -> dict:
-    """Serialize a single `ChatMessage` for the wire (inspect's own shape)."""
-    return msg.model_dump(mode="json")
-
-
-def dump_messages(msgs: list[ChatMessage]) -> list[dict]:
-    return [dump_message(m) for m in msgs]

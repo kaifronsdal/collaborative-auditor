@@ -85,8 +85,8 @@ class Branch:
         self.permits = anyio.Semaphore(initial_value=0)
         self._playing = False
 
-        # derived per-role message lists — what Session._on_event appends to.
-        self.messages: dict[Role, list[ChatMessage]] = {"auditor": [], "target": []}
+        # user-injected messages awaiting the next turn boundary (STREAMING.md §B).
+        self.queued: dict[Role, list[ChatMessage]] = {"auditor": [], "target": []}
         self.status: Status = "idle"
         self.generating: Role | None = None
 
@@ -211,6 +211,12 @@ class Branch:
 
         for _turn in range(self.max_turns):
             await self.permits.acquire()  # ← the step gate
+
+            # fold any user-injected messages in before the model sees them; the
+            # injected `id` survives into ModelEvent.input → pool so the frontend
+            # reconciles the ghost bubble by id (STREAMING.md §B).
+            state.messages.extend(self.queued["auditor"])
+            self.queued["auditor"].clear()
 
             self.generating = "auditor"
             state.output = await generate(input=state.messages, tools=tools)

@@ -12,6 +12,7 @@ import logging
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from inspect_ai.model import ChatMessageUser
 from shortuuid import uuid
 
 from workbench.run import Branch
@@ -74,6 +75,22 @@ async def _dispatch(session: Session, data: dict) -> None:
             session.branches[session.current].play()
         case "pause":
             session.branches[session.current].pause()
+        case "inject":
+            branch_id = data["branch"]
+            role = data["role"]
+            # preserve the client-generated id so the frontend reconciles the
+            # ghost bubble once the id appears in the next ModelEvent.input.
+            msg = ChatMessageUser.model_validate(data["message"])
+            session.branches[branch_id].queued[role].append(msg)
+            await session.broadcast(
+                {
+                    "t": "queued",
+                    "v": session.version,
+                    "branch": branch_id,
+                    "role": role,
+                    "message": data["message"],
+                }
+            )
         case other:
             logger.warning("unknown command %r", other)
 
