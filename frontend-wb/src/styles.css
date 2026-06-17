@@ -1,5 +1,6 @@
 /* Audit Workbench — palette lifted from mockups-v4/style.css (claude.ai light). */
 :root {
+  --bg-000: hsl(0 0% 100%);
   --bg-100: hsl(48 33.3% 97.1%);
   --bg-200: hsl(53 28.6% 94.5%);
   --bg-300: hsl(48 25% 92.2%);
@@ -15,6 +16,7 @@
   --accent: hsl(15 63.1% 59.6%);
   --accent-text: hsl(15 54.2% 45%);
   --link: hsl(210 70.9% 45%);
+  --danger: hsl(0 56.2% 45.4%);
 
   --serif: ui-serif, Georgia, "Times New Roman", serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
@@ -65,19 +67,47 @@ body {
   margin: 0 -22px; padding-left: 22px; padding-right: 22px; padding-top: 14px;
 }
 
-.bubble-wrap { margin: 12px 0 2px; }
+/* user / system input-tail = soft right-set bubble (claude.ai user style,
+   mockups-v4). assistant output = plain left-set text, no chrome. */
+.bubble-wrap { display: flex; flex-direction: column; margin: 16px 0 4px; }
 .bubble {
-  padding: 8px 14px; border-radius: 12px; max-width: 90%;
-  white-space: pre-wrap; word-break: break-word;
+  max-width: 82%; padding: 10px 16px; border-radius: 16px;
+  white-space: pre-wrap; word-break: break-word; line-height: 1.55;
 }
-.bubble.system { background: var(--bg-200); color: var(--ink-mid); font-size: 13px; }
-.bubble.user { background: var(--bg-300); }
-.bubble.assistant { background: transparent; padding-left: 0; }
+.bubble.system {
+  align-self: flex-start; background: var(--bg-200); color: var(--ink-mid);
+  font-size: 13px; max-width: 100%;
+}
+.bubble.user { align-self: flex-end; background: var(--bg-300); }
+.bubble.assistant {
+  align-self: stretch; background: transparent; border-radius: 0;
+  padding: 0; max-width: 100%; color: var(--ink);
+}
 .bubble.tool { background: var(--bg-200); font-family: var(--mono); font-size: 12.5px; }
-.bubble.ghost { opacity: 0.55; border: 1px dashed var(--border); background: transparent; }
-.bubble-by { font-size: 11px; color: var(--ink-faint); margin: 3px 0 0 2px; }
+.bubble.ghost {
+  align-self: flex-end; opacity: 0.7; border: 1px dashed var(--border);
+  background: transparent;
+}
+
+/* byline: uppercase, letter-spaced, faint — sits under its bubble, aligned to
+   the bubble's side (right for user/ghost, left for system/assistant). */
+.bubble-by {
+  font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+  color: var(--ink-faint); margin-top: 5px;
+}
+.bubble-wrap:has(.user) > .bubble-by,
+.bubble-wrap:has(.ghost) > .bubble-by { align-self: flex-end; }
+.bubble-wrap:has(.system) > .bubble-by,
+.bubble-wrap:has(.assistant) > .bubble-by { align-self: flex-start; }
 
 .reasoning { color: var(--ink-dim); font-style: italic; font-size: 13.5px; }
+
+/* inline tool-call marker inside the assistant bubble — faint mono, the full
+   call (args + result) is in the ToolEventRow below. */
+.tool-call-inline {
+  display: inline-block; margin-left: 8px;
+  font-family: var(--mono); font-size: 12px; color: var(--accent-text);
+}
 
 .cursor {
   display: inline-block; width: 7px; height: 1em; margin-left: 1px;
@@ -86,26 +116,39 @@ body {
 }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* caption-style action row — faint links separated by " · " (mockups-v4). */
 .actions {
-  margin-top: 6px; display: flex; gap: 10px;
-  font-size: 11.5px; color: var(--ink-faint);
+  margin-top: 7px; display: flex; align-items: center;
+  font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
 }
 .actions button {
   border: none; background: none; cursor: pointer;
-  color: var(--ink-faint); font: inherit; padding: 0;
+  color: inherit; font: inherit; padding: 0;
 }
-.actions button:hover { color: var(--accent-text); }
+.actions button:not(:first-child)::before {
+  content: "·"; margin: 0 8px; color: var(--ink-faint); cursor: default;
+}
+.actions button:hover:not(:disabled) { color: var(--accent-text); }
+.actions button:disabled { cursor: default; opacity: 0.65; }
 
-.tool-row { margin: 10px 0; }
-.tool-head {
-  font-family: var(--mono); font-size: 12px; color: var(--ink-mid);
-  cursor: pointer;
+/* tool call = quiet collapsed cell with a ⎿ glyph (mockups-v4 .cell). */
+.tool-row {
+  border: 1px solid var(--border-soft); border-radius: 12px;
+  background: var(--bg-000, #fff); margin: 14px 0; overflow: hidden;
 }
+.tool-head {
+  display: flex; align-items: center; gap: 9px;
+  padding: 8px 14px; font-family: var(--mono); font-size: 12.5px;
+  color: var(--ink-mid); cursor: pointer;
+}
+.tool-head .glyph { color: var(--ink-faint); font-size: 12px; }
 .tool-head .fn { color: var(--accent-text); }
+.tool-head .tool-err { color: var(--danger, hsl(0 56% 45%)); }
+.tool-head .caret { margin-left: auto; color: var(--ink-faint); font-size: 11px; }
 .tool-args, .tool-result {
   font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim);
-  background: var(--bg-200); border-radius: 8px; padding: 8px 10px;
-  margin-top: 5px; white-space: pre-wrap; word-break: break-word;
+  border-top: 1px solid var(--border-soft); padding: 8px 14px;
+  white-space: pre-wrap; word-break: break-word;
   max-height: 320px; overflow: auto;
 }
 

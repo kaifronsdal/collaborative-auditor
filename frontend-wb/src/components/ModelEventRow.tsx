@@ -26,10 +26,11 @@ export function ModelEventRow({ ev, prevInputLen }: Props): JSX.Element {
       <div className="bubble-wrap">
         <div className="bubble assistant">
           {content != null && renderContent(content)}
+          {/* compact one-liner per tool call — the full args/result live in the
+              ToolEventRow below, so we don't dump raw JSON inline. */}
           {toolCalls.map((tc) => (
-            <span key={tc.id} className="reasoning">
-              {" "}
-              [call {tc.function}({JSON.stringify(tc.arguments)})]
+            <span key={tc.id} className="tool-call-inline">
+              → {tc.function}
             </span>
           ))}
           {ev.pending && <span className="cursor" />}
