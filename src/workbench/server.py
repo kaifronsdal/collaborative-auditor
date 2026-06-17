@@ -69,19 +69,27 @@ async def _dispatch(session: Session, data: dict) -> None:
             )
             session.branches[branch_id] = branch
             session.current = branch_id
+            # the branch just registered its auditor/target span ids in
+            # `session.span_role` and we set `current` — clients connected
+            # before this got an empty `span_role`/`current` in their initial
+            # `state` and would otherwise never learn the new mapping (every
+            # event then fails `resolveRole` and renders nowhere). Re-broadcast.
+            await session.broadcast({"t": "state", "v": session.version, **session.view()})
             # run the branch as a detached task; keep a reference so it isn't
             # garbage-collected mid-run (branch.run owns its own task group).
             task = asyncio.create_task(branch.run())
             session.branch_tasks.append(task)
-        case "step":
-            session.branches[session.current].step()
-        case "play":
-            session.branches[session.current].play()
-        case "pause":
-            session.branches[session.current].pause()
+        case "step" | "play" | "pause" as cmd:
+            if session.current is None:
+                logger.warning("%r before start — dropping", cmd)
+                return
+            getattr(session.branches[session.current], cmd)()
         case "inject":
             branch_id = data["branch"]
             role = data["role"]
+            if branch_id not in session.branches:
+                logger.warning("inject for unknown branch %r — dropping", branch_id)
+                return
             # preserve the client-generated id so the frontend reconciles the
             # ghost bubble once the id appears in the next ModelEvent.input.
             msg = ChatMessageUser.model_validate(data["message"])

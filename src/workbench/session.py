@@ -56,7 +56,7 @@ class Session:
         self.transcript._subscribe(self._on_event)  # noqa: SLF001
 
         self.branches: dict[str, Branch] = {}
-        self.current: str = ""
+        self.current: str | None = None
 
         # message pool (STREAMING.md §B): content-hash-deduped, append-only.
         # ModelEvent.input is interned here and replaced by input_refs ranges.

@@ -52,7 +52,7 @@ export function App(): JSX.Element {
         <span className="spacer" />
       </div>
 
-      {current == null ? (
+      {!current ? (
         <div className="columns" style={{ alignItems: "center", justifyContent: "center" }}>
           <p style={{ color: "var(--text-muted, #888)" }}>
             No audit running — click Start to begin.
