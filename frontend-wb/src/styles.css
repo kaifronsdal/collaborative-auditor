@@ -52,13 +52,17 @@ body {
 .columns { display: flex; flex: 1; min-height: 0; }
 .column {
   flex: 1; min-width: 0; overflow-y: auto;
-  padding: 14px 22px 40px;
+  padding: 0 22px 40px;
   border-right: 1px solid var(--border-soft);
 }
 .column:last-child { border-right: none; }
 .column-head {
+  position: sticky; top: 0; z-index: 1;
   font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
-  color: var(--ink-faint); padding-bottom: 10px;
+  color: var(--ink-faint); padding: 0 0 10px;
+  /* fade content out behind the sticky header as it scrolls under */
+  background: linear-gradient(var(--bg-100) 70%, transparent);
+  margin: 0 -22px; padding-left: 22px; padding-right: 22px; padding-top: 14px;
 }
 
 .bubble-wrap { margin: 12px 0 2px; }
