@@ -21,6 +21,7 @@ dependencies = [
 
 [project.scripts]
 collaborative-auditor = "collaborative_auditor.server:run_server"
+workbench = "workbench.server:main"
 
 [build-system]
 requires = ["uv_build>=0.9.26,<0.10.0"]
