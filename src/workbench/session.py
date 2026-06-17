@@ -71,7 +71,7 @@ class Session:
 
         self.version: int = 0
         self.connections: list[Connection] = []
-        self.branch_tasks: list[object] = []  # detached asyncio tasks (server)
+        self.branch_tasks: list[asyncio.Task[None]] = []  # detached branch.run() tasks
 
         # sync handler → drain task hand-off. Unbounded buffer: the handler must
         # never block (it runs inline in the generating task).

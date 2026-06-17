@@ -55,9 +55,34 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
             session.connections.remove(websocket)
 
 
+async def _stop_running_branches(session: Session) -> None:
+    """Enforce one-running-branch-per-session before a fresh `start`.
+
+    Branches within a session share one transcript / sync `_on_event` /
+    pool — concurrent runs race on those (footgun #2). Parallel work uses
+    separate sessions (separate tabs), each with its own `Session`. So
+    `start` cancels any still-running branch task in *this* session; the
+    previous `Branch` (its `audit_tape`, settled events, store) stays in
+    `session.branches` for later viewing/resume — only the live coroutine
+    stops. `run_audit`'s `finally` persists the tape on cancellation.
+    """
+    running = [t for t in session.branch_tasks if not t.done()]
+    for t in running:
+        t.cancel()
+    for t in running:
+        try:
+            await t
+        except (asyncio.CancelledError, Exception) as exc:  # noqa: BLE001
+            logger.debug("previous branch task ended on start: %r", exc)
+    for b in session.branches.values():
+        if b.status == "running":
+            b.status = "ended"
+
+
 async def _dispatch(session: Session, data: dict) -> None:
     match data.get("t"):
         case "start":
+            await _stop_running_branches(session)
             branch_id = uuid()
             branch = Branch(
                 session,
