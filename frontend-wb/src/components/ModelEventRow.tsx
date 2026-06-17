@@ -38,9 +38,9 @@ export function ModelEventRow({ ev, prevInputLen }: Props): JSX.Element {
       </div>
 
       <div className="actions">
-        <button onClick={() => console.log("resample", ev.uuid)}>resample</button>
-        <button onClick={() => console.log("edit", ev.uuid)}>edit</button>
-        <button onClick={() => console.log("branch", ev.uuid)}>branch</button>
+        <button disabled title="not implemented (M0)">resample</button>
+        <button disabled title="not implemented (M0)">edit</button>
+        <button disabled title="not implemented (M0)">branch</button>
       </div>
     </div>
   );

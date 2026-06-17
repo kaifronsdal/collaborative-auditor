@@ -8,10 +8,14 @@ wire format round-trips — resolving a ModelEvent's `input_refs` against the
 accumulated pool reconstructs its real input.
 
 Run:  uv run python -m workbench._smoke
+      uv run python -m workbench._smoke --dump fixtures/smoke.json
 """
 
 from __future__ import annotations
 
+import argparse
+import json
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -38,7 +42,7 @@ def _expand_refs(refs: list[list[int]], pool: list[dict]) -> list[dict]:
     return [pool[i] for s, e in refs for i in range(s, e)]
 
 
-async def _amain() -> None:
+async def _amain(dump_path: Path | None = None) -> None:
     session = Session()
     conn = FakeConn()
     session.connections.append(conn)
@@ -133,9 +137,23 @@ async def _amain() -> None:
     )
     print("✓ smoke passed")
 
+    if dump_path is not None:
+        dump_path.parent.mkdir(parents=True, exist_ok=True)
+        dump_path.write_text(json.dumps(conn.sent, indent=2))
+        print(f"wrote {len(conn.sent)} messages → {dump_path}")
+
 
 def main() -> None:
-    anyio.run(_amain)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--dump",
+        metavar="PATH",
+        type=Path,
+        default=None,
+        help="write captured wire messages as JSON to PATH (e.g. fixtures/smoke.json)",
+    )
+    args = parser.parse_args()
+    anyio.run(_amain, args.dump)
 
 
 if __name__ == "__main__":

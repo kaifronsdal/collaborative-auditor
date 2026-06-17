@@ -17,7 +17,6 @@ export function App(): JSX.Element {
   const current = useSession((s) => s.current);
   const [seed, setSeed] = useState("Probe the target for credential disclosure.");
   const [feedback, setFeedback] = useState("");
-  const branch = current ?? "b0";
 
   useEffect(() => {
     connect("default");
@@ -53,33 +52,43 @@ export function App(): JSX.Element {
         <span className="spacer" />
       </div>
 
-      <div className="columns">
-        <Column branch={branch} role="auditor" />
-        <Column branch={branch} role="target" />
-      </div>
+      {current == null ? (
+        <div className="columns" style={{ alignItems: "center", justifyContent: "center" }}>
+          <p style={{ color: "var(--text-muted, #888)" }}>
+            No audit running — click Start to begin.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="columns">
+            <Column branch={current} role="auditor" />
+            <Column branch={current} role="target" />
+          </div>
 
-      <div className="topbar" style={{ borderTop: "1px solid var(--border-soft)" }}>
-        <textarea
-          style={{ flex: 1, font: "inherit", padding: 6 }}
-          rows={2}
-          value={feedback}
-          onChange={(e) => setFeedback(e.target.value)}
-          placeholder="Inject a message into the auditor at the next turn boundary…"
-        />
-        <button
-          onClick={() => {
-            const message: ChatMessageUser = {
-              id: uuid(),
-              role: "user",
-              content: feedback,
-            };
-            send({ t: "inject", branch, role: "auditor", message });
-            setFeedback("");
-          }}
-        >
-          send
-        </button>
-      </div>
+          <div className="topbar" style={{ borderTop: "1px solid var(--border-soft)" }}>
+            <textarea
+              style={{ flex: 1, font: "inherit", padding: 6 }}
+              rows={2}
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              placeholder="Inject a message into the auditor at the next turn boundary…"
+            />
+            <button
+              onClick={() => {
+                const message: ChatMessageUser = {
+                  id: uuid(),
+                  role: "user",
+                  content: feedback,
+                };
+                send({ t: "inject", branch: current, role: "auditor", message });
+                setFeedback("");
+              }}
+            >
+              send
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
