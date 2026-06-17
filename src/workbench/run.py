@@ -1,13 +1,16 @@
 """Branch lifecycle — petri's auditor/target loop, outside `inspect eval`, step-gated.
 
-`Branch.run()` is spike1's task group refactored: it sets up the petri channel /
-controller / history / audit-tape, registers its auditor and target span ids on
-the owning `Session` for routing (STREAMING.md §B), and runs the pausable auditor
-turn loop alongside `_run_target` and the session's `drain()` task.
+`Branch.run()` is the petri task group refactored: it sets up the channel /
+controller / history / audit-tape via `audit_context()`, registers its
+auditor and target span ids on the owning `Session` for routing
+(STREAMING.md §B), and runs the pausable auditor turn loop alongside
+`_run_target` and the session's `drain()` task.
 
-The step gate is an `anyio.Semaphore(0)`: each auditor turn `await`s a permit.
-`step()` releases one; `play()` keeps releasing (one at a time, awaiting
-consumption) until `pause()`.
+The step gate is an `anyio.Event` the loop awaits at the top of each turn.
+`step()` sets it (released for one turn). `play()` sets a free-running
+flag; the loop re-arms the gate itself after each turn while that flag
+holds, so play self-perpetuates without a polling pump task. `pause()`
+clears the flag — the next turn waits.
 """
 
 from __future__ import annotations
@@ -22,14 +25,12 @@ from inspect_ai.model import (
     ChatMessage,
     ChatMessageSystem,
     ChatMessageUser,
-    GenerateConfig,
     ModelOutput,
     execute_tools,
     get_model,
 )
-from inspect_ai.model._model import init_active_model, init_model_roles
 from inspect_ai.util import span
-from inspect_petri._auditor import init_audit_tape
+from inspect_petri._auditor import audit_context
 from inspect_petri._auditor.auditor import _run_target
 from inspect_petri._auditor.tools import auditor_tools
 from inspect_petri.target import (
@@ -38,7 +39,6 @@ from inspect_petri.target import (
     History,
     Tape,
     controller,
-    init_controller,
     target_agent,
 )
 from shortuuid import uuid
@@ -81,9 +81,12 @@ class Branch:
         self.history = History()
         self.audit_tape = Tape()
 
-        # step gate — starts closed; step()/play() release permits.
-        self.permits = anyio.Semaphore(initial_value=0)
-        self._playing = False
+        # step gate — the loop awaits `_gate.wait()` each turn then clears it.
+        # `play()` sets `_free_running`; the loop re-sets the gate itself after
+        # each turn while that flag holds, so play self-perpetuates without a
+        # polling pump and `pause()` takes effect at the next turn boundary.
+        self._gate = anyio.Event()
+        self._free_running = False
 
         # user-injected messages awaiting the next turn boundary (STREAMING.md §B).
         self.queued: dict[Role, list[ChatMessage]] = {"auditor": [], "target": []}
@@ -100,27 +103,20 @@ class Branch:
 
     def step(self) -> None:
         """Release one auditor turn."""
-        self.permits.release()
-
-    def pause(self) -> None:
-        self._playing = False
+        self._gate.set()
 
     def play(self) -> None:
-        """Run freely: release permits one at a time until `pause()`.
+        """Run freely: each turn re-arms the gate itself until `pause()`."""
+        self._free_running = True
+        self._gate.set()
 
-        Releases a permit, waits for the loop to consume it, repeats. This keeps
-        the gate honest (no pre-filled backlog) so a later `pause()` stops the
-        next turn rather than letting a queued batch drain.
-        """
-        self._playing = True
+    def pause(self) -> None:
+        """Stop after the current turn; the next gate wait blocks."""
+        self._free_running = False
 
-    async def _pump(self) -> None:
-        """Background releaser driving `play()` — releases while playing."""
-        while True:
-            if self._playing and self.status not in ("ended",):
-                if self.permits._value == 0:  # noqa: SLF001 — no public count
-                    self.permits.release()
-            await anyio.sleep(0.02)
+    async def _await_turn(self) -> None:
+        await self._gate.wait()
+        self._gate = anyio.Event()  # anyio.Event is one-shot; replace to re-arm
 
     # -- run ------------------------------------------------------------------
 
@@ -130,54 +126,53 @@ class Branch:
         auditor_model = get_model(self.auditor_model, streaming=True)
         target_model = get_model(self.target_model, streaming=True)
 
-        # F2: every contextvar children inherit must be init'd in THIS parent
-        # context, before create_task_group().
-        init_model_roles({"auditor": auditor_model, "target": target_model})
-        init_active_model(target_model, GenerateConfig())
-        init_controller(self.controller)
-        init_audit_tape(self.audit_tape)
-        # transcript was init'd by Session.__init__ in the same parent context.
+        # F2: every contextvar children inherit must be set in THIS parent
+        # context, before create_task_group(). `audit_context()` is petri's
+        # single CM for that. The session installed `transcript` already (it
+        # owns and subscribes to it across branches), so we don't pass it here.
+        with audit_context(
+            controller=self.controller,
+            audit_tape=self.audit_tape,
+            active_model=target_model,
+            model_roles={"auditor": auditor_model, "target": target_model},
+        ):
+            generate = self.audit_tape.replayable(
+                auditor_model.generate, source="auditor:Model.generate"
+            )
 
-        generate = self.audit_tape.replayable(
-            auditor_model.generate, source="auditor:Model.generate"
-        )
+            auditor_state = AgentState(messages=[])
+            self.status = "running"
 
-        auditor_state = AgentState(messages=[])
-        self.status = "running"
+            async with anyio.create_task_group() as outer:
+                outer.start_soon(self.session.drain)
 
-        # Outer group owns the long-lived support tasks (drain owns the socket,
-        # pump drives play()); the inner group runs the actual audit and exits
-        # when both auditor loop and target return. We then cancel the support
-        # tasks so run() returns.
-        async with anyio.create_task_group() as outer:
-            outer.start_soon(self.session.drain)
-            outer.start_soon(self._pump)
-
-            async with anyio.create_task_group() as work:
-                work.start_soon(
-                    _run_target,
-                    target_agent(),
-                    self.channel,
-                    None,
-                    self.history,
-                    self.audit_tape,
-                    self.target_span_id,
-                )
-                work.start_soon(
-                    functools.partial(
-                        self._run_auditor_loop,
-                        state=auditor_state,
-                        generate=generate,
-                        target_name=target_model.name,
+                async with anyio.create_task_group() as work:
+                    work.start_soon(
+                        _run_target,
+                        target_agent(),
+                        self.channel,
+                        None,
+                        self.history,
+                        self.audit_tape,
+                        self.target_span_id,
                     )
-                )
+                    work.start_soon(
+                        functools.partial(
+                            self._run_auditor_loop,
+                            state=auditor_state,
+                            generate=generate,
+                            target_name=target_model.name,
+                        )
+                    )
 
-            self.status = "ended"
-            self.generating = None
-            self._playing = False
-            # let drain flush anything still queued from the final events.
-            await anyio.sleep(0.1)
-            outer.cancel_scope.cancel()
+                self.status = "ended"
+                self.generating = None
+                self._free_running = False
+                # let drain flush anything still queued from the final events,
+                # then cancel it so run() returns. (Closing the send stream
+                # would be cleaner but `drain` is Session-owned and shared.)
+                await anyio.sleep(0.1)
+                outer.cancel_scope.cancel()
 
     async def _run_auditor_loop(
         self,
@@ -210,7 +205,7 @@ class Branch:
         ]
 
         for _turn in range(self.max_turns):
-            await self.permits.acquire()  # ← the step gate
+            await self._await_turn()  # ← the step gate
 
             # fold any user-injected messages in before the model sees them; the
             # injected `id` survives into ModelEvent.input → pool so the frontend
@@ -240,6 +235,12 @@ class Branch:
                 state.messages.append(
                     ChatMessageUser(content="Continue the audit using your tools.")
                 )
+
+            # free-running: re-arm the gate so the next iteration proceeds
+            # immediately. A `pause()` between turns clears the flag and the
+            # next `_await_turn` blocks.
+            if self._free_running:
+                self._gate.set()
 
         # turn budget exhausted — end the channel so the target task exits.
         await controller().end_conversation()
