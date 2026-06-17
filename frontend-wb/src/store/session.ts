@@ -23,6 +23,36 @@ import {
 } from "../lib/events";
 import type { BranchId, Down, QueuedMap, Role, Status, Up } from "../lib/wire";
 
+/**
+ * A "Recents" entry. M0 stub: populated UI-side when an audit starts (the
+ * backend has no session-listing endpoint yet — see the deliverable note).
+ * `id` is the branch id once known; until the `state` broadcast lands with a
+ * `current`, the row is keyed by a temporary local id.
+ */
+export type SessionSummary = {
+  id: string;
+  title: string;
+  updatedAt: number;
+};
+
+/** The config a branch was started with. Captured UI-side at `start` (the
+ *  backend doesn't broadcast it); shown read-only in the sidebar config card. */
+export type BranchConfig = {
+  seed: string;
+  auditor_model: string;
+  target_model: string;
+  max_turns: number;
+};
+
+/** Local id for the just-started Recents stub, before `current` arrives. */
+const PENDING_ID = "__pending__";
+
+/** Truncate seed text into a Recents-row title. */
+function titleFromSeed(seed: string): string {
+  const trimmed = seed.trim().replace(/\s+/g, " ");
+  return trimmed.length > 42 ? `${trimmed.slice(0, 42)}…` : trimmed || "untitled audit";
+}
+
 export type SessionState = {
   pool: ChatMessage[];
   events: Map<string, Event>;
@@ -44,11 +74,33 @@ export type SessionState = {
   ws: WebSocket | null;
   /** Id of the session the current socket is for; guards idempotent connect. */
   sessionId: string | null;
+  /**
+   * Recents list (STUB, M0). Most-recent first. Populated on `start`; the
+   * pending entry's `id` is reconciled to the real branch id when the next
+   * `state` broadcast lands with a `current`.
+   */
+  sessionsList: SessionSummary[];
+  /** Per-branch config captured at `start`, keyed by branch id (PENDING_ID
+   *  until reconciled). Read by the sidebar config card. */
+  branchConfig: Record<string, BranchConfig>;
 
   apply: (msg: Down) => void;
   connect: (sessionId: string) => void;
   disconnect: () => void;
   send: (msg: Up) => void;
+  /** Compose + send a `start`, and record a Recents entry for it. */
+  start: (params: {
+    seed: string;
+    auditor_model: string;
+    target_model: string;
+    max_turns: number;
+  }) => void;
+  /**
+   * Return to the empty StartView without tearing down the backend branch.
+   * The branch stays in the session (clicking its Recents row re-views it via
+   * the live socket — `current` flips back on the next `state`).
+   */
+  newAudit: () => void;
 };
 
 /** Resolve a single ModelEvent's `input_refs` against the pool. */
@@ -116,6 +168,8 @@ export const useSession = create<SessionState>((set, get) => ({
   status: null,
   ws: null,
   sessionId: null,
+  sessionsList: [],
+  branchConfig: {},
 
   apply: (msg: Down) =>
     set((state) => {
@@ -134,6 +188,30 @@ export const useSession = create<SessionState>((set, get) => ({
           for (const ev of msg.events) {
             if (ev.event === "span_begin") spanParent.set(ev.id, ev.parent_id ?? null);
           }
+          // Reconcile the pending Recents stub to the real branch id once the
+          // backend assigns `current`. If the branch isn't listed yet (e.g. a
+          // reconnect to a session that already had a running branch), add it.
+          let sessionsList = state.sessionsList;
+          let branchConfig = state.branchConfig;
+          if (msg.current != null) {
+            const pendingIdx = sessionsList.findIndex((s) => s.id === PENDING_ID);
+            if (pendingIdx !== -1) {
+              sessionsList = sessionsList.slice();
+              sessionsList[pendingIdx] = {
+                ...sessionsList[pendingIdx],
+                id: msg.current,
+              };
+              if (branchConfig[PENDING_ID]) {
+                const { [PENDING_ID]: pending, ...rest } = branchConfig;
+                branchConfig = { ...rest, [msg.current]: pending };
+              }
+            } else if (!sessionsList.some((s) => s.id === msg.current)) {
+              sessionsList = [
+                { id: msg.current, title: "audit", updatedAt: Date.now() },
+                ...sessionsList,
+              ];
+            }
+          }
           return {
             pool,
             events,
@@ -144,6 +222,8 @@ export const useSession = create<SessionState>((set, get) => ({
             current: msg.current,
             status: msg.status,
             version: msg.v,
+            sessionsList,
+            branchConfig,
           };
         }
 
@@ -248,5 +328,25 @@ export const useSession = create<SessionState>((set, get) => ({
   send: (msg: Up) => {
     const ws = get().ws;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+  },
+
+  start: (params) => {
+    // Record a pending Recents entry first; the `state` broadcast that follows
+    // `start` carries the real branch id and reconciles `PENDING_ID` to it.
+    set((state) => ({
+      sessionsList: [
+        { id: PENDING_ID, title: titleFromSeed(params.seed), updatedAt: Date.now() },
+        // a single pending stub at a time — drop any stale one.
+        ...state.sessionsList.filter((s) => s.id !== PENDING_ID),
+      ],
+    }));
+    get().send({ t: "start", ...params });
+  },
+
+  newAudit: () => {
+    // Back to the empty state. The backend branch is untouched; clicking its
+    // Recents row re-views it (no reconnect needed — same socket, `current`
+    // flips back when its `state` is re-broadcast).
+    set({ current: null });
   },
 }));
