@@ -19,18 +19,20 @@ function resultText(result: ToolEvent["result"]): string {
 
 export function ToolEventRow({ ev }: Props): JSX.Element {
   const [open, setOpen] = useState(false);
+  const resultPreview = ev.error ? ev.error.message : resultText(ev.result);
   return (
     <div className="tool-row">
       <div className="tool-head" onClick={() => setOpen((o) => !o)}>
+        <span className="glyph">⎿</span>
         <span className="fn">{ev.function}</span>
-        {ev.error && <span> · error</span>}
-        <span> {open ? "▾" : "▸"}</span>
+        {ev.error && <span className="tool-err"> · error</span>}
+        <span className="caret">{open ? "▾" : "▸"}</span>
       </div>
-      <div className="tool-args">{JSON.stringify(ev.arguments, null, 2)}</div>
       {open && (
-        <div className="tool-result">
-          {ev.error ? ev.error.message : resultText(ev.result)}
-        </div>
+        <>
+          <div className="tool-args">{JSON.stringify(ev.arguments, null, 2)}</div>
+          <div className="tool-result">{resultPreview}</div>
+        </>
       )}
     </div>
   );
