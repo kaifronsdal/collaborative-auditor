@@ -40,9 +40,12 @@ export type SessionState = {
   version: number;
   current: string | null;
   ws: WebSocket | null;
+  /** Id of the session the current socket is for; guards idempotent connect. */
+  sessionId: string | null;
 
   apply: (msg: Down) => void;
   connect: (sessionId: string) => void;
+  disconnect: () => void;
   send: (msg: Up) => void;
 };
 
@@ -109,6 +112,8 @@ export const useSession = create<SessionState>((set, get) => ({
   version: 0,
   current: null,
   ws: null,
+
+  sessionId: null,
 
   apply: (msg: Down) =>
     set((state) => {
@@ -202,10 +207,35 @@ export const useSession = create<SessionState>((set, get) => ({
     }),
 
   connect: (sessionId: string) => {
-    get().ws?.close();
-    const ws = new WebSocket(`ws://localhost:8765/ws/${sessionId}`);
-    ws.onmessage = (e) => get().apply(JSON.parse(e.data) as Down);
-    set({ ws });
+    // Idempotent: React 18 StrictMode mounts effects twice in dev, so guard
+    // against opening a second socket for the same session (the duplicate would
+    // race the first on `start` and leave a dangling connection server-side).
+    const { ws, sessionId: cur } = get();
+    if (
+      ws &&
+      cur === sessionId &&
+      (ws.readyState === WebSocket.CONNECTING || ws.readyState === WebSocket.OPEN)
+    ) {
+      return;
+    }
+    ws?.close();
+    const next = new WebSocket(`ws://localhost:8765/ws/${sessionId}`);
+    next.onmessage = (e) => get().apply(JSON.parse(e.data) as Down);
+    next.onclose = () => {
+      // Clear only if this is still the live socket (a newer connect may have
+      // replaced it). Lets a fresh connect re-open cleanly.
+      if (get().ws === next) set({ ws: null, sessionId: null });
+    };
+    set({ ws: next, sessionId });
+  },
+
+  disconnect: () => {
+    const ws = get().ws;
+    if (ws) {
+      ws.onclose = null; // avoid the handler racing our explicit clear
+      ws.close();
+    }
+    set({ ws: null, sessionId: null });
   },
 
   send: (msg: Up) => {

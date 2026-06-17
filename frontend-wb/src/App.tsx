@@ -19,6 +19,10 @@ export function App(): JSX.Element {
   const [feedback, setFeedback] = useState("");
 
   useEffect(() => {
+    // The WebSocket is an app-lifetime singleton. `connect` is idempotent, so
+    // StrictMode's double-invoke in dev opens exactly one socket; we
+    // deliberately do NOT close on cleanup (that would tear down the live
+    // socket on the StrictMode remount and race `start`).
     connect("default");
   }, [connect]);
 
