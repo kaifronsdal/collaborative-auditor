@@ -14,12 +14,26 @@ import type {
 import { expandEvents } from "@tsmono/inspect-common/utils";
 import { create } from "zustand";
 
-import { isModelEvent } from "../lib/events";
+import {
+  assignByRole,
+  buildByRole,
+  isModelEvent,
+  resolveRole,
+  type EventsByRole,
+} from "../lib/events";
 import type { BranchId, Down, QueuedMap, Role, Up } from "../lib/wire";
 
 export type SessionState = {
   pool: ChatMessage[];
   events: Map<string, Event>;
+  /**
+   * Events bucketed by `[branch][role]`, maintained incrementally by the
+   * reducer. Selectors read this directly (O(1)); per-column arrays keep
+   * their reference across updates that don't touch that column, so
+   * Zustand's `Object.is` short-circuits and only the streaming column
+   * re-renders per flush.
+   */
+  byRole: EventsByRole;
   spanParent: Map<string, string | null>;
   spanRole: Map<string, [BranchId, Role]>;
   queued: QueuedMap;
@@ -50,9 +64,11 @@ function resolveAll(
 }
 
 /**
- * Every event has `uuid` / `span_id` populated at runtime, but the generated
- * types mark them optional (inspect serializes with exclude_none). These
- * helpers pin the non-null runtime contract at the boundary.
+ * Every event has `uuid` populated at runtime, but the generated type is
+ * `uuid?: string | null` (the OpenAPI schema marks it optional+nullable
+ * because the Pydantic field defaults to `None` and is filled in
+ * `model_post_init`). Pin the non-null runtime contract at the ingest
+ * boundary so downstream code uses `string`.
  */
 function uuidOf(ev: Event): string {
   if (ev.uuid == null) throw new Error("event missing uuid");
@@ -86,6 +102,7 @@ function reconcileQueued(queued: QueuedMap, ev: Event): QueuedMap {
 export const useSession = create<SessionState>((set, get) => ({
   pool: [],
   events: new Map(),
+  byRole: {},
   spanParent: new Map(),
   spanRole: new Map(),
   queued: {},
@@ -113,6 +130,7 @@ export const useSession = create<SessionState>((set, get) => ({
           return {
             pool,
             events,
+            byRole: buildByRole(events.values(), spanParent, spanRole),
             spanRole,
             spanParent,
             queued: msg.queued,
@@ -127,20 +145,31 @@ export const useSession = create<SessionState>((set, get) => ({
           pool.length = msg.from;
           pool.push(...msg.entries);
           // Growing the pool can change earlier ModelEvents' resolution.
-          return { pool, events: resolveAll(state.events, pool), version: msg.v };
+          const events = resolveAll(state.events, pool);
+          return {
+            pool,
+            events,
+            byRole: buildByRole(events.values(), state.spanParent, state.spanRole),
+            version: msg.v,
+          };
         }
 
         case "event": {
           const ev = resolveOne(msg.event, state.pool);
+          const uuid = uuidOf(ev);
           const events = new Map(state.events);
-          events.set(uuidOf(ev), ev);
+          events.set(uuid, ev);
           const spanParent =
             ev.event === "span_begin"
               ? new Map(state.spanParent).set(ev.id, ev.parent_id ?? null)
               : state.spanParent;
+          const role = resolveRole(ev.span_id, spanParent, state.spanRole);
           return {
             events,
             spanParent,
+            byRole: role
+              ? assignByRole(state.byRole, role[0], role[1], ev, undefined)
+              : state.byRole,
             queued: reconcileQueued(state.queued, ev),
             version: msg.v,
           };
@@ -148,9 +177,18 @@ export const useSession = create<SessionState>((set, get) => ({
 
         case "update": {
           const ev = resolveOne(msg.event, state.pool);
+          const uuid = uuidOf(ev);
+          const prev = state.events.get(uuid);
           const events = new Map(state.events);
-          events.set(uuidOf(ev), ev);
-          return { events, version: msg.v };
+          events.set(uuid, ev);
+          const role = resolveRole(ev.span_id, state.spanParent, state.spanRole);
+          return {
+            events,
+            byRole: role
+              ? assignByRole(state.byRole, role[0], role[1], ev, prev)
+              : state.byRole,
+            version: msg.v,
+          };
         }
 
         case "queued": {

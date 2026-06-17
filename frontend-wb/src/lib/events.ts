@@ -9,7 +9,6 @@
 import type { Event, ModelEvent } from "@tsmono/inspect-common";
 
 import type { BranchId, Role } from "./wire";
-import type { SessionState } from "../store/session";
 
 export function resolveRole(
   spanId: string | null | undefined,
@@ -30,18 +29,55 @@ export function resolveRole(
 export type EventsByRole = Record<BranchId, Record<Role, Event[]>>;
 
 /**
- * Bucket every stored event into `[branch][role]` lists, preserving insertion
- * order (the `Map` iterates in insertion order, which matches event arrival).
+ * Bucket events into `[branch][role]` lists, preserving iteration order.
+ *
+ * Used to (re)build the whole index on `state`/`pool` messages. Per-event
+ * inserts/updates use {@link assignByRole} so untouched columns keep their
+ * array reference (Zustand selectors short-circuit on `Object.is`).
  */
-export function eventsByRole(state: SessionState): EventsByRole {
+export function buildByRole(
+  events: Iterable<Event>,
+  spanParent: Map<string, string | null>,
+  spanRole: Map<string, [BranchId, Role]>
+): EventsByRole {
   const out: EventsByRole = {};
-  for (const ev of state.events.values()) {
-    const role = resolveRole(ev.span_id, state.spanParent, state.spanRole);
+  for (const ev of events) {
+    const role = resolveRole(ev.span_id, spanParent, spanRole);
     if (!role) continue;
     const [branch, r] = role;
     (out[branch] ??= { auditor: [], target: [] })[r].push(ev);
   }
   return out;
+}
+
+/**
+ * Return a copy of `byRole` with `ev` placed in `[branch][role]` — appended if
+ * `prev` is absent, replaced in-place if `prev` is the prior version of the
+ * same event. Only the path to that one array is cloned; every other column's
+ * array reference is preserved so its `useEvents` selector doesn't re-render.
+ */
+export function assignByRole(
+  byRole: EventsByRole,
+  branch: BranchId,
+  role: Role,
+  ev: Event,
+  prev: Event | undefined
+): EventsByRole {
+  const branchBuckets = byRole[branch] ?? { auditor: [], target: [] };
+  const arr = branchBuckets[role];
+  let nextArr: Event[];
+  if (prev !== undefined) {
+    const i = arr.indexOf(prev);
+    nextArr = arr.slice();
+    if (i >= 0) nextArr[i] = ev;
+    else nextArr.push(ev);
+  } else {
+    nextArr = [...arr, ev];
+  }
+  return {
+    ...byRole,
+    [branch]: { ...branchBuckets, [role]: nextArr },
+  };
 }
 
 export function isModelEvent(ev: Event): ev is ModelEvent {

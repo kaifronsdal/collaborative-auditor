@@ -3,7 +3,9 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { eventsByRole, isModelEvent, resolveRole } from "../lib/events";
+import type { ChatMessage } from "@tsmono/inspect-common";
+
+import { isModelEvent, resolveRole } from "../lib/events";
 import type { Down } from "../lib/wire";
 import { useSession } from "./session";
 
@@ -28,10 +30,9 @@ describe("session reducer against real smoke fixture", () => {
     // every distinct uuid is present.
     expect(state.events.size).toBe(distinct.size);
 
-    // both columns are populated.
-    const byRole = eventsByRole(state);
-    const auditor = byRole["b0"]?.auditor ?? [];
-    const target = byRole["b0"]?.target ?? [];
+    // both columns are populated via the incrementally-maintained index.
+    const auditor = state.byRole["b0"]?.auditor ?? [];
+    const target = state.byRole["b0"]?.target ?? [];
     expect(auditor.length).toBeGreaterThan(0);
     expect(target.length).toBeGreaterThan(0);
 
@@ -40,9 +41,32 @@ describe("session reducer against real smoke fixture", () => {
     expect(targetModels.length).toBeGreaterThan(0);
     const last = targetModels[targetModels.length - 1];
     expect(last.input.length).toBeGreaterThanOrEqual(2);
-    const roles = new Set(last.input.map((m) => m.role));
+    const roles = new Set(last.input.map((m: ChatMessage) => m.role));
     expect(roles.has("system")).toBe(true);
     expect(roles.has("user")).toBe(true);
+  });
+
+  it("byRole arrays are reference-stable across updates to the other column", () => {
+    // capture references after the fixture replay above
+    const before = useSession.getState();
+    const auditorRef = before.byRole["b0"].auditor;
+    const targetRef = before.byRole["b0"].target;
+
+    // replay the last `update` for a target ModelEvent — only target's array
+    // should change; auditor's reference should be preserved.
+    const targetUpdate = [...messages]
+      .reverse()
+      .find(
+        (m): m is Extract<Down, { t: "update" }> =>
+          m.t === "update" && m.event.event === "model" &&
+          targetRef.some((e) => e.uuid === m.event.uuid)
+      );
+    expect(targetUpdate).toBeDefined();
+    useSession.getState().apply(targetUpdate!);
+
+    const after = useSession.getState();
+    expect(after.byRole["b0"].auditor).toBe(auditorRef);
+    expect(after.byRole["b0"].target).not.toBe(targetRef);
   });
 
   it("routes a nested span to its role via resolveRole", () => {
