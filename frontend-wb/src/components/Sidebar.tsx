@@ -66,7 +66,7 @@ export function Sidebar(): JSX.Element {
         )}
       </div>
 
-      {current && branchConfig && (
+      {current && (
         <>
           <div className="side-sep" />
           <div className="side-section">This audit · config</div>
