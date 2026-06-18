@@ -72,6 +72,7 @@ class Session:
         self.version: int = 0
         self.connections: list[Connection] = []
         self.branch_tasks: list[asyncio.Task[None]] = []  # detached branch.run() tasks
+        self._dispatch_lock = asyncio.Lock()
 
         # sync handler → drain task hand-off. Unbounded buffer: the handler must
         # never block (it runs inline in the generating task).
@@ -87,7 +88,7 @@ class Session:
         # of each starting their own and splitting wire messages. `start()`
         # opens this; `close()` shuts it down.
         self._closed = anyio.Event()
-        self._run_task: asyncio.Future[None]
+        self._run_task: asyncio.Task[None] | None = None
 
     # -- drain lifecycle (session-owned, STREAMING.md §B) ---------------------
 
@@ -99,7 +100,8 @@ class Session:
         sync `_on_event` handler enqueues and broadcasts it to all connections.
         """
         started = anyio.Event()
-        self._run_task = asyncio.ensure_future(self._run(started))
+        self._run_task = asyncio.create_task(self._run(started))
+        self._run_task.add_done_callback(lambda _t: started.set())
         await started.wait()
 
     async def _run(self, started: anyio.Event) -> None:
@@ -114,7 +116,8 @@ class Session:
     async def close(self) -> None:
         """Shut down the drain task: close the send stream so `drain` exits."""
         self._closed.set()
-        await self._run_task
+        if self._run_task is not None:
+            await self._run_task
 
     # -- message pool ---------------------------------------------------------
 

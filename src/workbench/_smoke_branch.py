@@ -59,7 +59,51 @@ def _model_events_for_span(
     return out
 
 
+def _test_mid_rollback_slice() -> None:
+    """slice_at should raise ValueError when anchor lands mid-rollback."""
+    from inspect_ai.model import (
+        ChatCompletionChoice,
+        ChatMessageAssistant,
+        ModelOutput,
+    )
+    from inspect_ai.model._model import ModelUsage
+    from inspect_ai.tool import ToolCall
+    from inspect_petri.target import Step
+
+    # Build a minimal ModelOutput with a rollback_conversation tool call.
+    rollback_call = ToolCall(
+        id="tc1",
+        function="rollback_conversation",
+        arguments={"message_id": "m0"},
+        type="function",
+    )
+    mo = ModelOutput(
+        model="test",
+        choices=[],
+        usage=ModelUsage(),
+        error=None,
+    )
+    msg = ChatMessageAssistant(content="", tool_calls=[rollback_call], id="anchor1")
+    choice = ChatCompletionChoice(message=msg, stop_reason="tool_calls")
+    mo.choices = [choice]
+
+    auditor_step = Step(value=mo, source="auditor:Model.generate", anchor_id="anchor1")
+    # NO subsequent boundary=="in" step — this is mid-rollback
+    target_step = Step(value=None, source="Model.generate", anchor_id="anchor2")
+
+    log = [auditor_step, target_step]
+
+    try:
+        slice_at(log, "anchor2")
+        raise AssertionError("Expected slice_at to raise ValueError mid-rollback")
+    except ValueError as exc:
+        assert "mid-rollback" in str(exc), f"Expected 'mid-rollback' in error: {exc}"
+    print("✓ mid-rollback slice guard test passed")
+
+
 async def _amain() -> None:
+    _test_mid_rollback_slice()
+
     session = Session()
     await session.start()
 

@@ -98,7 +98,7 @@ async def _amain(dump_path: Path | None = None) -> None:
             for u in conn.sent
             if u["t"] == "update" and u["event"]["uuid"] == uuid
         ]
-        lens = [len(u["event"]["output"]["completion"]) for u in updates]
+        lens = [len(json.dumps(u["event"]["output"]["choices"][0]["message"]["content"])) for u in updates]
         if len(lens) >= 1 and lens == sorted(lens) and lens[-1] > 0:
             streamed_uuid = uuid
             break

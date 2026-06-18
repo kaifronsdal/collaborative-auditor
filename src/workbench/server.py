@@ -74,8 +74,11 @@ async def _stop_running_branches(session: Session) -> None:
     for t in running:
         try:
             await t
-        except (asyncio.CancelledError, Exception) as exc:  # noqa: BLE001
+        except asyncio.CancelledError as exc:
             logger.debug("previous branch task ended on start: %r", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("branch task raised on cancel: %r", exc, exc_info=True)
+    session.branch_tasks = [t for t in session.branch_tasks if not t.done()]
     for b in session.branches.values():
         if b.status == "running":
             b.status = "ended"
@@ -84,144 +87,161 @@ async def _stop_running_branches(session: Session) -> None:
 async def _dispatch(session: Session, data: dict) -> None:
     match data.get("t"):
         case "start":
-            await _stop_running_branches(session)
-            branch_id = uuid()
-            branch = Branch(
-                session,
-                branch_id,
-                seed=data["seed"],
-                auditor_model=data["auditor_model"],
-                target_model=data["target_model"],
-                max_turns=data.get("max_turns", 6),
-            )
-            session.branches[branch_id] = branch
-            session.current = branch_id
-            # the branch just registered its auditor/target span ids in
-            # `session.span_role` and we set `current` — clients connected
-            # before this got an empty `span_role`/`current` in their initial
-            # `state` and would otherwise never learn the new mapping (every
-            # event then fails `resolveRole` and renders nowhere). Re-broadcast.
-            await session.broadcast({"t": "state", "v": session.version, **session.view()})
-            # run the branch as a detached task; keep a reference so it isn't
-            # garbage-collected mid-run (branch.run owns its own task group).
-            task = asyncio.create_task(branch.run())
-            session.branch_tasks.append(task)
+            async with session._dispatch_lock:  # noqa: SLF001
+                await _stop_running_branches(session)
+                branch_id = uuid()
+                branch = Branch(
+                    session,
+                    branch_id,
+                    seed=data["seed"],
+                    auditor_model=data["auditor_model"],
+                    target_model=data["target_model"],
+                    max_turns=data.get("max_turns", 6),
+                )
+                session.branches[branch_id] = branch
+                session.current = branch_id
+                # the branch just registered its auditor/target span ids in
+                # `session.span_role` and we set `current` — clients connected
+                # before this got an empty `span_role`/`current` in their initial
+                # `state` and would otherwise never learn the new mapping (every
+                # event then fails `resolveRole` and renders nowhere). Re-broadcast.
+                await session.broadcast({"t": "state", "v": session.version, **session.view()})
+                # run the branch as a detached task; keep a reference so it isn't
+                # garbage-collected mid-run (branch.run owns its own task group).
+                task = asyncio.create_task(branch.run())
+                session.branch_tasks.append(task)
         case "step" | "play" | "pause" as cmd:
-            if session.current is None:
-                logger.warning("%r before start — dropping", cmd)
-                return
-            getattr(session.branches[session.current], cmd)()
-            await session.broadcast_status()
+            async with session._dispatch_lock:  # noqa: SLF001
+                if session.current is None:
+                    logger.warning("%r before start — dropping", cmd)
+                    return
+                getattr(session.branches[session.current], cmd)()
+                await session.broadcast_status()
         case "inject":
-            branch_id = data["branch"]
-            role = data["role"]
-            if branch_id not in session.branches:
-                logger.warning("inject for unknown branch %r — dropping", branch_id)
-                return
-            # preserve the client-generated id so the frontend reconciles the
-            # ghost bubble once the id appears in the next ModelEvent.input.
-            msg = ChatMessageUser.model_validate(data["message"])
-            session.branches[branch_id].queued[role].append(msg)
-            await session.broadcast(
-                {
-                    "t": "queued",
-                    "v": session.version,
-                    "branch": branch_id,
-                    "role": role,
-                    "message": data["message"],
-                }
-            )
+            async with session._dispatch_lock:  # noqa: SLF001
+                branch_id = data["branch"]
+                role = data["role"]
+                if branch_id not in session.branches:
+                    logger.warning("inject for unknown branch %r — dropping", branch_id)
+                    return
+                if session.branches[branch_id].status == "ended":
+                    logger.warning("inject into ended branch %r — dropping", branch_id)
+                    await session.broadcast({"t": "error", "v": session.version, "message": "branch has ended"})
+                    return
+                # preserve the client-generated id so the frontend reconciles the
+                # ghost bubble once the id appears in the next ModelEvent.input.
+                msg = ChatMessageUser.model_validate(data["message"])
+                session.branches[branch_id].queued[role].append(msg)
+                await session.broadcast(
+                    {
+                        "t": "queued",
+                        "v": session.version,
+                        "branch": branch_id,
+                        "role": role,
+                        "message": data["message"],
+                    }
+                )
         case "branch" | "resample":
-            anchor = data["at"]
-            parent = session.branches.get(session.current)  # type: ignore[arg-type]
-            if parent is None:
-                logger.warning("%r before start — dropping", data.get("t"))
-                return
-            try:
-                prefix = slice_at(parent.audit_tape.log, anchor)
-            except ValueError as exc:
-                logger.warning("slice_at failed for %r: %s", anchor, exc)
-                return
-            new_id = uuid()
-            new_branch = Branch(
-                session,
-                new_id,
-                seed=parent.seed,
-                auditor_model=parent.auditor_model,
-                target_model=parent.target_model,
-                max_turns=parent.max_turns,
-                resume=prefix,
-                parent_id=session.current,
-                branched_at=anchor,
-            )
-            await _stop_running_branches(session)
-            session.branches[new_id] = new_branch
-            session.current = new_id
-            await session.broadcast({"t": "state", "v": session.version, **session.view()})
-            task = asyncio.create_task(new_branch.run())
-            session.branch_tasks.append(task)
+            async with session._dispatch_lock:  # noqa: SLF001
+                anchor = data["at"]
+                parent = session.branches.get(session.current)  # type: ignore[arg-type]
+                if parent is None:
+                    logger.warning("%r before start — dropping", data.get("t"))
+                    return
+                try:
+                    prefix = slice_at(parent.audit_tape.log, anchor)
+                except ValueError as exc:
+                    logger.warning("slice_at failed for %r: %s", anchor, exc)
+                    await session.broadcast({"t": "error", "v": session.version, "message": str(exc)})
+                    return
+                new_id = uuid()
+                new_branch = Branch(
+                    session,
+                    new_id,
+                    seed=parent.seed,
+                    auditor_model=parent.auditor_model,
+                    target_model=parent.target_model,
+                    max_turns=parent.max_turns,
+                    resume=prefix,
+                    parent_id=session.current,
+                    branched_at=anchor,
+                )
+                await _stop_running_branches(session)
+                session.branches[new_id] = new_branch
+                session.current = new_id
+                await session.broadcast({"t": "state", "v": session.version, **session.view()})
+                task = asyncio.create_task(new_branch.run())
+                session.branch_tasks.append(task)
 
         case "edit":
-            anchor = data["at"]
-            parent = session.branches.get(session.current)  # type: ignore[arg-type]
-            if parent is None:
-                logger.warning("edit before start — dropping")
-                return
-            try:
-                prefix = slice_at(parent.audit_tape.log, anchor)
-            except ValueError as exc:
-                logger.warning("slice_at failed for edit %r: %s", anchor, exc)
-                return
-            # Find the original anchor step so we can match its source. The
-            # anchor is the last value-bearing step with a matching anchor_id.
-            orig_step = next(
-                (s for s in reversed(prefix) if s.anchor_id == anchor),
-                None,
-            )
-            if orig_step is None:
-                logger.warning("edit: anchor step not found after slice — dropping")
-                return
-            edited_output = ModelOutput.model_validate(data["output"])
-            # Use a fresh message id for the edited step so downstream code
-            # never sees a stale anchor ref (footgun #3). The anchor_id of the
-            # new step is the *new* message id.
-            new_msg_id = uuid()
-            # Patch the message id on the edited output's first choice message.
-            if edited_output.choices:
-                edited_output.choices[0].message.id = new_msg_id
-            edited_step = Step(
-                value=edited_output,
-                source=orig_step.source,
-                anchor_id=new_msg_id,
-            )
-            # Truncate at the anchor (exclusive) then append the edited step.
-            prefix_excl = prefix[:-1]
-            new_id = uuid()
-            new_branch = Branch(
-                session,
-                new_id,
-                seed=parent.seed,
-                auditor_model=parent.auditor_model,
-                target_model=parent.target_model,
-                max_turns=parent.max_turns,
-                resume=prefix_excl + [edited_step],
-                parent_id=session.current,
-                branched_at=anchor,
-            )
-            await _stop_running_branches(session)
-            session.branches[new_id] = new_branch
-            session.current = new_id
-            await session.broadcast({"t": "state", "v": session.version, **session.view()})
-            task = asyncio.create_task(new_branch.run())
-            session.branch_tasks.append(task)
+            async with session._dispatch_lock:  # noqa: SLF001
+                anchor = data["at"]
+                parent = session.branches.get(session.current)  # type: ignore[arg-type]
+                if parent is None:
+                    logger.warning("edit before start — dropping")
+                    return
+                try:
+                    prefix = slice_at(parent.audit_tape.log, anchor)
+                except ValueError as exc:
+                    logger.warning("slice_at failed for edit %r: %s", anchor, exc)
+                    await session.broadcast({"t": "error", "v": session.version, "message": str(exc)})
+                    return
+                # Find the original anchor step so we can match its source. The
+                # anchor is the last value-bearing step with a matching anchor_id.
+                orig_step = next(
+                    (s for s in reversed(prefix) if s.anchor_id == anchor),
+                    None,
+                )
+                if orig_step is None:
+                    logger.warning("edit: anchor step not found after slice — dropping")
+                    return
+                if orig_step.source != "Model.generate":
+                    logger.warning("edit: non-target step anchor %r (source=%r) — dropping", anchor, orig_step.source)
+                    await session.broadcast({"t": "error", "v": session.version, "message": "edit anchor is not a target step"})
+                    return
+                edited_output = ModelOutput.model_validate(data["output"])
+                # Use a fresh message id for the edited step so downstream code
+                # never sees a stale anchor ref (footgun #3). The anchor_id of the
+                # new step is the *new* message id.
+                new_msg_id = uuid()
+                # Patch the message id on the edited output's first choice message.
+                if edited_output.choices:
+                    edited_output.choices[0].message.id = new_msg_id
+                edited_step = Step(
+                    value=edited_output,
+                    source=orig_step.source,
+                    anchor_id=new_msg_id,
+                )
+                # Truncate at the anchor (exclusive) then append the edited step.
+                idx = next(i for i, s in enumerate(prefix) if s is orig_step)
+                prefix_excl = prefix[:idx]
+                new_id = uuid()
+                new_branch = Branch(
+                    session,
+                    new_id,
+                    seed=parent.seed,
+                    auditor_model=parent.auditor_model,
+                    target_model=parent.target_model,
+                    max_turns=parent.max_turns,
+                    resume=prefix_excl + [edited_step],
+                    parent_id=session.current,
+                    branched_at=anchor,
+                )
+                await _stop_running_branches(session)
+                session.branches[new_id] = new_branch
+                session.current = new_id
+                await session.broadcast({"t": "state", "v": session.version, **session.view()})
+                task = asyncio.create_task(new_branch.run())
+                session.branch_tasks.append(task)
 
         case "switch":
-            branch_id = data["branch"]
-            if branch_id not in session.branches:
-                logger.warning("switch to unknown branch %r — dropping", branch_id)
-                return
-            session.current = branch_id
-            await session.broadcast({"t": "state", "v": session.version, **session.view()})
+            async with session._dispatch_lock:  # noqa: SLF001
+                branch_id = data["branch"]
+                if branch_id not in session.branches:
+                    logger.warning("switch to unknown branch %r — dropping", branch_id)
+                    return
+                session.current = branch_id
+                await session.broadcast({"t": "state", "v": session.version, **session.view()})
 
         case other:
             logger.warning("unknown command %r", other)

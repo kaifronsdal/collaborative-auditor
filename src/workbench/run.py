@@ -159,6 +159,7 @@ class Branch:
         # process-global default and cross-contaminate `config_digest`/`steps`
         # (petri footgun #5). `audit_context(store=...)` installs it per branch.
         self.store = Store()
+        self.error: str | None = None
 
         # petri target plumbing. On resume, seed the audit tape's replay queue
         # from the parent branch's recorded steps (value-bearing only — the
@@ -258,34 +259,40 @@ class Branch:
         # `AuditTape` doesn't read/write a sibling's (petri footgun #5).
         # Drain is owned by the Session (started in `Session.start()`), not by
         # this branch (petri footgun #12), so `run()` just runs the audit.
-        with audit_context(
-            controller=self.controller,
-            audit_tape=self.audit_tape,
-            store=self.store,
-            active_model=target_model,
-            model_roles={"auditor": auditor_model, "target": target_model},
-        ):
-            if self.resume is not None:
-                self._synthesize_prefix_events(auditor_model, target_model)
-
-            await run_audit(
-                auditor=auditor,
-                target=target_agent(),
-                channel=self.channel,
-                history=self.history,
+        try:
+            with audit_context(
+                controller=self.controller,
                 audit_tape=self.audit_tape,
-                auditor_span_id=self.auditor_span_id,
-                target_span_id=self.target_span_id,
-                # name timelines per branch: multiple branches share the
-                # session's one Transcript, so the default ("target"/"auditor")
-                # collides on the second branch's `add_timeline`.
-                audit_name=self.branch_id,
-            )
+                store=self.store,
+                active_model=target_model,
+                model_roles={"auditor": auditor_model, "target": target_model},
+            ):
+                if self.resume is not None:
+                    self._synthesize_prefix_events(auditor_model, target_model)
 
-        self.status = "ended"
-        self.generating = None
-        self._free_running = False
-        await self.session.broadcast_status()
+                await run_audit(
+                    auditor=auditor,
+                    target=target_agent(),
+                    channel=self.channel,
+                    history=self.history,
+                    audit_tape=self.audit_tape,
+                    auditor_span_id=self.auditor_span_id,
+                    target_span_id=self.target_span_id,
+                    # name timelines per branch: multiple branches share the
+                    # session's one Transcript, so the default ("target"/"auditor")
+                    # collides on the second branch's `add_timeline`.
+                    audit_name=self.branch_id,
+                )
+        except Exception as exc:
+            self.error = self.error or str(exc)
+            raise
+        finally:
+            self.status = "ended"
+            self.generating = None
+            self._free_running = False
+            await self.session.broadcast_status()
+            if self.error:
+                await self.session.broadcast({"t": "error", "v": self.session.version, "message": self.error})
 
     def _synthesize_prefix_events(
         self, auditor_model: Model, target_model: Model
