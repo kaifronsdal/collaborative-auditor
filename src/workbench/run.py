@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import anyio
@@ -49,6 +50,80 @@ if TYPE_CHECKING:
     from workbench.session import Session
 
 
+@dataclass
+class BranchMeta:
+    parent: str | None  # branch_id this was branched from
+    branched_at: str | None  # anchor_id where the slice happened
+    seed: str
+    auditor_model: str
+    target_model: str
+    max_turns: int
+
+
+def slice_at(steps: list[Step], anchor_id: str) -> list[Step]:
+    """Slice a level-2 audit tape at a re-sync point (footgun #1).
+
+    Finds the last step whose `anchor_id` matches, advances past trailing
+    `boundary=="out"` steps (external send acks that belong with the turn),
+    and returns the prefix up to and including that point.
+
+    Raises `ValueError` if:
+    - `anchor_id` is not found in `steps`;
+    - the slice would land mid-rollback: the last included auditor step has a
+      `rollback_conversation` tool call and no subsequent `boundary=="in"` step
+      follows in the slice (i.e. the level-1 re-sync has not yet fired).
+    """
+    last_match: int | None = None
+    for i, step in enumerate(steps):
+        if step.anchor_id == anchor_id:
+            last_match = i
+    if last_match is None:
+        raise ValueError(
+            f"anchor_id {anchor_id!r} not found in audit tape "
+            f"({len(steps)} steps)"
+        )
+    # Advance past trailing boundary=="out" steps (send_response acks).
+    cutoff = last_match
+    for i in range(last_match + 1, len(steps)):
+        if steps[i].boundary != "out":
+            break
+        cutoff = i
+
+    prefix = steps[: cutoff + 1]
+
+    # Guard: detect mid-rollback slice. If the last auditor ModelOutput step in
+    # the prefix contains a rollback_conversation tool call, there must be a
+    # subsequent boundary=="in" step in the prefix (the channel re-sync). If
+    # not, we are in the gap between the rollback command and the re-sync, and
+    # the level-1 tree would desync on resume.
+    last_auditor_out: Step | None = None
+    last_boundary_in_after_auditor: bool = False
+    for step in prefix:
+        if step.source == "auditor:Model.generate" and isinstance(
+            step.value, ModelOutput
+        ):
+            last_auditor_out = step
+            last_boundary_in_after_auditor = False
+        elif step.boundary == "in":
+            last_boundary_in_after_auditor = True
+
+    if last_auditor_out is not None and not last_boundary_in_after_auditor:
+        # Check whether the auditor output actually issued a rollback_conversation
+        # tool call. Only raise if it did (and we have no re-sync after it).
+        mo = last_auditor_out.value
+        assert isinstance(mo, ModelOutput)
+        tool_calls = mo.choices[0].message.tool_calls if mo.choices else []
+        rollback_fns = {tc.function for tc in (tool_calls or [])}
+        if "rollback_conversation" in rollback_fns:
+            raise ValueError(
+                f"anchor_id {anchor_id!r} lands mid-rollback: the last auditor "
+                "step issued rollback_conversation but no boundary=='in' re-sync "
+                "follows in the prefix. Slice at a completed turn instead."
+            )
+
+    return prefix
+
+
 class Branch:
     def __init__(
         self,
@@ -60,6 +135,8 @@ class Branch:
         target_model: str,
         max_turns: int,
         resume: list[Step] | None = None,
+        parent_id: str | None = None,
+        branched_at: str | None = None,
     ) -> None:
         self.session = session
         self.branch_id = branch_id
@@ -68,6 +145,14 @@ class Branch:
         self.target_model = target_model
         self.max_turns = max_turns
         self.resume = resume
+        self.meta = BranchMeta(
+            parent=parent_id,
+            branched_at=branched_at,
+            seed=seed,
+            auditor_model=auditor_model,
+            target_model=target_model,
+            max_turns=max_turns,
+        )
 
         # per-branch Store: `AuditTape` is a StoreModel, so without a branch-
         # private store every branch in this process would read/write the

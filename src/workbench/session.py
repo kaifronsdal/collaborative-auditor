@@ -211,6 +211,15 @@ class Session:
             }
             for bid, b in self.branches.items()
         }
+        branches_meta = {
+            bid: {
+                "parent": b.meta.parent,
+                "branched_at": b.meta.branched_at,
+                "status": b.status,
+                "seed": b.seed[:80],
+            }
+            for bid, b in self.branches.items()
+        }
         return {
             "pool": [m.model_dump(mode="json") for m in self.pool],
             "events": list(self.events.values()),
@@ -218,6 +227,7 @@ class Session:
             "queued": queued,
             "current": self.current,
             "status": self.current_status(),
+            "branches": branches_meta,
         }
 
     def current_status(self) -> str | None:
