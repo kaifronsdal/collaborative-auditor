@@ -1,6 +1,7 @@
 import type { JSX } from "react";
 
 import { MODELS, modelLabel } from "../lib/presets";
+import type { BranchId, BranchMeta } from "../lib/wire";
 import { useSession } from "../store/session";
 
 /** Format a timestamp as a relative string ("2m ago", "3h ago", etc.). */
@@ -15,19 +16,80 @@ function relTime(ts: number): string {
   return `${Math.floor(h / 24)}d ago`;
 }
 
+/** Render one node of the branch tree, recursing into children. */
+function BranchNode({
+  id,
+  meta,
+  current,
+  allBranches,
+  depth,
+  onSwitch,
+}: {
+  id: BranchId;
+  meta: BranchMeta;
+  current: string | null;
+  allBranches: Record<BranchId, BranchMeta>;
+  depth: number;
+  onSwitch: (id: BranchId) => void;
+}): JSX.Element {
+  const isActive = id === current;
+  const label = meta.branched_at
+    ? `branch @ ${meta.branched_at.slice(0, 8)}`
+    : meta.seed.length > 0
+      ? meta.seed
+      : id.slice(0, 8);
+  const children = Object.entries(allBranches).filter(([, m]) => m.parent === id);
+
+  return (
+    <div style={{ paddingLeft: depth > 0 ? `${depth * 12}px` : undefined }}>
+      <button
+        className={`side-row${isActive ? " active" : ""}`}
+        title={label}
+        onClick={() => onSwitch(id)}
+      >
+        <span className={`status-dot dot-${meta.status}`} title={meta.status} />
+        <span className="side-row-title">{label}</span>
+      </button>
+      {children.map(([cid, cmeta]) => (
+        <BranchNode
+          key={cid}
+          id={cid}
+          meta={cmeta}
+          current={current}
+          allBranches={allBranches}
+          depth={depth + 1}
+          onSwitch={onSwitch}
+        />
+      ))}
+    </div>
+  );
+}
+
 /**
  * Persistent left rail. Wordmark, "+ New audit", Recents list with status
  * dots + relative timestamps, and — when an audit is open — an editable
  * config card for the current branch (binds to store.nextConfig).
+ * Below the config card, a branch tree for the current session.
  */
 export function Sidebar(): JSX.Element {
   const newAudit = useSession((s) => s.newAudit);
   const sessionsList = useSession((s) => s.sessionsList);
   const current = useSession((s) => s.current);
   const status = useSession((s) => s.status);
-  const branchConfig = useSession((s) => (s.current ? s.branchConfig[s.current] : undefined));
   const nextConfig = useSession((s) => s.nextConfig);
   const setNextConfig = useSession((s) => s.setNextConfig);
+  const branches = useSession((s) => s.branches);
+  const send = useSession((s) => s.send);
+
+  // Roots: branches with no parent.
+  const roots = Object.entries(branches).filter(([, m]) => m.parent === null);
+
+  function handleSwitch(id: BranchId) {
+    send({ t: "switch", branch: id });
+    // Also update local current immediately so the highlight responds fast;
+    // the server's state broadcast will confirm it.
+    useSession.setState({ current: id });
+  }
 
   return (
     <aside className="sidebar">
@@ -113,6 +175,26 @@ export function Sidebar(): JSX.Element {
               </span>
             </div>
           </div>
+
+          {roots.length > 0 && (
+            <>
+              <div className="side-sep" />
+              <div className="side-section">Branches</div>
+              <div className="side-branches">
+                {roots.map(([id, meta]) => (
+                  <BranchNode
+                    key={id}
+                    id={id}
+                    meta={meta}
+                    current={current}
+                    allBranches={branches}
+                    depth={0}
+                    onSwitch={handleSwitch}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </>
       )}
     </aside>

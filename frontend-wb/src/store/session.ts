@@ -21,7 +21,7 @@ import {
   resolveRole,
   type EventsByRole,
 } from "../lib/events";
-import type { BranchId, Down, QueuedMap, Role, Status, Up } from "../lib/wire";
+import type { BranchId, BranchMeta, Down, QueuedMap, Role, Status, Up } from "../lib/wire";
 import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
 
 /**
@@ -82,6 +82,8 @@ export type SessionState = {
   ws: WebSocket | null;
   /** Id of the session the current socket is for; guards idempotent connect. */
   sessionId: string | null;
+  /** Branch tree metadata — keyed by branch id, populated from `state` broadcasts. */
+  branches: Record<BranchId, BranchMeta>;
   /**
    * Recents list (STUB, M0). Most-recent first. Populated on `start`; the
    * pending entry's `id` is reconciled to the real branch id when the next
@@ -182,6 +184,7 @@ export const useSession = create<SessionState>((set, get) => ({
   sessionId: null,
   sessionsList: [],
   branchConfig: {},
+  branches: {},
   nextConfig: {
     auditor_model: DEFAULT_AUDITOR,
     target_model: DEFAULT_TARGET,
@@ -241,6 +244,7 @@ export const useSession = create<SessionState>((set, get) => ({
             version: msg.v,
             sessionsList,
             branchConfig,
+            branches: msg.branches ?? {},
           };
         }
 

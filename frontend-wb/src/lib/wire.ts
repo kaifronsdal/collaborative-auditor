@@ -7,7 +7,7 @@
  * `input_refs` range list pointing into the pool; the frontend resolves it with
  * `expandEvents`.
  */
-import type { ChatMessage, Event } from "@tsmono/inspect-common";
+import type { ChatMessage, Event, ModelOutput } from "@tsmono/inspect-common";
 
 export type Role = "auditor" | "target";
 export type BranchId = string;
@@ -15,6 +15,14 @@ export type Status = "idle" | "running" | "paused" | "ended";
 
 /** Per-branch, per-role queued (user-injected, not yet generated) messages. */
 export type QueuedMap = Record<BranchId, Record<Role, ChatMessage[]>>;
+
+/** Branch metadata included in `state` broadcasts. */
+export type BranchMeta = {
+  parent: string | null;
+  branched_at: string | null;
+  status: Status;
+  seed: string;
+};
 
 export type Down =
   | {
@@ -26,6 +34,7 @@ export type Down =
       queued: QueuedMap;
       current: string | null;
       status: Status | null;
+      branches: Record<BranchId, BranchMeta>;
     }
   | { t: "pool"; v: number; from: number; entries: ChatMessage[] }
   | { t: "event"; v: number; event: Event }
@@ -50,4 +59,8 @@ export type Up =
   | { t: "step" }
   | { t: "play" }
   | { t: "pause" }
-  | { t: "inject"; branch: BranchId; role: Role; message: ChatMessage };
+  | { t: "inject"; branch: BranchId; role: Role; message: ChatMessage }
+  | { t: "branch"; at: string }
+  | { t: "resample"; at: string }
+  | { t: "edit"; at: string; output: ModelOutput }
+  | { t: "switch"; branch: BranchId };
