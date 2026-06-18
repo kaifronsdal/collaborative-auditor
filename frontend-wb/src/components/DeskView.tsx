@@ -10,23 +10,23 @@ function uuid(): string {
   return crypto.randomUUID();
 }
 
-function runlineText(status: Status | null): string {
+function statusText(status: Status | null, turn?: number, maxTurns?: number): string {
+  const turnInfo = (turn != null && maxTurns != null) ? ` · turn ${turn}/${maxTurns}` : "";
   switch (status) {
     case "running":
-      return "audit running — auditor and target generating";
+      return `running${turnInfo} · generating`;
     case "paused":
-      return "audit paused — release a turn to continue";
+      return `paused${turnInfo}`;
     case "ended":
-      return "audit ended — conversation complete";
+      return `ended${turnInfo}`;
     default:
-      return "audit idle";
+      return "idle";
   }
 }
 
 /**
  * The running-audit desk: two transcript columns + a thin seed header + the
- * runline/composer at the bottom.  Extracted from App.tsx so App can switch
- * cleanly between <StartView/> and <DeskView/>.
+ * runline (only transport control) + composer at the bottom.
  */
 export function DeskView(): JSX.Element {
   const send = useSession((s) => s.send);
@@ -37,54 +37,80 @@ export function DeskView(): JSX.Element {
   );
 
   const [feedback, setFeedback] = useState("");
+  const [dest, setDest] = useState<"auditor" | "target">("auditor");
 
-  // `current` is guaranteed non-null when DeskView is rendered (App checks).
   const branch = current!;
-
   const seedTitle = branchConfig?.seed ?? "";
+  const isRunning = status === "running";
+  const isEnded = status === "ended";
+
+  function cycleDest(): void {
+    setDest((d) => (d === "auditor" ? "target" : "auditor"));
+  }
 
   return (
     <>
-      {/* thin seed/context strip above the columns */}
+      {/* thin seed/context strip */}
       {seedTitle && (
         <div className="desk-header" title={seedTitle}>
           <span className="desk-seed">{seedTitle}</span>
         </div>
       )}
 
+      {/* runline — the one transport, fixed below seed strip */}
+      <div className={`runline status-${status ?? "idle"}`}>
+        <div className="rl-controls">
+          {/* play/pause toggle */}
+          <button
+            className={`rl-play${isRunning ? " running" : ""}`}
+            onClick={() => send({ t: isRunning ? "pause" : "play" })}
+            disabled={isEnded}
+            title={isRunning ? "Pause" : "Play"}
+          >
+            {isRunning ? "⏸" : "▶"}
+          </button>
+
+          {/* step — secondary, smaller */}
+          <button
+            className="rl-step"
+            onClick={() => send({ t: "play" })}
+            disabled={isRunning || isEnded}
+            title="Step one turn"
+          >
+            · step
+          </button>
+        </div>
+
+        <span className="rl-status">{statusText(status, undefined, branchConfig?.max_turns)}</span>
+      </div>
+
       <div className="columns">
         <Column branch={branch} role="auditor" />
+        <div className="col-drag-handle" />
         <Column branch={branch} role="target" />
       </div>
 
       <div className="composer-zone">
-        <div className={`runline status-${status ?? "idle"}`}>
-          <span className="star">✻</span>
-          <span className="runtext">{runlineText(status)}</span>
-          <span className="ctl">
-            <button
-              className={status === "running" ? "" : "live"}
-              onClick={() => send({ t: "play" })}
-              disabled={status === "ended" || status === "running"}
-            >
-              {status === "paused" ? "resume" : "play"}
-            </button>
-            <button onClick={() => send({ t: "pause" })} disabled={status !== "running"}>
-              pause
-            </button>
-          </span>
-        </div>
-
         <div className="composer">
           <textarea
             className="composer-input"
             rows={2}
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
-            placeholder="Feedback for the auditor — read at the next turn boundary…"
+            placeholder={
+              dest === "auditor"
+                ? "Feedback to the auditor…"
+                : "Message as the user…"
+            }
           />
           <div className="composer-lower">
-            <span className="dest">→ auditor</span>
+            <button
+              className="dest-toggle"
+              onClick={cycleDest}
+              title="Click to switch destination"
+            >
+              → {dest}
+            </button>
             <button
               className="send"
               disabled={!feedback.trim()}
@@ -94,7 +120,7 @@ export function DeskView(): JSX.Element {
                   role: "user",
                   content: feedback,
                 };
-                send({ t: "inject", branch, role: "auditor", message });
+                send({ t: "inject", branch, role: dest, message });
                 setFeedback("");
               }}
             >
