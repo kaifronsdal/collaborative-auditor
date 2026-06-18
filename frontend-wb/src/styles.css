@@ -237,9 +237,15 @@ body {
 }
 .desk-seed { /* inherits ellipsis from .desk-header */ }
 
-.columns { display: flex; flex: 1; min-height: 0; }
+/* 60/40 column split: auditor 40%, target 60%.
+   --auditor-width is set by the drag handle JS to override. */
+.columns {
+  display: grid;
+  grid-template-columns: var(--auditor-width, 4fr) 4px var(--target-width, 6fr);
+  flex: 1; min-height: 0;
+}
 .column {
-  flex: 1; min-width: 0; overflow-y: auto;
+  min-width: 0; overflow-y: auto;
   padding: 0 22px 40px;
   border-right: 1px solid var(--border-soft);
 }
@@ -335,8 +341,12 @@ body {
 }
 .tool-head .glyph { color: var(--ink-faint); font-size: 12px; }
 .tool-head .fn { color: var(--accent-text); }
+.tool-head .args-preview {
+  color: var(--ink-faint); font-size: 11.5px; flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .tool-head .tool-err { color: var(--danger, hsl(0 56% 45%)); }
-.tool-head .caret { margin-left: auto; color: var(--ink-faint); font-size: 11px; }
+.tool-head .caret { margin-left: auto; color: var(--ink-faint); font-size: 11px; flex-shrink: 0; }
 .tool-args, .tool-result {
   font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim);
   border-top: 1px solid var(--border-soft); padding: 8px 14px;

@@ -17,6 +17,12 @@ function resultText(result: ToolEvent["result"]): string {
   return result.type === "text" ? result.text : `[${result.type}]`;
 }
 
+/** First 50 chars of JSON-serialised args, for the collapsed preview. */
+function argsPreview(args: ToolEvent["arguments"]): string {
+  const raw = JSON.stringify(args);
+  return raw.length > 50 ? `${raw.slice(0, 50)}…` : raw;
+}
+
 export function ToolEventRow({ ev }: Props): JSX.Element {
   const [open, setOpen] = useState(false);
   const resultPreview = ev.error ? ev.error.message : resultText(ev.result);
@@ -25,6 +31,7 @@ export function ToolEventRow({ ev }: Props): JSX.Element {
       <div className="tool-head" onClick={() => setOpen((o) => !o)}>
         <span className="glyph">⎿</span>
         <span className="fn">{ev.function}</span>
+        <span className="args-preview">"{argsPreview(ev.arguments)}"</span>
         {ev.error && <span className="tool-err"> · error</span>}
         <span className="caret">{open ? "▾" : "▸"}</span>
       </div>

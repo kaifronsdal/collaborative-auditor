@@ -1,6 +1,6 @@
 import type { ChatMessageUser } from "@tsmono/inspect-common";
 
-import { type JSX, useState } from "react";
+import { type JSX, useCallback, useRef, useState } from "react";
 
 import { useSession } from "../store/session";
 import type { Status } from "../lib/wire";
@@ -38,6 +38,26 @@ export function DeskView(): JSX.Element {
 
   const [feedback, setFeedback] = useState("");
   const [dest, setDest] = useState<"auditor" | "target">("auditor");
+
+  // Drag-to-resize: track pointer down on the handle, update CSS var on move.
+  const columnsRef = useRef<HTMLDivElement>(null);
+  const onHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const container = columnsRef.current;
+    if (!container) return;
+    const onMove = (mv: PointerEvent): void => {
+      const rect = container.getBoundingClientRect();
+      const ratio = Math.min(0.8, Math.max(0.2, (mv.clientX - rect.left) / rect.width));
+      container.style.setProperty("--auditor-width", `${ratio}fr`);
+      container.style.setProperty("--target-width", `${1 - ratio}fr`);
+    };
+    const onUp = (): void => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, []);
 
   const branch = current!;
   const seedTitle = branchConfig?.seed ?? "";
@@ -84,9 +104,9 @@ export function DeskView(): JSX.Element {
         <span className="rl-status">{statusText(status, undefined, branchConfig?.max_turns)}</span>
       </div>
 
-      <div className="columns">
+      <div className="columns" ref={columnsRef}>
         <Column branch={branch} role="auditor" />
-        <div className="col-drag-handle" />
+        <div className="col-drag-handle" onPointerDown={onHandlePointerDown} />
         <Column branch={branch} role="target" />
       </div>
 
