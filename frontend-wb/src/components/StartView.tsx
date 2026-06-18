@@ -11,11 +11,10 @@ import {
 import { useSession } from "../store/session";
 
 /**
- * Empty-state landing screen (claude.ai-style). Shown when `current` is null.
- * Large centered composer card with model pickers and quick-seed chips below.
+ * Empty-state landing screen. Form-first: seed textarea is the dominant element,
+ * controls live in one row below it, preset chips above.
  */
 export function StartView(): JSX.Element {
-  // Use the store's `start` so it records a Recents entry before the WS send.
   const startAudit = useSession((s) => s.start);
 
   const [seed, setSeed] = useState("");
@@ -37,101 +36,88 @@ export function StartView(): JSX.Element {
 
   return (
     <div className="start-view">
-      <h1 className="start-heading">
-        <span className="accent">✻</span> Start an audit
-      </h1>
-
       <div className="start-card">
+        <div className="start-card-label">New audit</div>
+
+        {/* preset chips above the textarea */}
+        <div className="seed-chips">
+          {SEED_PRESETS.map((p) => (
+            <button
+              key={p.label}
+              className="seed-chip"
+              onClick={() => setSeed(p.seed)}
+              title={p.seed}
+            >
+              <span className="seed-icon">{p.icon}</span>
+              {p.label}
+            </button>
+          ))}
+        </div>
+
         <textarea
           className="start-textarea"
-          rows={4}
+          rows={6}
           placeholder="Describe the scenario the auditor should set up…"
           value={seed}
           onChange={(e) => setSeed(e.target.value)}
-          onKeyDown={(e) => {
-            // Cmd/Ctrl-Enter submits
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter") handleStart();
-          }}
         />
 
-        <div className="start-card-lower">
-          {/* left stub — file attach / future actions */}
-          <button className="start-attach" title="Attach (coming soon)" disabled>
-            +
-          </button>
+        {/* one control row: auditor · target · turns · Start */}
+        <div className="start-controls">
+          <label className="model-chip">
+            <span className="chip-label">auditor</span>
+            <select
+              value={auditorModel}
+              onChange={(e) => setAuditorModel(e.target.value)}
+            >
+              {MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {modelLabel(m)}
+                </option>
+              ))}
+            </select>
+            <span className="chip-caret">⌄</span>
+          </label>
 
-          <div className="start-pickers">
-            {/* auditor model chip */}
-            <label className="model-chip">
-              <span className="chip-label">auditor</span>
-              <select
-                value={auditorModel}
-                onChange={(e) => setAuditorModel(e.target.value)}
-              >
-                {MODELS.map((m) => (
-                  <option key={m} value={m}>
-                    {modelLabel(m)}
-                  </option>
-                ))}
-              </select>
-              <span className="chip-caret">⌄</span>
-            </label>
+          <span className="controls-sep">·</span>
 
-            {/* target model chip */}
-            <label className="model-chip">
-              <span className="chip-label">target</span>
-              <select
-                value={targetModel}
-                onChange={(e) => setTargetModel(e.target.value)}
-              >
-                {MODELS.map((m) => (
-                  <option key={m} value={m}>
-                    {modelLabel(m)}
-                  </option>
-                ))}
-              </select>
-              <span className="chip-caret">⌄</span>
-            </label>
+          <label className="model-chip">
+            <span className="chip-label">target</span>
+            <select
+              value={targetModel}
+              onChange={(e) => setTargetModel(e.target.value)}
+            >
+              {MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {modelLabel(m)}
+                </option>
+              ))}
+            </select>
+            <span className="chip-caret">⌄</span>
+          </label>
 
-            {/* max_turns numeric input */}
-            <label className="turns-chip">
-              <span className="chip-label">turns</span>
-              <input
-                type="number"
-                min={1}
-                max={30}
-                value={maxTurns}
-                onChange={(e) => setMaxTurns(Math.max(1, Number(e.target.value)))}
-                className="turns-input"
-              />
-            </label>
-          </div>
+          <span className="controls-sep">·</span>
 
-          {/* circular accent Start button */}
+          <label className="turns-chip">
+            <span className="chip-label">turns</span>
+            <input
+              type="number"
+              min={1}
+              max={30}
+              value={maxTurns}
+              onChange={(e) => setMaxTurns(Math.max(1, Number(e.target.value)))}
+              className="turns-input"
+            />
+          </label>
+
           <button
-            className="start-send"
-            title="Start audit"
+            className="start-btn"
             disabled={!canStart}
             onClick={handleStart}
           >
-            ↑
+            Start →
           </button>
         </div>
-      </div>
-
-      {/* quick-seed chips */}
-      <div className="seed-chips">
-        {SEED_PRESETS.map((p) => (
-          <button
-            key={p.label}
-            className="seed-chip"
-            onClick={() => setSeed(p.seed)}
-            title={p.seed}
-          >
-            <span className="seed-icon">{p.icon}</span>
-            {p.label}
-          </button>
-        ))}
       </div>
     </div>
   );
