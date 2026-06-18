@@ -22,6 +22,7 @@ import {
   type EventsByRole,
 } from "../lib/events";
 import type { BranchId, Down, QueuedMap, Role, Status, Up } from "../lib/wire";
+import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
 
 /**
  * A "Recents" entry. M0 stub: populated UI-side when an audit starts (the
@@ -53,6 +54,13 @@ function titleFromSeed(seed: string): string {
   return trimmed.length > 42 ? `${trimmed.slice(0, 42)}…` : trimmed || "untitled audit";
 }
 
+/** Config editable in the sidebar for the next audit (or to override current). */
+export type NextConfig = {
+  auditor_model: string;
+  target_model: string;
+  max_turns: number;
+};
+
 export type SessionState = {
   pool: ChatMessage[];
   events: Map<string, Event>;
@@ -83,6 +91,8 @@ export type SessionState = {
   /** Per-branch config captured at `start`, keyed by branch id (PENDING_ID
    *  until reconciled). Read by the sidebar config card. */
   branchConfig: Record<string, BranchConfig>;
+  /** Editable config for the next audit (pre-populates StartView pickers). */
+  nextConfig: NextConfig;
 
   apply: (msg: Down) => void;
   connect: (sessionId: string) => void;
@@ -95,6 +105,8 @@ export type SessionState = {
     target_model: string;
     max_turns: number;
   }) => void;
+  /** Update the sidebar's editable next-audit config. */
+  setNextConfig: (patch: Partial<NextConfig>) => void;
   /**
    * Return to the empty StartView without tearing down the backend branch.
    * The branch stays in the session (clicking its Recents row re-views it via
@@ -170,6 +182,11 @@ export const useSession = create<SessionState>((set, get) => ({
   sessionId: null,
   sessionsList: [],
   branchConfig: {},
+  nextConfig: {
+    auditor_model: DEFAULT_AUDITOR,
+    target_model: DEFAULT_TARGET,
+    max_turns: 6,
+  },
 
   apply: (msg: Down) =>
     set((state) => {
@@ -341,6 +358,10 @@ export const useSession = create<SessionState>((set, get) => ({
       ],
     }));
     get().send({ t: "start", ...params });
+  },
+
+  setNextConfig: (patch) => {
+    set((state) => ({ nextConfig: { ...state.nextConfig, ...patch } }));
   },
 
   newAudit: () => {

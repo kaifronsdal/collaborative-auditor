@@ -79,14 +79,26 @@ body {
 .side-empty { padding: 6px 10px; font-size: 12.5px; color: var(--ink-faint); }
 
 .side-row {
-  display: block; width: 100%; text-align: left;
-  padding: 7px 10px; border-radius: 7px;
+  display: flex; align-items: center; gap: 6px; width: 100%; text-align: left;
+  padding: 6px 10px; border-radius: 7px;
   border: none; background: none; cursor: pointer;
   font-family: var(--sans); font-size: 13px; color: var(--ink-mid);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  overflow: hidden;
 }
 .side-row:hover { background: var(--hover); cursor: pointer; }
 .side-row.active { background: var(--bg-200); color: var(--accent-text); font-weight: 500; }
+
+.side-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-row-time { flex-shrink: 0; font-size: 10.5px; color: var(--ink-faint); }
+
+/* status dot: ● running (accent) / ○ paused (dim) / · ended (faint) */
+.status-dot {
+  flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%;
+}
+.status-dot.dot-running { background: var(--accent); }
+.status-dot.dot-paused { background: transparent; border: 1.5px solid var(--ink-dim); }
+.status-dot.dot-ended { background: var(--ink-faint); opacity: 0.4; }
+.status-dot.dot-idle { background: var(--ink-faint); opacity: 0.25; }
 
 .side-sep { border-top: 1px solid var(--border-soft); margin: 10px 0; }
 
@@ -100,7 +112,23 @@ body {
   color: var(--ink-faint); position: relative; top: 1px;
 }
 .cfg .c-val { min-width: 0; word-break: break-word; }
-.cfg .c-val.mono { font-family: var(--mono); font-size: 11px; }
+
+/* inline editable config selects/inputs — chip style */
+.cfg-select {
+  border: none; background: none; outline: none; cursor: pointer;
+  font-family: var(--mono); font-size: 11px; color: var(--ink-mid);
+  -webkit-appearance: none; appearance: none;
+  max-width: 130px;
+}
+.cfg-select:hover { color: var(--ink); }
+.cfg-turns {
+  width: 36px; border: none; background: none; outline: none;
+  font-family: var(--sans); font-size: 12px; color: var(--ink-mid);
+  text-align: left;
+}
+.cfg-turns::-webkit-inner-spin-button,
+.cfg-turns::-webkit-outer-spin-button { -webkit-appearance: none; }
+.cfg-turns[type=number] { -moz-appearance: textfield; }
 
 /* ---- StartView ---- */
 .start-view {
