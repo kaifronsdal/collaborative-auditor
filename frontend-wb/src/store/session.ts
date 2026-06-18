@@ -226,10 +226,17 @@ export const useSession = create<SessionState>((set, get) => ({
                 branchConfig = { ...rest, [msg.current]: pending };
               }
             } else if (!sessionsList.some((s) => s.id === msg.current)) {
-              sessionsList = [
-                { id: msg.current, title: "audit", updatedAt: Date.now() },
-                ...sessionsList,
-              ];
+              // Only add to Recents if this is a root branch (no parent).
+              // Child branches (branch/resample/edit) live in the Branches tree,
+              // not in the Recents list — adding them here creates phantom entries.
+              const branchMeta = (msg.branches ?? {})[msg.current];
+              const isRootBranch = branchMeta == null || branchMeta.parent == null;
+              if (isRootBranch) {
+                sessionsList = [
+                  { id: msg.current, title: "audit", updatedAt: Date.now() },
+                  ...sessionsList,
+                ];
+              }
             }
           }
           return {
