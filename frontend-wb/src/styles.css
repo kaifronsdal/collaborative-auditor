@@ -1,24 +1,26 @@
-/* Audit Workbench — palette lifted from mockups-v4/style.css (claude.ai light). */
+/* Audit Workbench — neutral gray palette, system sans throughout. */
 :root {
   --bg-000: hsl(0 0% 100%);
-  --bg-100: hsl(48 33.3% 97.1%);
-  --bg-200: hsl(53 28.6% 94.5%);
-  --bg-300: hsl(48 25% 92.2%);
-  --bg-400: hsl(50 20.7% 88.6%);
-  --border: hsl(51 16.5% 84.5%);
-  --border-soft: hsl(51 16.5% 89%);
+  --bg-100: hsl(0 0% 97%);     /* neutral light gray — not warm cream */
+  --bg-200: hsl(0 0% 94%);
+  --bg-300: hsl(0 0% 91%);
+  --bg-400: hsl(0 0% 88%);
+  --border: hsl(0 0% 82%);
+  --border-soft: hsl(0 0% 87%);
+  --hover: hsl(0 0% 94%);
 
-  --ink: hsl(60 2.6% 7.6%);
-  --ink-mid: hsl(60 2.5% 23.3%);
-  --ink-dim: hsl(52 4% 44%);
-  --ink-faint: hsl(48 4.8% 59.2%);
+  --ink: hsl(0 0% 10%);
+  --ink-mid: hsl(0 0% 28%);
+  --ink-dim: hsl(0 0% 44%);
+  --ink-faint: hsl(0 0% 58%);
 
-  --accent: hsl(15 63.1% 59.6%);
-  --accent-text: hsl(15 54.2% 45%);
-  --link: hsl(210 70.9% 45%);
+  /* accent used only for: streaming cursor, play button when running,
+     active Recents entry, error states */
+  --accent: hsl(215 70% 52%);
+  --accent-text: hsl(215 65% 40%);
+  --link: hsl(215 70% 45%);
   --danger: hsl(0 56.2% 45.4%);
 
-  --serif: ui-serif, Georgia, "Times New Roman", serif;
   --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -52,8 +54,8 @@ body {
 
 /* ---- sidebar pieces ---- */
 .wordmark {
-  font-family: var(--serif); font-size: 17px; font-weight: 600;
-  padding: 18px 16px 6px; letter-spacing: -0.01em;
+  font-family: var(--sans); font-size: 16px; font-weight: 700;
+  padding: 18px 16px 6px; letter-spacing: -0.02em;
 }
 .wordmark-dot { color: var(--accent); }
 
@@ -83,8 +85,8 @@ body {
   font-family: var(--sans); font-size: 13px; color: var(--ink-mid);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.side-row:hover { background: var(--bg-200); }
-.side-row.active { background: var(--bg-300); color: var(--ink); font-weight: 500; }
+.side-row:hover { background: var(--hover); cursor: pointer; }
+.side-row.active { background: var(--bg-200); color: var(--accent-text); font-weight: 500; }
 
 .side-sep { border-top: 1px solid var(--border-soft); margin: 10px 0; }
 
@@ -359,3 +361,15 @@ body {
   justify-content: center;
 }
 .composer-lower .send:disabled { opacity: .4; cursor: default; }
+.composer-lower .send:not(:disabled):hover { filter: brightness(1.1); cursor: pointer; }
+
+/* ---- hover affordances (change 8) ---- */
+/* tool-head already has cursor:pointer; reinforce */
+.tool-head:hover { background: var(--bg-100); }
+
+/* drag handle — thin vertical strip between columns */
+.col-drag-handle {
+  width: 4px; flex-shrink: 0; cursor: col-resize;
+  background: transparent; transition: background 120ms;
+}
+.col-drag-handle:hover { background: var(--accent); }
