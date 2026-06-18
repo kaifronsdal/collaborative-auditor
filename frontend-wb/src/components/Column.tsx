@@ -46,7 +46,7 @@ export function Column({ branch, role }: Props): JSX.Element {
       {events.map((ev) => {
         const prevInputLen = prevModelInputLen;
         if (isModelEvent(ev)) prevModelInputLen = ev.input.length;
-        return <EventRow key={ev.uuid} ev={ev} prevInputLen={prevInputLen} />;
+        return <EventRow key={ev.uuid} ev={ev} prevInputLen={prevInputLen} role={role} />;
       })}
       {queued.map((m, i) => (
         <Bubble key={m.id ?? `q${i}`} msg={m} ghost byline="queued" />

@@ -274,20 +274,26 @@ body {
 }
 @keyframes blink { 50% { opacity: 0; } }
 
-/* caption-style action row — faint links separated by " · " (mockups-v4). */
+/* model-event-row wrapper — needed for hover-reveal on actions */
+.model-event-row { }
+
+/* caption-style action row — always visible at 0.5 opacity, brightens on row hover */
 .actions {
   margin-top: 7px; display: flex; align-items: center;
   font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
+  opacity: 0.5;
 }
+.model-event-row:hover .actions { opacity: 1; }
+
 .actions button {
   border: none; background: none; cursor: pointer;
   color: inherit; font: inherit; padding: 0;
 }
 .actions button:not(:first-child)::before {
-  content: "·"; margin: 0 8px; color: var(--ink-faint); cursor: default;
+  content: " · "; color: var(--ink-faint); cursor: default;
 }
-.actions button:hover:not(:disabled) { color: var(--accent-text); }
-.actions button:disabled { cursor: default; opacity: 0.65; }
+.actions button:hover:not(:disabled) { text-decoration: underline; }
+.actions button:disabled { cursor: pointer; opacity: 1; }
 
 /* tool call = quiet collapsed cell with a ⎿ glyph (mockups-v4 .cell). */
 .tool-row {
