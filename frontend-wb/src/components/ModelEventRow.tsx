@@ -65,6 +65,7 @@ export function ModelEventRow({ ev, prevInputLen, auditor }: Props): JSX.Element
               message: {
                 ...c.message,
                 content: editText,
+                completion: editText,
                 // omit id — backend will assign a fresh one
                 id: undefined,
               },

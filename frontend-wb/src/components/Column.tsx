@@ -29,7 +29,7 @@ export function Column({ branch, role }: Props): JSX.Element {
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  });
+  }, [events.length, queued.length]);
 
   // On first mount, pin to bottom regardless.
   useEffect(() => {
