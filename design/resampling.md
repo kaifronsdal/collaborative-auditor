@@ -325,7 +325,7 @@ generate = (
 )
 ```
 
-There is no `ReplayingModel` subclass and no `recording()` helper — the auditor and target use the same one wrapping pattern (`tape.replayable(fn, source=…)`). When `audit_tape()` returns `None` (running `auditor_agent` standalone outside `audit_solver`), `agent_model.generate` is used unwrapped with no behaviour change. Compaction's summarisation generate is wrapped the same way so it also lands on the tape.
+There is no `ReplayingModel` subclass and no `recording()` helper — the auditor and target use the same one wrapping pattern (`tape.replayable(fn, source=…)`). When `audit_tape()` returns `None` (running `auditor_agent` standalone outside `audit_solver`), `agent_model.generate` is used unwrapped with no behaviour change. Compaction's summarisation generate is wrapped the same way so it also lands on the tape. **Note (tape-replay-v2):** `auditor_agent` is called with `compaction=False` in the workbench and resumable-audit flows; the summariser tape-wrap is therefore not exercised on those paths. The `resample` task should also default to `compaction=False` or document this limitation.
 
 ### Persistence
 

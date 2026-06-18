@@ -143,3 +143,68 @@ so. (A client-side cosmetic reveal animation, if anyone wants one, is independen
 `server.py:868-996`; petri `_history.py:137-183`, `_agent.py:16`, `agent.py:126-130`;
 workbench `DESIGN.md:306-323`, `ARCHITECTURE.md:378-383`; collaborative-auditor
 `view_state.py:67-102`, `common.py:71-93`.
+
+---
+
+## §B — Backend wire architecture
+
+One `Session` per `session_id`. The session owns a single `Transcript`, subscribes once via `_subscribe`, and forwards every inspect `Event` to all connected WebSockets. The only type-specific handling is `ModelEvent`: its `input` (full conversation history, re-sent on every streaming flush) is condensed into an append-only, content-hash-deduped message `pool` and replaced by `input_refs` range lists. The frontend resolves those ranges against the pool with `expandEvents`.
+
+```python
+# Session._on_event — sync, fast, no I/O
+def _on_event(ev: Event) -> None:
+    is_update = ev.uuid in self.events        # ← dedup by uuid, not a `seen` set
+    if isinstance(ev, ModelEvent) and not is_update:
+        _emit_pool_delta()                    # ship any new pool entries first
+    self.events[ev.uuid] = condense(ev)
+    self.version += 1
+    self._send.send_nowait({"t": "update" if is_update else "event", ...})
+```
+
+Key invariants:
+- One drain task per session (not per branch): started in `Session.start()`, consumes `_send` queue, broadcasts to all connections. Multiple branches share this one loop.
+- `pool` is append-only; the frontend reconstructs it from `pool` deltas sent before the first `ModelEvent` that references new entries.
+- `span_role` maps span ids to `(branch_id, role)` for column routing. Populated by `Branch.__init__` before the branch task runs.
+
+## §C — Wire protocol (Down messages, client ← server)
+
+### `Down.state` — full snapshot on connect or after `start`/`branch`/`edit`/`switch`
+
+```typescript
+{
+  t: "state";
+  v: number;                        // monotone version
+  pool: ChatMessage[];              // full accumulated pool
+  events: Event[];                  // all events (ModelEvent.input condensed to input_refs)
+  span_role: Record<string, [BranchId, Role]>;
+  queued: QueuedMap;                // per-branch, per-role injected messages awaiting next turn
+  current: string | null;           // currently-viewed branch id
+  status: Status | null;            // lifecycle of the current branch
+  branches: Record<BranchId, BranchMeta>;  // tree metadata for all branches
+}
+```
+
+### Incremental update messages
+
+| `t` | payload | when |
+|---|---|---|
+| `pool` | `{v, from, entries}` | new pool entries before a new ModelEvent |
+| `event` | `{v, event}` | new event (first time seen) |
+| `update` | `{v, event}` | existing event mutated (streaming flush) |
+| `queued` | `{v, branch, role, message}` | user-injected message enqueued |
+| `status` | `{v, status}` | current branch lifecycle changed (play/pause/end) |
+| `error` | `{v, message}` | operation failed (slice_at ValueError, inject into ended branch, etc.) |
+
+### `Up` commands (client → server)
+
+| `t` | params | notes |
+|---|---|---|
+| `start` | `seed, auditor_model, target_model, max_turns` | creates root branch, sets `current` |
+| `step` | — | release one auditor turn |
+| `play` | — | run freely |
+| `pause` | — | stop after current turn |
+| `inject` | `branch, role, message` | enqueue a user message |
+| `branch` | `at` | branch at anchor (new child branch, `current` → child) |
+| `resample` | `at` | same as branch; semantically "regenerate" |
+| `edit` | `at, output` | edit target turn output, creates new branch |
+| `switch` | `branch` | change `current` without forking |
