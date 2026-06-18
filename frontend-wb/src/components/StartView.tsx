@@ -2,8 +2,6 @@ import type { JSX } from "react";
 import { useState } from "react";
 
 import {
-  DEFAULT_AUDITOR,
-  DEFAULT_TARGET,
   MODELS,
   SEED_PRESETS,
   modelLabel,
@@ -16,11 +14,12 @@ import { useSession } from "../store/session";
  */
 export function StartView(): JSX.Element {
   const startAudit = useSession((s) => s.start);
+  const setNextConfig = useSession((s) => s.setNextConfig);
 
   const [seed, setSeed] = useState("");
-  const [auditorModel, setAuditorModel] = useState(DEFAULT_AUDITOR);
-  const [targetModel, setTargetModel] = useState(DEFAULT_TARGET);
-  const [maxTurns, setMaxTurns] = useState(6);
+  const [auditorModel, setAuditorModel] = useState(() => useSession.getState().nextConfig.auditor_model);
+  const [targetModel, setTargetModel] = useState(() => useSession.getState().nextConfig.target_model);
+  const [maxTurns, setMaxTurns] = useState(() => useSession.getState().nextConfig.max_turns);
 
   const canStart = seed.trim().length > 0;
 
@@ -68,7 +67,7 @@ export function StartView(): JSX.Element {
             <span className="chip-label">auditor</span>
             <select
               value={auditorModel}
-              onChange={(e) => setAuditorModel(e.target.value)}
+              onChange={(e) => { setAuditorModel(e.target.value); setNextConfig({ auditor_model: e.target.value }); }}
             >
               {MODELS.map((m) => (
                 <option key={m} value={m}>
@@ -85,7 +84,7 @@ export function StartView(): JSX.Element {
             <span className="chip-label">target</span>
             <select
               value={targetModel}
-              onChange={(e) => setTargetModel(e.target.value)}
+              onChange={(e) => { setTargetModel(e.target.value); setNextConfig({ target_model: e.target.value }); }}
             >
               {MODELS.map((m) => (
                 <option key={m} value={m}>
@@ -105,7 +104,7 @@ export function StartView(): JSX.Element {
               min={1}
               max={30}
               value={maxTurns}
-              onChange={(e) => setMaxTurns(Math.max(1, Number(e.target.value)))}
+              onChange={(e) => { const v = Math.max(1, Number(e.target.value)); setMaxTurns(v); setNextConfig({ max_turns: v }); }}
               className="turns-input"
             />
           </label>

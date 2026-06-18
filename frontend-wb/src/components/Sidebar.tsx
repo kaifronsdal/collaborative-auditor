@@ -24,6 +24,7 @@ function BranchNode({
   allBranches,
   depth,
   onSwitch,
+  visited,
 }: {
   id: BranchId;
   meta: BranchMeta;
@@ -31,7 +32,10 @@ function BranchNode({
   allBranches: Record<BranchId, BranchMeta>;
   depth: number;
   onSwitch: (id: BranchId) => void;
+  visited: Set<string>;
 }): JSX.Element {
+  if (visited.has(id)) return <></>;
+  const nextVisited = new Set(visited).add(id);
   const isActive = id === current;
   const label = meta.branched_at
     ? `branch @ ${meta.branched_at.slice(0, 8)}`
@@ -59,6 +63,7 @@ function BranchNode({
           allBranches={allBranches}
           depth={depth + 1}
           onSwitch={onSwitch}
+          visited={nextVisited}
         />
       ))}
     </div>
@@ -79,6 +84,9 @@ export function Sidebar(): JSX.Element {
   const nextConfig = useSession((s) => s.nextConfig);
   const setNextConfig = useSession((s) => s.setNextConfig);
   const branches = useSession((s) => s.branches);
+  const branchConfig = useSession((s) =>
+    s.current ? s.branchConfig[s.current] : undefined
+  );
   const send = useSession((s) => s.send);
 
   // Roots: branches with no parent.
@@ -116,7 +124,11 @@ export function Sidebar(): JSX.Element {
                 className={`side-row${isActive ? " active" : ""}`}
                 title={s.title}
                 onClick={() => {
-                  useSession.setState({ current: s.id === "__pending__" ? current : s.id });
+                  const targetId = s.id === "__pending__" ? current : s.id;
+                  if (targetId) {
+                    send({ t: "switch", branch: targetId });
+                    useSession.setState({ current: targetId });
+                  }
                 }}
               >
                 <span className={`status-dot dot-${entryStatus}`} title={entryStatus} />
@@ -131,49 +143,42 @@ export function Sidebar(): JSX.Element {
       {current && (
         <>
           <div className="side-sep" />
-          <div className="side-section">This audit · config</div>
+          <div className="side-section">{current ? "This audit · config" : "Next audit · config"}</div>
           <div className="cfg">
-            <div className="c-row">
-              <span className="c-lab">auditor</span>
-              <label className="c-val">
-                <select
-                  className="cfg-select"
-                  value={nextConfig.auditor_model}
-                  onChange={(e) => setNextConfig({ auditor_model: e.target.value })}
-                >
-                  {MODELS.map((m) => (
-                    <option key={m} value={m}>{modelLabel(m)}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <div className="c-row">
-              <span className="c-lab">target</span>
-              <label className="c-val">
-                <select
-                  className="cfg-select"
-                  value={nextConfig.target_model}
-                  onChange={(e) => setNextConfig({ target_model: e.target.value })}
-                >
-                  {MODELS.map((m) => (
-                    <option key={m} value={m}>{modelLabel(m)}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
-            <div className="c-row">
-              <span className="c-lab">turns</span>
-              <span className="c-val">
-                <input
-                  type="number"
-                  className="cfg-turns"
-                  min={1}
-                  max={30}
-                  value={nextConfig.max_turns}
-                  onChange={(e) => setNextConfig({ max_turns: Math.max(1, Number(e.target.value)) })}
-                />
-              </span>
-            </div>
+            {current && branchConfig ? (
+              // Read-only view of server-authoritative branch config
+              <>
+                <div className="c-row"><span className="c-lab">auditor</span><span className="c-val">{modelLabel(branchConfig.auditor_model)}</span></div>
+                <div className="c-row"><span className="c-lab">target</span><span className="c-val">{modelLabel(branchConfig.target_model)}</span></div>
+                <div className="c-row"><span className="c-lab">turns</span><span className="c-val">{branchConfig.max_turns}</span></div>
+              </>
+            ) : (
+              // Editable nextConfig for next audit
+              <>
+                <div className="c-row">
+                  <span className="c-lab">auditor</span>
+                  <label className="c-val">
+                    <select className="cfg-select" value={nextConfig.auditor_model} onChange={(e) => setNextConfig({ auditor_model: e.target.value })}>
+                      {MODELS.map((m) => (<option key={m} value={m}>{modelLabel(m)}</option>))}
+                    </select>
+                  </label>
+                </div>
+                <div className="c-row">
+                  <span className="c-lab">target</span>
+                  <label className="c-val">
+                    <select className="cfg-select" value={nextConfig.target_model} onChange={(e) => setNextConfig({ target_model: e.target.value })}>
+                      {MODELS.map((m) => (<option key={m} value={m}>{modelLabel(m)}</option>))}
+                    </select>
+                  </label>
+                </div>
+                <div className="c-row">
+                  <span className="c-lab">turns</span>
+                  <span className="c-val">
+                    <input type="number" className="cfg-turns" min={1} max={30} value={nextConfig.max_turns} onChange={(e) => setNextConfig({ max_turns: Math.max(1, Number(e.target.value)) })} />
+                  </span>
+                </div>
+              </>
+            )}
           </div>
 
           {roots.length > 0 && (
@@ -190,6 +195,7 @@ export function Sidebar(): JSX.Element {
                     allBranches={branches}
                     depth={0}
                     onSwitch={handleSwitch}
+                    visited={new Set()}
                   />
                 ))}
               </div>

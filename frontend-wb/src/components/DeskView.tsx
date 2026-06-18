@@ -1,6 +1,6 @@
 import type { ChatMessageUser } from "@tsmono/inspect-common";
 
-import { type JSX, useCallback, useRef, useState } from "react";
+import { type JSX, useCallback, useEffect, useRef, useState } from "react";
 
 import { useSession } from "../store/session";
 import type { Status } from "../lib/wire";
@@ -32,15 +32,21 @@ export function DeskView(): JSX.Element {
   const send = useSession((s) => s.send);
   const current = useSession((s) => s.current);
   const status = useSession((s) => s.status);
+  const branches = useSession((s) => s.branches);
   const branchConfig = useSession((s) =>
     s.current ? s.branchConfig[s.current] : undefined
   );
+  const error = useSession((s) => s.error);
+  const dismissError = useSession((s) => s.dismissError);
 
   const [feedback, setFeedback] = useState("");
   const [dest, setDest] = useState<"auditor" | "target">("auditor");
 
   // Drag-to-resize: track pointer down on the handle, update CSS var on move.
   const columnsRef = useRef<HTMLDivElement>(null);
+  const onMoveRef = useRef<((mv: PointerEvent) => void) | null>(null);
+  const onUpRef = useRef<(() => void) | null>(null);
+
   const onHandlePointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     e.currentTarget.setPointerCapture(e.pointerId);
     const container = columnsRef.current;
@@ -52,15 +58,25 @@ export function DeskView(): JSX.Element {
       container.style.setProperty("--target-width", `${1 - ratio}fr`);
     };
     const onUp = (): void => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointermove", onMoveRef.current!);
+      window.removeEventListener("pointerup", onUpRef.current!);
+      onMoveRef.current = null;
+      onUpRef.current = null;
     };
+    onMoveRef.current = onMove;
+    onUpRef.current = onUp;
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
   }, []);
 
+  useEffect(() => () => {
+    if (onMoveRef.current) window.removeEventListener("pointermove", onMoveRef.current);
+    if (onUpRef.current) window.removeEventListener("pointerup", onUpRef.current);
+  }, []);
+
   const branch = current!;
-  const seedTitle = branchConfig?.seed ?? "";
+  const currentBranch = current ? branches[current] : undefined;
+  const seedTitle = currentBranch?.seed ?? branchConfig?.seed ?? "";
   const isRunning = status === "running";
   const isEnded = status === "ended";
 
@@ -74,6 +90,13 @@ export function DeskView(): JSX.Element {
       {seedTitle && (
         <div className="desk-header" title={seedTitle}>
           <span className="desk-seed">{seedTitle}</span>
+        </div>
+      )}
+
+      {error && (
+        <div className="error-banner">
+          <span>{error}</span>
+          <button onClick={dismissError} title="Dismiss">✕</button>
         </div>
       )}
 
@@ -93,7 +116,7 @@ export function DeskView(): JSX.Element {
           {/* step — secondary, smaller */}
           <button
             className="rl-step"
-            onClick={() => send({ t: "play" })}
+            onClick={() => send({ t: "step" })}
             disabled={isRunning || isEnded}
             title="Step one turn"
           >

@@ -46,7 +46,8 @@ export type Down =
       branch: BranchId;
       role: Role;
       message: ChatMessage;
-    };
+    }
+  | { t: "error"; v: number; message: string };
 
 export type Up =
   | {

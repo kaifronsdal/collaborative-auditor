@@ -96,10 +96,12 @@ export type SessionState = {
   /** Editable config for the next audit (pre-populates StartView pickers). */
   nextConfig: NextConfig;
 
+  error: string | null;
   apply: (msg: Down) => void;
   connect: (sessionId: string) => void;
   disconnect: () => void;
   send: (msg: Up) => void;
+  dismissError: () => void;
   /** Compose + send a `start`, and record a Recents entry for it. */
   start: (params: {
     seed: string;
@@ -190,6 +192,7 @@ export const useSession = create<SessionState>((set, get) => ({
     target_model: DEFAULT_TARGET,
     max_turns: 6,
   },
+  error: null,
 
   apply: (msg: Down) =>
     set((state) => {
@@ -318,6 +321,10 @@ export const useSession = create<SessionState>((set, get) => ({
           );
           return { queued, version: msg.v };
         }
+
+        case "error": {
+          return { error: msg.message, version: msg.v };
+        }
       }
     }),
 
@@ -381,4 +388,6 @@ export const useSession = create<SessionState>((set, get) => ({
     // flips back when its `state` is re-broadcast).
     set({ current: null });
   },
+
+  dismissError: () => set({ error: null }),
 }));
