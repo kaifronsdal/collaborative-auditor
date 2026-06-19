@@ -15,7 +15,9 @@ type Props = {
 };
 
 export function ModelEventRow({ ev, prevInputLen, auditor }: Props): JSX.Element {
-  const send = useSession((s) => s.send);
+  const branchAt = useSession((s) => s.branchAt);
+  const resampleAt = useSession((s) => s.resampleAt);
+  const editAt = useSession((s) => s.editAt);
   const tail = ev.input.slice(prevInputLen);
   const choice = ev.output.choices[0];
   const content = choice?.message.content;
@@ -28,12 +30,12 @@ export function ModelEventRow({ ev, prevInputLen, auditor }: Props): JSX.Element
 
   function handleBranch() {
     if (anchorId == null) return;
-    send({ t: "branch", at: anchorId });
+    branchAt(anchorId);
   }
 
   function handleResample() {
     if (anchorId == null) return;
-    send({ t: "resample", at: anchorId });
+    resampleAt(anchorId);
   }
 
   function handleEditOpen() {
@@ -73,7 +75,7 @@ export function ModelEventRow({ ev, prevInputLen, auditor }: Props): JSX.Element
           : c
       ),
     };
-    send({ t: "edit", at: anchorId, output: edited });
+    editAt(anchorId, edited);
     setEditing(false);
   }
 

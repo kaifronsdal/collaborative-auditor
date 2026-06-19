@@ -29,7 +29,8 @@ function statusText(status: Status | null, turn?: number): string {
  * runline (only transport control) + composer at the bottom.
  */
 export function DeskView(): JSX.Element {
-  const send = useSession((s) => s.send);
+  const transport = useSession((s) => s.transport);
+  const injectMsg = useSession((s) => s.inject);
   const current = useSession((s) => s.current);
   const status = useSession((s) => s.status);
   const branches = useSession((s) => s.branches);
@@ -106,7 +107,7 @@ export function DeskView(): JSX.Element {
           {/* play/pause toggle */}
           <button
             className={`rl-play${isRunning ? " running" : ""}`}
-            onClick={() => send({ t: isRunning ? "pause" : "play" })}
+            onClick={() => transport(isRunning ? "pause" : "play")}
             disabled={isEnded}
             title={isRunning ? "Pause" : "Play"}
           >
@@ -116,7 +117,7 @@ export function DeskView(): JSX.Element {
           {/* step — secondary, smaller */}
           <button
             className="rl-step"
-            onClick={() => send({ t: "step" })}
+            onClick={() => transport("step")}
             disabled={isRunning || isEnded}
             title="Step one turn"
           >
@@ -126,7 +127,7 @@ export function DeskView(): JSX.Element {
           {/* end — stop the audit early */}
           <button
             className="rl-end"
-            onClick={() => send({ t: "end" })}
+            onClick={() => transport("end")}
             disabled={isEnded}
             title="End audit"
           >
@@ -173,7 +174,7 @@ export function DeskView(): JSX.Element {
                   role: "user",
                   content: feedback,
                 };
-                send({ t: "inject", branch, role: dest, message });
+                injectMsg(branch, dest, message);
                 setFeedback("");
               }}
             >
