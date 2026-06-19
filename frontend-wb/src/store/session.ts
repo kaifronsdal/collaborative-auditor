@@ -23,6 +23,7 @@ import {
 } from "../lib/events";
 import type { BranchId, BranchMeta, Down, QueuedMap, Role, Status, Up } from "../lib/wire";
 import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
+import type { GenerateConfigDict } from "../components/ModelPicker";
 
 /**
  * A "Recents" entry. M0 stub: populated UI-side when an audit starts (the
@@ -42,7 +43,9 @@ export type BranchConfig = {
   seed: string;
   auditor_model: string;
   target_model: string;
-  max_turns: number;
+  max_turns?: number;
+  auditor_config?: Partial<GenerateConfigDict>;
+  target_config?: Partial<GenerateConfigDict>;
 };
 
 /** Local id for the just-started Recents stub, before `current` arrives. */
@@ -58,7 +61,8 @@ function titleFromSeed(seed: string): string {
 export type NextConfig = {
   auditor_model: string;
   target_model: string;
-  max_turns: number;
+  auditor_config: Partial<GenerateConfigDict>;
+  target_config: Partial<GenerateConfigDict>;
 };
 
 export type SessionState = {
@@ -107,7 +111,8 @@ export type SessionState = {
     seed: string;
     auditor_model: string;
     target_model: string;
-    max_turns: number;
+    auditor_config?: Partial<GenerateConfigDict>;
+    target_config?: Partial<GenerateConfigDict>;
   }) => void;
   /** Update the sidebar's editable next-audit config. */
   setNextConfig: (patch: Partial<NextConfig>) => void;
@@ -190,7 +195,8 @@ export const useSession = create<SessionState>((set, get) => ({
   nextConfig: {
     auditor_model: DEFAULT_AUDITOR,
     target_model: DEFAULT_TARGET,
-    max_turns: 6,
+    auditor_config: {},
+    target_config: {},
   },
   error: null,
 
@@ -375,7 +381,18 @@ export const useSession = create<SessionState>((set, get) => ({
         ...state.sessionsList.filter((s) => s.id !== PENDING_ID),
       ],
     }));
-    get().send({ t: "start", ...params });
+    get().send({
+      t: "start",
+      seed: params.seed,
+      auditor_model: params.auditor_model,
+      target_model: params.target_model,
+      ...(params.auditor_config && Object.keys(params.auditor_config).length > 0
+        ? { auditor_config: params.auditor_config as Record<string, unknown> }
+        : {}),
+      ...(params.target_config && Object.keys(params.target_config).length > 0
+        ? { target_config: params.target_config as Record<string, unknown> }
+        : {}),
+    });
   },
 
   setNextConfig: (patch) => {

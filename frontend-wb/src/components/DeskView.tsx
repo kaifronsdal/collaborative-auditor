@@ -10,8 +10,8 @@ function uuid(): string {
   return crypto.randomUUID();
 }
 
-function statusText(status: Status | null, turn?: number, maxTurns?: number): string {
-  const turnInfo = (turn != null && maxTurns != null) ? ` · turn ${turn}/${maxTurns}` : "";
+function statusText(status: Status | null, turn?: number): string {
+  const turnInfo = turn != null ? ` · turn ${turn}` : "";
   switch (status) {
     case "running":
       return `running${turnInfo} · generating`;
@@ -122,9 +122,19 @@ export function DeskView(): JSX.Element {
           >
             · step
           </button>
+
+          {/* end — stop the audit early */}
+          <button
+            className="rl-end"
+            onClick={() => send({ t: "end" })}
+            disabled={isEnded}
+            title="End audit"
+          >
+            ⏹ end
+          </button>
         </div>
 
-        <span className="rl-status">{statusText(status, undefined, branchConfig?.max_turns)}</span>
+        <span className="rl-status">{statusText(status)}</span>
       </div>
 
       <div className="columns" ref={columnsRef}>

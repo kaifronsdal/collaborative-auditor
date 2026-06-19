@@ -306,7 +306,7 @@ describe("start does not add phantom Recents for child branch", () => {
     const { apply, start } = useSession.getState();
 
     // start() adds a pending Recents entry.
-    start({ seed: "test", auditor_model: "m", target_model: "m", max_turns: 3 });
+    start({ seed: "test", auditor_model: "m", target_model: "m" });
 
     // First state broadcast: backend assigns current = "branch-id-root" (root branch).
     const stateRoot: Down = {

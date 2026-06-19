@@ -55,11 +55,14 @@ export type Up =
       seed: string;
       auditor_model: string;
       target_model: string;
-      max_turns: number;
+      max_turns?: number;
+      auditor_config?: Record<string, unknown>;
+      target_config?: Record<string, unknown>;
     }
   | { t: "step" }
   | { t: "play" }
   | { t: "pause" }
+  | { t: "end" }
   | { t: "inject"; branch: BranchId; role: Role; message: ChatMessage }
   | { t: "branch"; at: string }
   | { t: "resample"; at: string }
