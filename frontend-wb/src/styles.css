@@ -44,6 +44,55 @@ body {
   border-right: 1px solid var(--border-soft);
   background: var(--bg-100);
   overflow-y: auto;
+  transition: width 180ms ease;
+}
+
+/* Collapsed icon rail */
+.sidebar--collapsed {
+  width: 48px; overflow: hidden; overflow-y: visible;
+  align-items: center; padding-top: 10px; gap: 8px;
+}
+
+/* Wordmark row: flex to put collapse button on the right */
+.wordmark-row {
+  display: flex; align-items: center;
+  padding: 14px 10px 4px 16px;
+}
+.wordmark-row .wordmark {
+  flex: 1; padding: 0;
+}
+
+/* Collapse / expand chevron buttons */
+.sidebar-collapse-btn, .sidebar-expand-btn {
+  border: none; background: none; cursor: pointer;
+  color: var(--ink-faint); font-size: 16px; line-height: 1;
+  padding: 4px 6px; border-radius: 6px;
+  flex-shrink: 0;
+}
+.sidebar-collapse-btn:hover, .sidebar-expand-btn:hover {
+  background: var(--hover); color: var(--ink-mid);
+}
+
+/* Expand button sits at the top of the collapsed rail */
+.sidebar-expand-btn {
+  align-self: flex-end; margin-right: 4px;
+}
+
+/* New-audit icon button for collapsed rail */
+.side-new-icon {
+  width: 32px; height: 32px; border-radius: 9px;
+  border: 1px solid var(--border);
+  background: var(--bg-000); color: var(--accent);
+  font-size: 18px; cursor: pointer; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.side-new-icon:hover { background: var(--bg-200); }
+
+/* Status dots in collapsed rail — larger for easier reading */
+.sidebar-dot {
+  width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%;
+  cursor: default;
 }
 
 .app-main {
@@ -56,6 +105,10 @@ body {
 .wordmark {
   font-family: var(--sans); font-size: 16px; font-weight: 700;
   padding: 18px 16px 6px; letter-spacing: -0.02em;
+}
+/* When inside wordmark-row, the row owns the padding */
+.wordmark-row .wordmark {
+  padding: 0;
 }
 .wordmark-dot { color: var(--accent); }
 

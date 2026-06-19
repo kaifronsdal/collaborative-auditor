@@ -81,6 +81,13 @@ export type SessionState = {
   queued: QueuedMap;
   version: number;
   current: string | null;
+  /**
+   * True when the user has explicitly requested the StartView (clicked "+ New
+   * audit"). Prevents the next backend `state` broadcast from flipping
+   * `current` back and hiding the StartView. Cleared when a new `start` is
+   * sent or the user switches to an existing branch.
+   */
+  pendingNewAudit: boolean;
   /** Lifecycle status of the current branch (idle/running/paused/ended). */
   status: Status | null;
   ws: WebSocket | null;
@@ -186,6 +193,7 @@ export const useSession = create<SessionState>((set, get) => ({
   queued: {},
   version: 0,
   current: null,
+  pendingNewAudit: false,
   status: null,
   ws: null,
   sessionId: null,
@@ -248,6 +256,11 @@ export const useSession = create<SessionState>((set, get) => ({
               }
             }
           }
+          // If the user clicked "+ New audit" we keep current=null (show
+          // StartView) even if the backend still reports the old branch as
+          // current. The flag is cleared when they send a new `start` or
+          // switch to an existing branch.
+          const resolvedCurrent = state.pendingNewAudit ? null : msg.current;
           return {
             pool,
             events,
@@ -255,8 +268,8 @@ export const useSession = create<SessionState>((set, get) => ({
             spanRole,
             spanParent,
             queued: msg.queued,
-            current: msg.current,
-            status: msg.status,
+            current: resolvedCurrent,
+            status: state.pendingNewAudit ? null : msg.status,
             version: msg.v,
             sessionsList,
             branchConfig,
@@ -372,14 +385,30 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   start: (params) => {
-    // Record a pending Recents entry first; the `state` broadcast that follows
-    // `start` carries the real branch id and reconciles `PENDING_ID` to it.
+    // Record a pending Recents entry and capture the branch config.
+    // The `state` broadcast that follows carries the real branch id and
+    // reconciles `PENDING_ID` to it (both in sessionsList and branchConfig).
+    const pendingConfig: BranchConfig = {
+      seed: params.seed,
+      auditor_model: params.auditor_model,
+      target_model: params.target_model,
+      auditor_config: params.auditor_config,
+      target_config: params.target_config,
+    };
     set((state) => ({
+      pendingNewAudit: false,
       sessionsList: [
         { id: PENDING_ID, title: titleFromSeed(params.seed), updatedAt: Date.now() },
         // a single pending stub at a time — drop any stale one.
         ...state.sessionsList.filter((s) => s.id !== PENDING_ID),
       ],
+      branchConfig: {
+        // drop any stale pending entry, then add the new one
+        ...Object.fromEntries(
+          Object.entries(state.branchConfig).filter(([k]) => k !== PENDING_ID)
+        ),
+        [PENDING_ID]: pendingConfig,
+      },
     }));
     get().send({
       t: "start",
@@ -400,10 +429,11 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   newAudit: () => {
-    // Back to the empty state. The backend branch is untouched; clicking its
-    // Recents row re-views it (no reconnect needed — same socket, `current`
-    // flips back when its `state` is re-broadcast).
-    set({ current: null });
+    // Back to the empty StartView. The backend branch is untouched; clicking
+    // its Recents row re-views it (same socket, `current` flips back).
+    // `pendingNewAudit` prevents the next backend `state` broadcast from
+    // overwriting `current` back to the old branch.
+    set({ current: null, pendingNewAudit: true });
   },
 
   dismissError: () => set({ error: null }),

@@ -7,6 +7,8 @@ import { ModelPicker, readStoredConfig } from "./ModelPicker";
 import type { GenerateConfigDict } from "./ModelPicker";
 import { useState } from "react";
 
+const COLLAPSED_KEY = "workbench.sidebarCollapsed";
+
 /** Format a timestamp as a relative string ("2m ago", "3h ago", etc.). */
 function relTime(ts: number): string {
   const diff = Date.now() - ts;
@@ -99,20 +101,82 @@ export function Sidebar(): JSX.Element {
     () => readStoredConfig("target"),
   );
 
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(COLLAPSED_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+
+  function toggleCollapsed(): void {
+    setCollapsed((v) => {
+      const next = !v;
+      try { localStorage.setItem(COLLAPSED_KEY, String(next)); } catch { /* ignore */ }
+      return next;
+    });
+  }
+
   // Roots: branches with no parent.
   const roots = Object.entries(branches).filter(([, m]) => m.parent === null);
 
   function handleSwitch(id: BranchId) {
     send({ t: "switch", branch: id });
-    // Also update local current immediately so the highlight responds fast;
-    // the server's state broadcast will confirm it.
-    useSession.setState({ current: id });
+    // Clear pendingNewAudit so the backend state broadcast is allowed to set
+    // current again. Also update local current immediately so the highlight
+    // responds fast; the server's state broadcast will confirm it.
+    useSession.setState({ current: id, pendingNewAudit: false });
+  }
+
+  if (collapsed) {
+    return (
+      <aside className="sidebar sidebar--collapsed">
+        <button
+          className="sidebar-expand-btn"
+          onClick={toggleCollapsed}
+          title="Expand sidebar"
+          aria-label="Expand sidebar"
+        >
+          ›
+        </button>
+        <button
+          className="side-new-icon"
+          onClick={() => { toggleCollapsed(); newAudit(); }}
+          title="New audit"
+          aria-label="New audit"
+        >
+          +
+        </button>
+        {/* Status dots for recent audits */}
+        {sessionsList.slice(0, 6).map((s) => {
+          const isActive = s.id === current;
+          const entryStatus = isActive ? (status ?? "ended") : "ended";
+          return (
+            <span
+              key={s.id}
+              className={`status-dot dot-${entryStatus} sidebar-dot`}
+              title={s.title}
+            />
+          );
+        })}
+      </aside>
+    );
   }
 
   return (
     <aside className="sidebar">
-      <div className="wordmark">
-        workbench<span className="wordmark-dot">.</span>
+      <div className="wordmark-row">
+        <div className="wordmark">
+          workbench<span className="wordmark-dot">.</span>
+        </div>
+        <button
+          className="sidebar-collapse-btn"
+          onClick={toggleCollapsed}
+          title="Collapse sidebar"
+          aria-label="Collapse sidebar"
+        >
+          ‹
+        </button>
       </div>
 
       <button className="side-new" onClick={newAudit}>
@@ -134,11 +198,16 @@ export function Sidebar(): JSX.Element {
                 className={`side-row${isActive ? " active" : ""}`}
                 title={s.title}
                 onClick={() => {
-                  const targetId = s.id === "__pending__" ? current : s.id;
-                  if (targetId) {
-                    send({ t: "switch", branch: targetId });
-                    useSession.setState({ current: targetId });
+                  if (s.id === "__pending__") {
+                    // Pending entry has no backend branch id yet — clicking it
+                    // while we're waiting for the first `state` broadcast is a
+                    // no-op (the audit is about to become current on its own).
+                    return;
                   }
+                  send({ t: "switch", branch: s.id });
+                  // Clear pendingNewAudit so the state broadcast can update
+                  // current, and update optimistically for instant highlight.
+                  useSession.setState({ current: s.id, pendingNewAudit: false });
                 }}
               >
                 <span className={`status-dot dot-${entryStatus}`} title={entryStatus} />

@@ -1,5 +1,5 @@
 import type { JSX } from "react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { SEED_PRESETS } from "../lib/presets";
 import { useSession } from "../store/session";
@@ -13,10 +13,12 @@ import type { GenerateConfigDict } from "./ModelPicker";
 export function StartView(): JSX.Element {
   const startAudit = useSession((s) => s.start);
   const setNextConfig = useSession((s) => s.setNextConfig);
+  // Read nextConfig from the store so sidebar picker changes propagate here.
+  const nextConfig = useSession((s) => s.nextConfig);
 
   const [seed, setSeed] = useState("");
-  const [auditorModel, setAuditorModel] = useState(() => useSession.getState().nextConfig.auditor_model);
-  const [targetModel, setTargetModel] = useState(() => useSession.getState().nextConfig.target_model);
+  const [auditorModel, setAuditorModel] = useState(() => nextConfig.auditor_model);
+  const [targetModel, setTargetModel] = useState(() => nextConfig.target_model);
   const [auditorConfig, setAuditorConfig] = useState<Partial<GenerateConfigDict>>(
     () => readStoredConfig("auditor"),
   );
@@ -24,10 +26,35 @@ export function StartView(): JSX.Element {
     () => readStoredConfig("target"),
   );
 
-  const canStart = seed.trim().length > 0;
+  // Track previous nextConfig to detect external updates (e.g. sidebar picker).
+  const prevNextConfigRef = useRef(nextConfig);
+  useEffect(() => {
+    const prev = prevNextConfigRef.current;
+    if (nextConfig !== prev) {
+      prevNextConfigRef.current = nextConfig;
+      if (nextConfig.auditor_model !== prev.auditor_model) {
+        setAuditorModel(nextConfig.auditor_model);
+      }
+      if (nextConfig.target_model !== prev.target_model) {
+        setTargetModel(nextConfig.target_model);
+      }
+      if (nextConfig.auditor_config !== prev.auditor_config) {
+        setAuditorConfig(nextConfig.auditor_config);
+      }
+      if (nextConfig.target_config !== prev.target_config) {
+        setTargetConfig(nextConfig.target_config);
+      }
+    }
+  }, [nextConfig]);
+
+  // Guard against double-click: prevent sending two `start` messages.
+  const [isStarting, setIsStarting] = useState(false);
+
+  const canStart = seed.trim().length > 0 && !isStarting;
 
   function handleStart(): void {
     if (!canStart) return;
+    setIsStarting(true);
     startAudit({
       seed: seed.trim(),
       auditor_model: auditorModel,
@@ -35,6 +62,8 @@ export function StartView(): JSX.Element {
       auditor_config: auditorConfig,
       target_config: targetConfig,
     });
+    // The component will unmount as soon as `current` is set by the backend
+    // state broadcast, so we don't need to reset isStarting.
   }
 
   return (

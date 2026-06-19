@@ -197,7 +197,9 @@ class Session:
         for conn in self.connections:
             try:
                 await conn.send_json(msg)
-            except (WebSocketDisconnect, ConnectionError, OSError) as exc:
+            except (WebSocketDisconnect, ConnectionError, OSError, RuntimeError) as exc:
+                # RuntimeError("Cannot call 'send' once a close message has been sent.")
+                # is raised by Starlette when the WS peer has already closed.
                 logger.debug("dropping dead connection: %r", exc)
                 dead.append(conn)
         for conn in dead:
