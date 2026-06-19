@@ -90,13 +90,16 @@ async def _dispatch(session: Session, data: dict) -> None:
             async with session._dispatch_lock:  # noqa: SLF001
                 await _stop_running_branches(session)
                 branch_id = uuid()
+                raw_max_turns = data.get("max_turns")
                 branch = Branch(
                     session,
                     branch_id,
                     seed=data["seed"],
                     auditor_model=data["auditor_model"],
                     target_model=data["target_model"],
-                    max_turns=data.get("max_turns", 6),
+                    max_turns=int(raw_max_turns) if raw_max_turns is not None else None,
+                    auditor_config=data.get("auditor_config") or None,
+                    target_config=data.get("target_config") or None,
                 )
                 session.branches[branch_id] = branch
                 session.current = branch_id
@@ -110,6 +113,20 @@ async def _dispatch(session: Session, data: dict) -> None:
                 # garbage-collected mid-run (branch.run owns its own task group).
                 task = asyncio.create_task(branch.run())
                 session.branch_tasks.append(task)
+        case "end":
+            async with session._dispatch_lock:  # noqa: SLF001
+                if session.current is None:
+                    logger.warning("end before start — dropping")
+                    return
+                branch = session.branches[session.current]
+                if branch.status == "ended":
+                    return
+                try:
+                    await branch.controller.end_conversation()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("end_conversation raised: %r", exc)
+                await _stop_running_branches(session)
+
         case "step" | "play" | "pause" as cmd:
             async with session._dispatch_lock:  # noqa: SLF001
                 if session.current is None:
@@ -162,6 +179,8 @@ async def _dispatch(session: Session, data: dict) -> None:
                     auditor_model=parent.auditor_model,
                     target_model=parent.target_model,
                     max_turns=parent.max_turns,
+                    auditor_config=parent.auditor_config or None,
+                    target_config=parent.target_config or None,
                     resume=prefix,
                     parent_id=session.current,
                     branched_at=anchor,
@@ -223,6 +242,8 @@ async def _dispatch(session: Session, data: dict) -> None:
                     auditor_model=parent.auditor_model,
                     target_model=parent.target_model,
                     max_turns=parent.max_turns,
+                    auditor_config=parent.auditor_config or None,
+                    target_config=parent.target_config or None,
                     resume=prefix_excl + [edited_step],
                     parent_id=session.current,
                     branched_at=anchor,

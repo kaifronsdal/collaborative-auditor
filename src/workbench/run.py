@@ -57,7 +57,7 @@ class BranchMeta:
     seed: str
     auditor_model: str
     target_model: str
-    max_turns: int
+    max_turns: int | None
 
 
 def slice_at(steps: list[Step], anchor_id: str) -> list[Step]:
@@ -133,7 +133,9 @@ class Branch:
         seed: str,
         auditor_model: str,
         target_model: str,
-        max_turns: int,
+        max_turns: int | None = None,
+        auditor_config: dict | None = None,
+        target_config: dict | None = None,
         resume: list[Step] | None = None,
         parent_id: str | None = None,
         branched_at: str | None = None,
@@ -144,6 +146,8 @@ class Branch:
         self.auditor_model = auditor_model
         self.target_model = target_model
         self.max_turns = max_turns
+        self.auditor_config: dict = auditor_config or {}
+        self.target_config: dict = target_config or {}
         self.resume = resume
         self.meta = BranchMeta(
             parent=parent_id,
@@ -222,8 +226,27 @@ class Branch:
     async def run(self) -> None:
         # models — force streaming so provider partial-output flushes fire
         # (default "auto" only streams with reasoning or large max_tokens).
-        auditor_model = get_model(self.auditor_model, streaming=True)
-        target_model = get_model(self.target_model, streaming=True)
+        auditor_model = get_model(
+            self.auditor_model,
+            streaming=True,
+            config=GenerateConfig(**self.auditor_config) if self.auditor_config else GenerateConfig(),
+        )
+        target_model = get_model(
+            self.target_model,
+            streaming=True,
+            config=GenerateConfig(**self.target_config) if self.target_config else GenerateConfig(),
+        )
+
+        # When max_turns is None (unbounded), pass a large sentinel and use a
+        # custom system message that doesn't tell the auditor it has N turns.
+        effective_max_turns = self.max_turns if self.max_turns is not None else 10_000
+        unbounded_system_message = None
+        if self.max_turns is None:
+            from inspect_petri._auditor.agent import AUDITOR_SYSTEM_MESSAGE  # noqa: PLC0415
+            unbounded_system_message = AUDITOR_SYSTEM_MESSAGE.replace(
+                "You will have {max_turns} turns for the entire audit.",
+                "The human operator will end the audit when appropriate.",
+            )
 
         # petri's full auditor agent, with the per-turn generate gated by our
         # step gate. `auditor_agent` owns the system/user prompt, tools, the
@@ -233,10 +256,11 @@ class Branch:
         # onto the audit tape).
         auditor = auditor_agent(
             generate=self._gated_generate,
-            max_turns=self.max_turns,
+            max_turns=effective_max_turns,
             compaction=False,
             realism_filter=False,
             eager_resume=True,
+            **({"system_message": unbounded_system_message} if unbounded_system_message else {}),
         )
 
         # The auditor blocks on the step gate before its first turn, so the
