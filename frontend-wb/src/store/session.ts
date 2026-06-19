@@ -302,6 +302,32 @@ export const useSession = create<SessionState>((set, get) => ({
           // current. The flag is cleared when they send a new `start` or
           // switch to an existing branch.
           const resolvedCurrent = state.pendingNewAudit ? null : msg.current;
+
+          // Preserve optimistic status while a pending start/branch is in flight.
+          // The backend may send status=null or "idle" on its first state
+          // broadcast (the session was just created and hasn't started running
+          // yet), which would clobber our optimistic "paused". Keep the
+          // optimistic status unless the backend provides a more-advanced one
+          // (paused > idle, running > paused, ended > running).
+          const wasPendingStart = state.current === PENDING_ID;
+          const wasPendingBranch = state.current === PENDING_BRANCH;
+          const hadPendingOp = wasPendingStart || wasPendingBranch;
+          const STATUS_RANK: Record<Status | "null", number> = {
+            null: 0, idle: 1, paused: 2, running: 3, ended: 4,
+          };
+          let resolvedStatus: Status | null;
+          if (state.pendingNewAudit) {
+            resolvedStatus = null;
+          } else if (hadPendingOp && state.status != null) {
+            // We set an optimistic status — only advance it, never regress to
+            // null/idle. Take whichever is further along.
+            const optimisticRank = STATUS_RANK[state.status];
+            const backendRank = STATUS_RANK[msg.status ?? "null"];
+            resolvedStatus = backendRank > optimisticRank ? msg.status : state.status;
+          } else {
+            resolvedStatus = msg.status;
+          }
+
           // The real `state` broadcast naturally supersedes any PENDING_BRANCH
           // optimistic state — `byRole` and `branches` are rebuilt from the
           // broadcast, and `prevCurrent` is cleared.
@@ -313,7 +339,7 @@ export const useSession = create<SessionState>((set, get) => ({
             spanParent,
             queued: msg.queued,
             current: resolvedCurrent,
-            status: state.pendingNewAudit ? null : msg.status,
+            status: resolvedStatus,
             version: msg.v,
             sessionsList,
             branchConfig,
@@ -323,7 +349,14 @@ export const useSession = create<SessionState>((set, get) => ({
         }
 
         case "status": {
-          return { status: msg.status, version: msg.v };
+          // Don't clobber an optimistic "paused" or "running" status set by
+          // start()/transport() with a stale null from the backend if a
+          // pending operation is in flight.
+          const isPendingOp =
+            state.current === PENDING_ID || state.current === PENDING_BRANCH;
+          const resolvedStatus =
+            isPendingOp && msg.status == null ? state.status : msg.status;
+          return { status: resolvedStatus, version: msg.v };
         }
 
         case "pool": {
@@ -424,7 +457,10 @@ export const useSession = create<SessionState>((set, get) => ({
       return;
     }
     ws?.close();
-    const next = new WebSocket(`ws://localhost:8765/ws/${sessionId}`);
+    // Configurable so a second dev instance can run alongside e2e/agents
+    // (e.g. `VITE_WS_PORT=8766 pnpm dev --port 5174`).
+    const wsPort = import.meta.env.VITE_WS_PORT ?? "8765";
+    const next = new WebSocket(`ws://localhost:${wsPort}/ws/${sessionId}`);
     next.onmessage = (e) => get().apply(JSON.parse(e.data) as Down);
     next.onclose = () => {
       // Clear only if this is still the live socket (a newer connect may have
