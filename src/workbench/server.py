@@ -113,6 +113,14 @@ async def _dispatch(session: Session, data: dict) -> None:
                 # garbage-collected mid-run (branch.run owns its own task group).
                 task = asyncio.create_task(branch.run())
                 session.branch_tasks.append(task)
+                # auto-play: a human is in the loop, so the audit should start
+                # generating immediately rather than waiting for an explicit
+                # play click. The user can pause from the runline once it's
+                # going. (Branch.play() before run_audit reaches its gate is
+                # safe — _free_running stays set and the first _await_turn
+                # finds the event already set.)
+                branch.play()
+                await session.broadcast_status()
         case "end":
             async with session._dispatch_lock:  # noqa: SLF001
                 if session.current is None:
@@ -269,7 +277,9 @@ async def _dispatch(session: Session, data: dict) -> None:
 
 
 def main() -> None:
-    uvicorn.run(app, host="0.0.0.0", port=8765)
+    import os
+
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("WB_PORT", "8765")))
 
 
 if __name__ == "__main__":
