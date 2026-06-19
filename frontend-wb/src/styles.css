@@ -451,6 +451,20 @@ body {
 }
 @keyframes blink { 50% { opacity: 0; } }
 
+/* ---------- ShimmerBubble — optimistic placeholder after branch/start ---------- */
+.shimmer-bubble {
+  height: 14px; border-radius: 7px;
+  background: linear-gradient(90deg, var(--bg-200) 25%, var(--bg-300) 50%, var(--bg-200) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  margin: 20px 0 8px;
+  width: 60%;
+}
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
 /* model-event-row wrapper — needed for hover-reveal on actions */
 .model-event-row { }
 
