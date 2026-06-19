@@ -1,12 +1,10 @@
 import type { JSX } from "react";
 import { useState } from "react";
 
-import {
-  MODELS,
-  SEED_PRESETS,
-  modelLabel,
-} from "../lib/presets";
+import { SEED_PRESETS } from "../lib/presets";
 import { useSession } from "../store/session";
+import { ModelPicker, readStoredConfig } from "./ModelPicker";
+import type { GenerateConfigDict } from "./ModelPicker";
 
 /**
  * Empty-state landing screen. Form-first: seed textarea is the dominant element,
@@ -19,7 +17,12 @@ export function StartView(): JSX.Element {
   const [seed, setSeed] = useState("");
   const [auditorModel, setAuditorModel] = useState(() => useSession.getState().nextConfig.auditor_model);
   const [targetModel, setTargetModel] = useState(() => useSession.getState().nextConfig.target_model);
-  const [maxTurns, setMaxTurns] = useState(() => useSession.getState().nextConfig.max_turns);
+  const [auditorConfig, setAuditorConfig] = useState<Partial<GenerateConfigDict>>(
+    () => readStoredConfig("auditor"),
+  );
+  const [targetConfig, setTargetConfig] = useState<Partial<GenerateConfigDict>>(
+    () => readStoredConfig("target"),
+  );
 
   const canStart = seed.trim().length > 0;
 
@@ -29,7 +32,8 @@ export function StartView(): JSX.Element {
       seed: seed.trim(),
       auditor_model: auditorModel,
       target_model: targetModel,
-      max_turns: maxTurns,
+      auditor_config: auditorConfig,
+      target_config: targetConfig,
     });
   }
 
@@ -61,53 +65,31 @@ export function StartView(): JSX.Element {
           onChange={(e) => setSeed(e.target.value)}
         />
 
-        {/* one control row: auditor · target · turns · Start */}
+        {/* one control row: auditor · target · Start */}
         <div className="start-controls">
-          <label className="model-chip">
-            <span className="chip-label">auditor</span>
-            <select
-              value={auditorModel}
-              onChange={(e) => { setAuditorModel(e.target.value); setNextConfig({ auditor_model: e.target.value }); }}
-            >
-              {MODELS.map((m) => (
-                <option key={m} value={m}>
-                  {modelLabel(m)}
-                </option>
-              ))}
-            </select>
-            <span className="chip-caret">⌄</span>
-          </label>
+          <ModelPicker
+            role="auditor"
+            value={auditorModel}
+            config={auditorConfig}
+            onChange={(m, cfg) => {
+              setAuditorModel(m);
+              setAuditorConfig(cfg);
+              setNextConfig({ auditor_model: m, auditor_config: cfg });
+            }}
+          />
 
           <span className="controls-sep">·</span>
 
-          <label className="model-chip">
-            <span className="chip-label">target</span>
-            <select
-              value={targetModel}
-              onChange={(e) => { setTargetModel(e.target.value); setNextConfig({ target_model: e.target.value }); }}
-            >
-              {MODELS.map((m) => (
-                <option key={m} value={m}>
-                  {modelLabel(m)}
-                </option>
-              ))}
-            </select>
-            <span className="chip-caret">⌄</span>
-          </label>
-
-          <span className="controls-sep">·</span>
-
-          <label className="turns-chip">
-            <span className="chip-label">turns</span>
-            <input
-              type="number"
-              min={1}
-              max={30}
-              value={maxTurns}
-              onChange={(e) => { const v = Math.max(1, Number(e.target.value)); setMaxTurns(v); setNextConfig({ max_turns: v }); }}
-              className="turns-input"
-            />
-          </label>
+          <ModelPicker
+            role="target"
+            value={targetModel}
+            config={targetConfig}
+            onChange={(m, cfg) => {
+              setTargetModel(m);
+              setTargetConfig(cfg);
+              setNextConfig({ target_model: m, target_config: cfg });
+            }}
+          />
 
           <button
             className="start-btn"

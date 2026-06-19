@@ -1,8 +1,11 @@
 import type { JSX } from "react";
 
-import { MODELS, modelLabel } from "../lib/presets";
+import { modelLabel } from "../lib/presets";
 import type { BranchId, BranchMeta } from "../lib/wire";
 import { useSession } from "../store/session";
+import { ModelPicker, readStoredConfig } from "./ModelPicker";
+import type { GenerateConfigDict } from "./ModelPicker";
+import { useState } from "react";
 
 /** Format a timestamp as a relative string ("2m ago", "3h ago", etc.). */
 function relTime(ts: number): string {
@@ -89,6 +92,13 @@ export function Sidebar(): JSX.Element {
   );
   const send = useSession((s) => s.send);
 
+  const [sideAuditorCfg, setSideAuditorCfg] = useState<Partial<GenerateConfigDict>>(
+    () => readStoredConfig("auditor"),
+  );
+  const [sideTargetCfg, setSideTargetCfg] = useState<Partial<GenerateConfigDict>>(
+    () => readStoredConfig("target"),
+  );
+
   // Roots: branches with no parent.
   const roots = Object.entries(branches).filter(([, m]) => m.parent === null);
 
@@ -150,31 +160,38 @@ export function Sidebar(): JSX.Element {
               <>
                 <div className="c-row"><span className="c-lab">auditor</span><span className="c-val">{modelLabel(branchConfig.auditor_model)}</span></div>
                 <div className="c-row"><span className="c-lab">target</span><span className="c-val">{modelLabel(branchConfig.target_model)}</span></div>
-                <div className="c-row"><span className="c-lab">turns</span><span className="c-val">{branchConfig.max_turns}</span></div>
               </>
             ) : (
-              // Editable nextConfig for next audit
+              // Editable nextConfig for next audit — compact ModelPicker
               <>
                 <div className="c-row">
                   <span className="c-lab">auditor</span>
-                  <label className="c-val">
-                    <select className="cfg-select" value={nextConfig.auditor_model} onChange={(e) => setNextConfig({ auditor_model: e.target.value })}>
-                      {MODELS.map((m) => (<option key={m} value={m}>{modelLabel(m)}</option>))}
-                    </select>
-                  </label>
+                  <span className="c-val c-val--picker">
+                    <ModelPicker
+                      role="auditor"
+                      value={nextConfig.auditor_model}
+                      config={sideAuditorCfg}
+                      compact
+                      onChange={(m, cfg) => {
+                        setSideAuditorCfg(cfg);
+                        setNextConfig({ auditor_model: m, auditor_config: cfg });
+                      }}
+                    />
+                  </span>
                 </div>
                 <div className="c-row">
                   <span className="c-lab">target</span>
-                  <label className="c-val">
-                    <select className="cfg-select" value={nextConfig.target_model} onChange={(e) => setNextConfig({ target_model: e.target.value })}>
-                      {MODELS.map((m) => (<option key={m} value={m}>{modelLabel(m)}</option>))}
-                    </select>
-                  </label>
-                </div>
-                <div className="c-row">
-                  <span className="c-lab">turns</span>
-                  <span className="c-val">
-                    <input type="number" className="cfg-turns" min={1} max={30} value={nextConfig.max_turns} onChange={(e) => setNextConfig({ max_turns: Math.max(1, Number(e.target.value)) })} />
+                  <span className="c-val c-val--picker">
+                    <ModelPicker
+                      role="target"
+                      value={nextConfig.target_model}
+                      config={sideTargetCfg}
+                      compact
+                      onChange={(m, cfg) => {
+                        setSideTargetCfg(cfg);
+                        setNextConfig({ target_model: m, target_config: cfg });
+                      }}
+                    />
                   </span>
                 </div>
               </>
