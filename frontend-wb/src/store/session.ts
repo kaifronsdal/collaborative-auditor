@@ -25,6 +25,9 @@ import type { BranchId, BranchMeta, Down, QueuedMap, Role, Status, Up } from "..
 import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
 import type { GenerateConfigDict } from "../components/ModelPicker";
 
+/** Local id for a just-initiated branch/resample/edit, before `state` arrives. */
+export const PENDING_BRANCH = "__pending_branch__";
+
 /**
  * A "Recents" entry. M0 stub: populated UI-side when an audit starts (the
  * backend has no session-listing endpoint yet — see the deliverable note).
@@ -107,6 +110,13 @@ export type SessionState = {
   /** Editable config for the next audit (pre-populates StartView pickers). */
   nextConfig: NextConfig;
 
+  /**
+   * Stash of the real branch id before we set `current = PENDING_BRANCH`.
+   * Used by the error rollback to restore `current` when a branch/resample/edit
+   * fails on the backend.
+   */
+  prevCurrent: string | null;
+
   error: string | null;
   apply: (msg: Down) => void;
   connect: (sessionId: string) => void;
@@ -129,6 +139,36 @@ export type SessionState = {
    * the live socket — `current` flips back on the next `state`).
    */
   newAudit: () => void;
+
+  /**
+   * Optimistically branch at `anchorId`: truncate columns to events up to the
+   * clicked row, set `current = PENDING_BRANCH`, send `{t:"branch", at}`.
+   */
+  branchAt: (anchorId: string) => void;
+
+  /**
+   * Optimistically resample at `anchorId`: same truncation as `branchAt`, but
+   * sends `{t:"resample", at}`.
+   */
+  resampleAt: (anchorId: string) => void;
+
+  /**
+   * Optimistically edit at `anchorId`: truncate then replace the last event in
+   * each role with a placeholder version, send `{t:"edit", at, output}`.
+   */
+  editAt: (anchorId: string, output: import("@tsmono/inspect-common").ModelOutput) => void;
+
+  /**
+   * Flip `status` locally before the round-trip: play→running, pause→paused,
+   * step→running, end→ended. Then send the wire command.
+   */
+  transport: (cmd: "play" | "pause" | "step" | "end") => void;
+
+  /**
+   * Push a message into `queued[branch][role]` immediately (ghost bubble
+   * appears before the server echo), then send `{t:"inject", …}`.
+   */
+  inject: (branch: BranchId, role: Role, message: ChatMessage) => void;
 };
 
 /** Resolve a single ModelEvent's `input_refs` against the pool. */
@@ -206,6 +246,7 @@ export const useSession = create<SessionState>((set, get) => ({
     auditor_config: {},
     target_config: {},
   },
+  prevCurrent: null,
   error: null,
 
   apply: (msg: Down) =>
@@ -261,6 +302,9 @@ export const useSession = create<SessionState>((set, get) => ({
           // current. The flag is cleared when they send a new `start` or
           // switch to an existing branch.
           const resolvedCurrent = state.pendingNewAudit ? null : msg.current;
+          // The real `state` broadcast naturally supersedes any PENDING_BRANCH
+          // optimistic state — `byRole` and `branches` are rebuilt from the
+          // broadcast, and `prevCurrent` is cleared.
           return {
             pool,
             events,
@@ -274,6 +318,7 @@ export const useSession = create<SessionState>((set, get) => ({
             sessionsList,
             branchConfig,
             branches: msg.branches ?? {},
+            prevCurrent: null,
           };
         }
 
@@ -335,13 +380,32 @@ export const useSession = create<SessionState>((set, get) => ({
 
         case "queued": {
           const queued: QueuedMap = structuredClone(state.queued);
-          (queued[msg.branch] ??= { auditor: [], target: [] })[msg.role].push(
-            msg.message
-          );
+          const roles = (queued[msg.branch] ??= { auditor: [], target: [] });
+          // Dedup by message id: if the inject action already pushed it
+          // optimistically, don't double-push when the server echo arrives.
+          if (msg.message.id == null || !roles[msg.role].some((m) => m.id === msg.message.id)) {
+            roles[msg.role].push(msg.message);
+          }
           return { queued, version: msg.v };
         }
 
         case "error": {
+          // Roll back any optimistic branch/resample/edit: drop PENDING_BRANCH
+          // from byRole and restore `current` to the previous real id.
+          const hadPending =
+            state.current === PENDING_BRANCH || state.byRole[PENDING_BRANCH] != null;
+          if (hadPending) {
+            const { [PENDING_BRANCH]: _dropped, ...byRoleWithout } = state.byRole;
+            const { [PENDING_BRANCH]: _droppedB, ...branchesWithout } = state.branches;
+            return {
+              error: msg.message,
+              version: msg.v,
+              current: state.prevCurrent,
+              prevCurrent: null,
+              byRole: byRoleWithout,
+              branches: branchesWithout,
+            };
+          }
           return { error: msg.message, version: msg.v };
         }
       }
@@ -397,6 +461,24 @@ export const useSession = create<SessionState>((set, get) => ({
     };
     set((state) => ({
       pendingNewAudit: false,
+      current: PENDING_ID,
+      status: "paused",
+      // Empty columns for the pending branch — the DeskView skeleton is visible
+      // immediately with no spinner. The real `state` broadcast re-keys to the
+      // actual branch id and populates events.
+      byRole: {
+        ...state.byRole,
+        [PENDING_ID]: { auditor: [], target: [] },
+      },
+      branches: {
+        ...state.branches,
+        [PENDING_ID]: {
+          parent: null,
+          branched_at: null,
+          status: "paused" as const,
+          seed: params.seed,
+        },
+      },
       sessionsList: [
         { id: PENDING_ID, title: titleFromSeed(params.seed), updatedAt: Date.now() },
         // a single pending stub at a time — drop any stale one.
@@ -437,4 +519,138 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   dismissError: () => set({ error: null }),
+
+  branchAt: (anchorId: string) => {
+    const state = get();
+    const current = state.current;
+    if (current == null) return;
+    const truncated = _truncateByRole(state, current, anchorId);
+    set({
+      prevCurrent: current,
+      current: PENDING_BRANCH,
+      status: "paused",
+      byRole: { ...state.byRole, [PENDING_BRANCH]: truncated },
+      branches: {
+        ...state.branches,
+        [PENDING_BRANCH]: {
+          parent: current,
+          branched_at: anchorId,
+          status: "paused",
+          seed: state.branches[current]?.seed ?? "",
+        },
+      },
+    });
+    get().send({ t: "branch", at: anchorId });
+  },
+
+  resampleAt: (anchorId: string) => {
+    const state = get();
+    const current = state.current;
+    if (current == null) return;
+    const truncated = _truncateByRole(state, current, anchorId);
+    set({
+      prevCurrent: current,
+      current: PENDING_BRANCH,
+      status: "paused",
+      byRole: { ...state.byRole, [PENDING_BRANCH]: truncated },
+      branches: {
+        ...state.branches,
+        [PENDING_BRANCH]: {
+          parent: current,
+          branched_at: anchorId,
+          status: "paused",
+          seed: state.branches[current]?.seed ?? "",
+        },
+      },
+    });
+    get().send({ t: "resample", at: anchorId });
+  },
+
+  editAt: (anchorId: string, output) => {
+    const state = get();
+    const current = state.current;
+    if (current == null) return;
+    const truncated = _truncateByRole(state, current, anchorId);
+    set({
+      prevCurrent: current,
+      current: PENDING_BRANCH,
+      status: "paused",
+      byRole: { ...state.byRole, [PENDING_BRANCH]: truncated },
+      branches: {
+        ...state.branches,
+        [PENDING_BRANCH]: {
+          parent: current,
+          branched_at: anchorId,
+          status: "paused",
+          seed: state.branches[current]?.seed ?? "",
+        },
+      },
+    });
+    get().send({ t: "edit", at: anchorId, output });
+  },
+
+  transport: (cmd) => {
+    const statusMap: Record<"play" | "pause" | "step" | "end", Status> = {
+      play: "running",
+      pause: "paused",
+      step: "running",
+      end: "ended",
+    };
+    set({ status: statusMap[cmd] });
+    get().send({ t: cmd });
+  },
+
+  inject: (branch, role, message) => {
+    set((state) => {
+      const queued: QueuedMap = structuredClone(state.queued);
+      const roles = (queued[branch] ??= { auditor: [], target: [] });
+      // Optimistic push — dedup on id to avoid double-entry when server echoes.
+      if (message.id == null || !roles[role].some((m) => m.id === message.id)) {
+        roles[role].push(message);
+      }
+      return { queued };
+    });
+    get().send({ t: "inject", branch, role, message });
+  },
 }));
+
+/**
+ * Build a truncated `{auditor, target}` snapshot of the current branch's
+ * events, cut at the event whose output message id is `anchorId`.
+ *
+ * Strategy: find the anchor event in either role column. For each role, keep
+ * all events whose array index is ≤ the anchor event's index in that role's
+ * column. If the anchor doesn't appear in a role, keep all events for that
+ * role (it was a cross-role anchor).
+ */
+function _truncateByRole(
+  state: SessionState,
+  branchId: BranchId,
+  anchorId: string
+): Record<Role, Event[]> {
+  const roleBuckets = state.byRole[branchId] ?? { auditor: [], target: [] };
+  const roles: Role[] = ["auditor", "target"];
+
+  // Find the anchor index in each role.
+  const anchorIdx: Record<Role, number> = { auditor: -1, target: -1 };
+  for (const role of roles) {
+    const events = roleBuckets[role];
+    for (let i = 0; i < events.length; i++) {
+      const ev = events[i];
+      if (isModelEvent(ev)) {
+        const msgId = ev.output.choices[0]?.message.id;
+        if (msgId === anchorId) { anchorIdx[role] = i; break; }
+      }
+    }
+  }
+
+  const result: Record<Role, Event[]> = { auditor: [], target: [] };
+  for (const role of roles) {
+    const events = roleBuckets[role];
+    const cutoff = anchorIdx[role];
+    // If the anchor was found in this role, include up to and including it.
+    // If not found, include all (the anchor lives in the other role).
+    result[role] = cutoff >= 0 ? events.slice(0, cutoff + 1) : events.slice();
+  }
+  return result;
+}
