@@ -29,7 +29,12 @@ import {
 import { TimelineSwimLanes } from "@tsmono/inspect-components/transcript/timeline/swimlanes";
 
 import { bisectTurns, eventsToTurns, isModelEvent } from "../lib/events";
-import { useQueued, useStagedForTarget, useSwimlanes } from "../lib/selectors";
+import {
+  computeTargetForks,
+  useQueued,
+  useStagedForTarget,
+  useSwimlanes,
+} from "../lib/selectors";
 import type { BranchId } from "../lib/wire";
 import { useSession } from "../store/session";
 import { Bubble } from "./Bubble";
@@ -82,6 +87,19 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   );
   const laneTurns = useMemo(() => eventsToTurns(laneEvents, false), [laneEvents]);
   const rowEls = useRef(new Map<string, HTMLElement>());
+
+  // Fork points keyed by assistant message id → sibling row keys + our idx.
+  const forks = useMemo(
+    () => computeTargetForks(rows, selected?.key ?? null),
+    [rows, selected?.key]
+  );
+  const switchSibling = (anchor: string, dir: 1 | -1): void => {
+    const g = forks.get(anchor);
+    if (!g) return;
+    const next = g.idx + dir;
+    if (next < 0 || next >= g.siblings.length) return;
+    setSelectedKey(g.siblings[next]);
+  };
 
   const centeredTimestamp = (): string | null => {
     const sc = scrollRef.current;
@@ -165,17 +183,25 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
         </div>
       )}
 
-      {laneTurns.map((turn, i) => (
-        <ModelEventRow
-          key={turn.ev.uuid}
-          turn={turn}
-          turnIndex={i}
-          rowRef={(el) => {
-            if (el) rowEls.current.set(turn.ev.uuid!, el);
-            else rowEls.current.delete(turn.ev.uuid!);
-          }}
-        />
-      ))}
+      {laneTurns.map((turn, i) => {
+        const anchor = turn.ev.output?.choices?.[0]?.message?.id;
+        const fork = anchor != null ? forks.get(anchor) : undefined;
+        return (
+          <ModelEventRow
+            key={turn.ev.uuid}
+            turn={turn}
+            turnIndex={i}
+            siblingPos={fork && { idx: fork.idx, total: fork.siblings.length }}
+            onSwitchSibling={
+              fork && anchor != null ? (d) => switchSibling(anchor, d) : undefined
+            }
+            rowRef={(el) => {
+              if (el) rowEls.current.set(turn.ev.uuid!, el);
+              else rowEls.current.delete(turn.ev.uuid!);
+            }}
+          />
+        );
+      })}
       {staged.map((m, i) => (
         <Bubble key={m.id ?? `s${i}`} msg={m} ghost byline={`staged · ${m.role}`} />
       ))}

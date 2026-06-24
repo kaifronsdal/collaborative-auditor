@@ -12,10 +12,17 @@
  */
 import type { ChatMessageTool, ToolCall, ToolEvent } from "@tsmono/inspect-common";
 import { resolveToolInput } from "@tsmono/inspect-components/chat/tools";
-import { type JSX, useState } from "react";
+import { type JSX, useEffect, useRef, useState } from "react";
 
 import { Chevron, StatusDot } from "./icons";
 import { renderTool } from "./tool-renderers";
+
+export type RewriteDraft = {
+  status: "pending" | "ready" | "error";
+  args?: Record<string, unknown>;
+  raw?: string;
+  error?: string;
+};
 
 export type ToolPairProps = {
   fn: string;
@@ -29,6 +36,16 @@ export type ToolPairProps = {
   /** When set, an `edit result` action appears in the expanded body; saving
    *  calls this with the new result text (target column — WISHLIST 3c). */
   onEditResult?: (result: string) => void;
+  /** When set, a `bi-stars rewrite` action appears: opens an instruction
+   *  textarea, sends the freeform instruction (and optional selected text)
+   *  to the auditor model for an LLM-assisted args rewrite. */
+  onRewrite?: (instruction: string, selectedText?: string) => void;
+  /** Current LLM rewrite draft for this call (pending/ready/error). */
+  rewriteDraft?: RewriteDraft;
+  /** Apply a ready rewrite draft (caller wires this to `editAuditorCall`). */
+  onApplyRewrite?: (args: Record<string, unknown>) => void;
+  /** Discard the current rewrite draft. */
+  onDiscardRewrite?: () => void;
 };
 
 export function fromToolEvent(ev: ToolEvent): ToolPairProps {
@@ -89,13 +106,36 @@ function resultText(result: unknown): string {
   return JSON.stringify(result);
 }
 
+/** Capture the current `window.getSelection()` if it lives inside `root`. */
+function getSelectionWithin(
+  root: HTMLElement | null
+): { text: string; x: number; y: number } | null {
+  if (!root) return null;
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+  const text = sel.toString().trim();
+  if (!text) return null;
+  const anchor = sel.anchorNode;
+  if (!anchor || !root.contains(anchor)) return null;
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  if (!rect.width && !rect.height) return null;
+  return { text, x: rect.right + 6, y: rect.top - 4 };
+}
+
 export function ToolPair({
   fn, args, result, error, pending, onEdit, onEditResult,
+  onRewrite, rewriteDraft, onApplyRewrite, onDiscardRewrite,
 }: ToolPairProps): JSX.Element {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<"args" | "result" | null>(null);
   const [editText, setEditText] = useState("");
   const [editErr, setEditErr] = useState<string | null>(null);
+  const [rewriteOpen, setRewriteOpen] = useState(false);
+  const [rewritePrompt, setRewritePrompt] = useState("");
+  const [rewriteSel, setRewriteSel] = useState<string | undefined>(undefined);
+  const [selPill, setSelPill] = useState<{ text: string; x: number; y: number } | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+
   const status = error ? "err" : pending ? "pending" : "ok";
   const hasArgs = Object.keys(args).length > 0;
   // inspect-view's tool-input resolver: picks the canonical display arg for
@@ -103,6 +143,18 @@ export function ToolPair({
   // content-type for highlighting; falls back to a generic call signature.
   const { input, contentType } = resolveToolInput(fn, args);
   const inputStr = typeof input === "string" ? input : undefined;
+
+  // Hide the selection pill on outside mousedown / scroll.
+  useEffect(() => {
+    if (!selPill) return;
+    const clear = () => setSelPill(null);
+    window.addEventListener("mousedown", clear, true);
+    window.addEventListener("scroll", clear, true);
+    return () => {
+      window.removeEventListener("mousedown", clear, true);
+      window.removeEventListener("scroll", clear, true);
+    };
+  }, [selPill]);
 
   function openEdit(mode: "args" | "result") {
     setEditText(
@@ -131,6 +183,98 @@ export function ToolPair({
     }
   }
 
+  function openRewrite(selected?: string) {
+    setRewriteSel(selected);
+    setRewriteOpen(true);
+    setOpen(true);
+    setSelPill(null);
+  }
+
+  function sendRewrite() {
+    if (!rewritePrompt.trim() || !onRewrite) return;
+    onRewrite(rewritePrompt.trim(), rewriteSel);
+  }
+
+  function discardRewrite() {
+    onDiscardRewrite?.();
+    setRewriteOpen(false);
+    setRewritePrompt("");
+    setRewriteSel(undefined);
+  }
+
+  function handleBodyMouseUp(e: React.MouseEvent) {
+    if (!onRewrite || editing != null || rewriteOpen) return;
+    if (e.target instanceof HTMLElement && e.target.closest("button, textarea, input")) {
+      return;
+    }
+    setSelPill(getSelectionWithin(bodyRef.current));
+  }
+
+  const rewritePanel = (rewriteOpen || rewriteDraft) && onRewrite && (
+    <div className="tp-slot tp-rewrite">
+      <div className="tp-lbl">
+        <i className="bi bi-stars" /> rewrite with auditor model
+      </div>
+      {rewriteDraft?.status === "pending" ? (
+        <div className="tp-rewrite-spinner">
+          <StatusDot state="pending" /> rewriting…
+        </div>
+      ) : rewriteDraft?.status === "ready" ? (
+        <>
+          <pre className="tp-rewrite-preview">
+            {JSON.stringify(rewriteDraft.args, null, 2)}
+          </pre>
+          <div className="tp-edit-actions">
+            <button
+              type="button"
+              onClick={() => {
+                if (rewriteDraft.args) onApplyRewrite?.(rewriteDraft.args);
+                discardRewrite();
+              }}
+            >
+              apply & replay
+            </button>
+            <button type="button" onClick={sendRewrite} disabled={!rewritePrompt.trim()}>
+              regenerate
+            </button>
+            <button type="button" onClick={discardRewrite}>discard</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <textarea
+            className="tp-rewrite-input"
+            value={rewritePrompt}
+            onChange={(e) => setRewritePrompt(e.target.value)}
+            placeholder="Tell me how to rewrite this…"
+            rows={2}
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                sendRewrite();
+              }
+            }}
+          />
+          {rewriteSel && (
+            <div className="tp-rewrite-sel">
+              selection: <code>{rewriteSel.slice(0, 120)}{rewriteSel.length > 120 ? "…" : ""}</code>
+            </div>
+          )}
+          {rewriteDraft?.status === "error" && (
+            <div className="tp-edit-err">{rewriteDraft.error}</div>
+          )}
+          <div className="tp-edit-actions">
+            <button type="button" onClick={sendRewrite} disabled={!rewritePrompt.trim()}>
+              rewrite
+            </button>
+            <button type="button" onClick={discardRewrite}>cancel</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
   return (
     <div className={`tool-pair${open ? " open" : ""}`} data-fn={fn}>
       <button className="tp-head" onClick={() => setOpen((o) => !o)} type="button">
@@ -140,7 +284,7 @@ export function ToolPair({
         <StatusDot state={status} />
       </button>
       {open && (
-        <div className="tp-body">
+        <div className="tp-body" ref={bodyRef} onMouseUp={handleBodyMouseUp}>
           {editing != null ? (
             <div className="tp-slot tp-edit">
               <div className="tp-lbl">
@@ -180,10 +324,16 @@ export function ToolPair({
                   </div>
                 </>
               )}
-              {(onEdit || onEditResult) && (
+              {rewritePanel}
+              {(onEdit || onEditResult || onRewrite) && (
                 <div className="tp-slot tp-edit-actions">
                   {onEdit && (
                     <button type="button" onClick={() => openEdit("args")}>edit args</button>
+                  )}
+                  {onRewrite && !rewriteOpen && !rewriteDraft && (
+                    <button type="button" onClick={() => openRewrite()}>
+                      <i className="bi bi-stars" /> rewrite
+                    </button>
                   )}
                   {onEditResult && (
                     <button type="button" onClick={() => openEdit("result")}>edit result</button>
@@ -193,6 +343,18 @@ export function ToolPair({
             </>
           )}
         </div>
+      )}
+      {selPill && onRewrite && (
+        <button
+          type="button"
+          className="tp-sel-pill"
+          style={{ left: selPill.x, top: selPill.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => openRewrite(selPill.text)}
+          title="rewrite this selection"
+        >
+          <i className="bi bi-stars" />
+        </button>
       )}
     </div>
   );

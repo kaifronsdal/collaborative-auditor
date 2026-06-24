@@ -53,6 +53,14 @@ export type BranchConfig = {
   target_config?: Partial<GenerateConfigDict>;
 };
 
+/** LLM-assisted rewrite draft for one auditor tool_call (keyed by call_id). */
+export type RewriteDraft = {
+  status: "pending" | "ready" | "error";
+  args?: Record<string, unknown>;
+  raw?: string;
+  error?: string;
+};
+
 /** Local id for the just-started Recents stub, before `current` arrives. */
 const PENDING_ID = "__pending__";
 
@@ -212,6 +220,21 @@ export type SessionState = {
     args: Record<string, unknown>
   ) => void;
 
+  /** Per-call_id LLM rewrite drafts. Cleared on apply/discard. */
+  rewriteDrafts: Record<string, RewriteDraft>;
+
+  /** Ask the auditor model to rewrite a tool_call's args. Stateless draft —
+   *  the result lands in `rewriteDrafts[callId]`; apply via `editAuditorCall`. */
+  rewriteToolCall: (
+    turnIdx: number,
+    callId: string,
+    instruction: string,
+    selectedText?: string
+  ) => void;
+
+  /** Drop a rewrite draft (discard or post-apply cleanup). */
+  clearRewriteDraft: (callId: string) => void;
+
   /**
    * Flip `status` locally before the round-trip: play→running, pause→paused,
    * step→running, end→ended. Then send the wire command.
@@ -303,6 +326,7 @@ export const useSession = create<SessionState>((set, get) => ({
   },
   prevCurrent: null,
   error: null,
+  rewriteDrafts: {},
 
   apply: (msg: Down) =>
     set((state) => {
@@ -454,6 +478,16 @@ export const useSession = create<SessionState>((set, get) => ({
             roles[msg.role].push(msg.message);
           }
           return { queued, version: msg.v };
+        }
+
+        case "rewrite_draft": {
+          const draft: RewriteDraft = msg.error
+            ? { status: "error", error: msg.error }
+            : { status: "ready", args: msg.args ?? {}, raw: msg.raw };
+          return {
+            rewriteDrafts: { ...state.rewriteDrafts, [msg.call_id]: draft },
+            version: msg.v,
+          };
         }
 
         case "timeline": {
@@ -653,6 +687,29 @@ export const useSession = create<SessionState>((set, get) => ({
     });
   },
 
+  rewriteToolCall: (turnIdx, callId, instruction, selectedText) => {
+    const current = get().current;
+    if (current == null) return;
+    set((state) => ({
+      rewriteDrafts: { ...state.rewriteDrafts, [callId]: { status: "pending" } },
+    }));
+    get().send({
+      t: "rewrite_tool_call",
+      branch: current,
+      turn_index: turnIdx,
+      call_id: callId,
+      instruction,
+      ...(selectedText ? { selected_text: selectedText } : {}),
+    });
+  },
+
+  clearRewriteDraft: (callId) => {
+    set((state) => {
+      const { [callId]: _dropped, ...rest } = state.rewriteDrafts;
+      return { rewriteDrafts: rest };
+    });
+  },
+
   transport: (cmd) => {
     const statusMap: Record<"play" | "pause" | "step" | "end", Status> = {
       play: "running",
@@ -751,3 +808,7 @@ function _truncateByRole(
   }
   return result;
 }
+
+/** Selector hook: the rewrite draft for one tool_call, or undefined. */
+export const useRewriteDraft = (callId: string): RewriteDraft | undefined =>
+  useSession((s) => s.rewriteDrafts[callId]);

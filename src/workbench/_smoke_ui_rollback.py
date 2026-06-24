@@ -256,6 +256,34 @@ async def _amain() -> None:
                 f"incl. rollback_conversation; no detached tool bylines"
             )
 
+            # ── inline branch-point chip (‹ idx/total ›) ────────────────────
+            # Currently viewing branch-1 (clicked above). r1 is the fork point
+            # → exactly one .branch-nav in the target column, reading "1/2".
+            chips = page.locator(".swimlane-column .branch-nav")
+            await expect(chips).to_have_count(1)
+            pos = chips.first.locator(".branch-nav-pos")
+            await expect(pos).to_have_text("1/2")
+            # No workbench-branch siblings exist, so the auditor column has none.
+            await expect(auditor_col.locator(".branch-nav")).to_have_count(0)
+            print("UI ✓ .branch-nav chip at r1 shows 1/2 on branch-1")
+
+            # Click › → switches selected lane to branch-2; lineage flips to
+            # r1, r4, r5 and the chip updates to "2/2".
+            await chips.first.get_by_role("button", name="Next branch").click()
+            texts2 = [
+                t.strip()
+                for t in await page.locator(
+                    ".swimlane-column .bubble.assistant"
+                ).all_text_contents()
+            ]
+            assert "r4" in texts2 and "r5" in texts2 and "r2" not in texts2, (
+                f"after › expected branch-2 lineage (r1/r4/r5), got {texts2}"
+            )
+            await expect(
+                page.locator(".swimlane-column .branch-nav .branch-nav-pos")
+            ).to_have_text("2/2")
+            print(f"UI ✓ › switched to branch-2: {texts2}; chip now 2/2")
+
             assert not errors, f"page errors: {errors}"
             await browser.close()
 

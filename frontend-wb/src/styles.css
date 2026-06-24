@@ -583,6 +583,54 @@ body {
 }
 .tp-edit-actions button:hover { color: var(--ink-mid); text-decoration: underline; }
 
+/* LLM-assisted rewrite panel inside a tool-pair (auditor column). */
+.tp-rewrite { background: var(--accent-dim); }
+.tp-rewrite .tp-lbl { color: var(--accent-text); }
+.tp-rewrite .tp-lbl i { margin-right: 4px; }
+.tp-rewrite-input {
+  width: 100%; resize: vertical; outline: none;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: var(--sp-1) var(--sp-2); margin: var(--sp-1) 0;
+  font: var(--fs-sm)/1.5 var(--sans); color: var(--ink);
+  background: var(--bg-000);
+}
+.tp-rewrite-input:focus { border-color: var(--accent); }
+.tp-rewrite-input::placeholder { color: var(--ink-faint); }
+.tp-rewrite-preview {
+  margin: var(--sp-1) 0; padding: var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-000);
+  font: 11.5px/1.5 var(--mono); color: var(--ink-mid);
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 240px; overflow: auto;
+}
+.tp-rewrite-spinner {
+  display: flex; align-items: center; gap: var(--sp-1);
+  padding: var(--sp-1) 0; font: var(--fs-sm) var(--sans); color: var(--ink-dim);
+}
+.tp-rewrite-sel {
+  font: var(--fs-xs) var(--sans); color: var(--ink-dim);
+  margin-bottom: var(--sp-1);
+}
+.tp-rewrite-sel code {
+  font-family: var(--mono); background: var(--bg-000);
+  padding: 1px 4px; border-radius: 3px;
+}
+.tp-rewrite .tp-edit-actions { border-top: none; }
+.tp-rewrite .tp-edit-actions button:disabled { opacity: .4; cursor: default; text-decoration: none; }
+/* Floating selection pill — `position: fixed` because coords come from
+   `Range.getBoundingClientRect()` (viewport space). */
+.tp-sel-pill {
+  position: fixed; z-index: 30;
+  width: 24px; height: 24px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 1px solid var(--accent); border-radius: var(--r-pill);
+  background: var(--bg-000); color: var(--accent);
+  cursor: pointer; box-shadow: 0 2px 8px hsl(0 0% 0% / .12);
+  font-size: 12px; line-height: 1;
+}
+.tp-sel-pill:hover { background: var(--accent); color: #fff; }
+
 /* per-tool renderer bodies */
 .tr-preview {
   margin: var(--sp-2); padding: var(--sp-2) 12px;
@@ -863,6 +911,27 @@ body {
   --vscode-toolbar-hoverBackground: var(--bg-100);
   --inspect-font-size-smallest: var(--fs-xs);
 }
+
+/* Inline branch-point pager: ‹ idx/total ›. Always visible (unlike the
+   hover-only .actions row below it) so fork points are scannable. */
+.branch-nav {
+  display: inline-flex; align-items: center; gap: 2px;
+  margin: var(--sp-1) 0 0;
+  padding: 1px 2px;
+  border: 1px solid var(--border); border-radius: var(--r-pill);
+  background: var(--bg-000);
+  font-family: var(--mono); font-size: var(--fs-xs); line-height: 1;
+  color: var(--ink-dim);
+  user-select: none;
+}
+.branch-nav-pos { padding: 0 4px; font-variant-numeric: tabular-nums; }
+.branch-nav-btn {
+  border: none; background: none; cursor: pointer;
+  padding: 2px 4px; border-radius: var(--r-pill);
+  color: var(--ink-dim); font-size: 10px; line-height: 1;
+}
+.branch-nav-btn:hover:not(:disabled) { background: var(--bg-200); color: var(--ink); }
+.branch-nav-btn:disabled { opacity: 0.3; cursor: default; }
 
 .lane-gantt-host {
   position: sticky; top: 36px; z-index: 2;

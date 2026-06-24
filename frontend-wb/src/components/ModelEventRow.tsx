@@ -4,6 +4,7 @@ import { useState, type JSX } from "react";
 
 import { pairToolCalls, type Turn } from "../lib/events";
 import { useSession } from "../store/session";
+import { BranchNav } from "./BranchNav";
 import { Bubble, renderContent } from "./Bubble";
 import { RawModal } from "./RawModal";
 import { ToolPair, fromCall, fromToolEvent } from "./ToolPair";
@@ -16,6 +17,11 @@ type Props = {
   /** If true, show the auditor-column action set (branch/resample/raw/copy +
    *  per-tool-call edit). Otherwise the target-column set. */
   auditor?: boolean;
+  /** When this turn is a fork point: position among its sibling branches.
+   *  Drives the inline `‹ idx/total ›` chip. */
+  siblingPos?: { idx: number; total: number };
+  /** Step to an adjacent sibling at this fork point. */
+  onSwitchSibling?: (direction: 1 | -1) => void;
   rowRef?: (el: HTMLDivElement | null) => void;
 };
 
@@ -83,7 +89,9 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
   );
 }
 
-export function ModelEventRow({ turn, turnIndex, auditor, rowRef }: Props): JSX.Element {
+export function ModelEventRow({
+  turn, turnIndex, auditor, siblingPos, onSwitchSibling, rowRef,
+}: Props): JSX.Element {
   const { ev, resolved, tools } = turn;
   const branchAt = useSession((s) => s.branchAt);
   const resampleAt = useSession((s) => s.resampleAt);
@@ -91,6 +99,9 @@ export function ModelEventRow({ turn, turnIndex, auditor, rowRef }: Props): JSX.
   const resampleAuditor = useSession((s) => s.resampleAuditor);
   const editAuditorCall = useSession((s) => s.editAuditorCall);
   const editTargetMessage = useSession((s) => s.editTargetMessage);
+  const rewriteToolCall = useSession((s) => s.rewriteToolCall);
+  const clearRewriteDraft = useSession((s) => s.clearRewriteDraft);
+  const rewriteDrafts = useSession((s) => s.rewriteDrafts);
 
   // The turn's resolved messages: leading non-assistant (system/user) bubbles,
   // ending in this turn's assistant output (if it's landed). Tool results are
@@ -165,6 +176,23 @@ export function ModelEventRow({ turn, turnIndex, auditor, rowRef }: Props): JSX.
                   ? (args) => handleToolEdit(t.id, args)
                   : undefined
               }
+              onRewrite={
+                auditor && t.id && !disabled
+                  ? (inst, sel) => rewriteToolCall(turnIndex, t.id, inst, sel)
+                  : undefined
+              }
+              rewriteDraft={auditor && t.id ? rewriteDrafts[t.id] : undefined}
+              onApplyRewrite={
+                auditor && t.id && !disabled
+                  ? (args) => {
+                      clearRewriteDraft(t.id);
+                      handleToolEdit(t.id, args);
+                    }
+                  : undefined
+              }
+              onDiscardRewrite={
+                auditor && t.id ? () => clearRewriteDraft(t.id) : undefined
+              }
             />
           ))}
           {callPairs.map((p) => (
@@ -185,6 +213,15 @@ export function ModelEventRow({ turn, turnIndex, auditor, rowRef }: Props): JSX.
             />
           ))}
         </div>
+      )}
+
+      {siblingPos && onSwitchSibling && (
+        <BranchNav
+          idx={siblingPos.idx}
+          total={siblingPos.total}
+          onPrev={() => onSwitchSibling(-1)}
+          onNext={() => onSwitchSibling(1)}
+        />
       )}
 
       {/* Hover-only action row.

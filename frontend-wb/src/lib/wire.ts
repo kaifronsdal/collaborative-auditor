@@ -53,6 +53,15 @@ export type Down =
       message: ChatMessage;
     }
   | { t: "timeline"; v: number; branch: BranchId; role: Role; timeline: ServerTimeline }
+  | {
+      t: "rewrite_draft";
+      v: number;
+      branch: BranchId;
+      call_id: string;
+      args?: Record<string, unknown>;
+      raw?: string;
+      error?: string;
+    }
   | { t: "error"; v: number; message: string };
 
 export type Up =
@@ -81,6 +90,14 @@ export type Up =
       turn_index: number;
       call_id: string;
       args: Record<string, unknown>;
+    }
+  | {
+      t: "rewrite_tool_call";
+      branch: BranchId;
+      turn_index: number;
+      call_id: string;
+      instruction: string;
+      selected_text?: string;
     }
   | {
       t: "edit_target_message";

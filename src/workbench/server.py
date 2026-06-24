@@ -22,6 +22,7 @@ from workbench.run import (
     edited_auditor_step,
     find_auditor_step,
     find_target_step,
+    generate_rewrite,
     locate_staging_call,
     slice_at,
 )
@@ -419,6 +420,57 @@ async def _dispatch(session: Session, data: dict) -> None:
                     branched_at=anchor,
                 )
                 await _register_and_spawn(session, child, autoplay=False)
+
+        case "rewrite_tool_call":
+            # Stateless draft: ask the auditor model to rewrite one tool_call's
+            # args per a freeform instruction. NOT a fork — no tape mutation,
+            # no `_dispatch_lock` (the model call may take seconds and must not
+            # block transport/branch commands). The client applies the draft
+            # via `edit_auditor_call` if accepted.
+            branch_id = data["branch"]
+            call_id = data["call_id"]
+            branch = session.branches.get(branch_id)
+            if branch is None:
+                await session.broadcast(
+                    {
+                        "t": "rewrite_draft",
+                        "v": session.version,
+                        "branch": branch_id,
+                        "call_id": call_id,
+                        "error": f"unknown branch {branch_id!r}",
+                    }
+                )
+                return
+            try:
+                args, raw = await generate_rewrite(
+                    branch,
+                    int(data["turn_index"]),
+                    call_id,
+                    data["instruction"],
+                    selected_text=data.get("selected_text"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("rewrite_tool_call failed: %s", exc, exc_info=True)
+                await session.broadcast(
+                    {
+                        "t": "rewrite_draft",
+                        "v": session.version,
+                        "branch": branch_id,
+                        "call_id": call_id,
+                        "error": str(exc),
+                    }
+                )
+                return
+            await session.broadcast(
+                {
+                    "t": "rewrite_draft",
+                    "v": session.version,
+                    "branch": branch_id,
+                    "call_id": call_id,
+                    "args": args,
+                    "raw": raw,
+                }
+            )
 
         case "switch":
             async with session._dispatch_lock:  # noqa: SLF001
