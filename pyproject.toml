@@ -20,7 +20,6 @@ dependencies = [
 ]
 
 [project.scripts]
-collaborative-auditor = "collaborative_auditor.server:run_server"
 workbench = "workbench.server:main"
 
 [build-system]
@@ -28,12 +27,17 @@ requires = ["uv_build>=0.9.26,<0.10.0"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
-module-name = ["collaborative_auditor", "workbench"]
+module-name = ["workbench"]
 
 [tool.uv.sources]
 inspect-ai = { path = "../inspect_ai", editable = true }
 inspect-petri = { path = "../petri-meridian", editable = true }
 aisitools = { git = "ssh://git@github.com/AI-Safety-Institute/aisi-inspect-tools.git" }
+
+[dependency-groups]
+dev = [
+    "playwright>=1.60.0",
+]
 
 [tool.uv]
 exclude-newer-package = { aisitools = false, anthropic = false, inspect-ai = false, openai = false }

@@ -17,6 +17,7 @@
 import type { JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 import { MODELS, modelLabel } from "../lib/presets";
+import { Chevron, IconClose } from "./icons";
 
 const RECENT_STORAGE_KEY = "workbench.recentModels";
 const MAX_RECENT = 8;
@@ -186,7 +187,7 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
       >
         {!compact && <span className="chip-label">{role}</span>}
         <span className="chip-model">{compact ? chipLabel : `${modelLabel(value)}${configSuffix(config)}`}</span>
-        <span className="chip-caret">⌄</span>
+        <i className="bi bi-chevron-down chip-caret" />
       </button>
 
       {open && (
@@ -266,7 +267,7 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
               onClick={() => setConfigOpen((v) => !v)}
               type="button"
             >
-              <span className="picker-config-arrow">{configOpen ? "▾" : "▸"}</span>
+              <Chevron open={configOpen} size={10} className="picker-config-arrow" />
               {" config"}
             </button>
 
@@ -298,7 +299,7 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
                         }}
                         type="button"
                       >
-                        ✕
+                        <IconClose size={10} />
                       </button>
                     )}
                   </div>
@@ -328,7 +329,7 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
                         }}
                         type="button"
                       >
-                        ✕
+                        <IconClose size={10} />
                       </button>
                     )}
                   </div>

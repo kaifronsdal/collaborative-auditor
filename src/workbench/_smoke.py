@@ -16,30 +16,16 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
 
 import anyio
+from inspect_ai.event._pool import _expand_refs  # noqa: PLC2701
 
+from workbench._smoke_util import FakeConn
 from workbench.run import Branch
 from workbench.session import Session
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
 SEED = "test seed"
-
-
-class FakeConn:
-    """A WebSocket-shaped sink that records every wire message it receives."""
-
-    def __init__(self) -> None:
-        self.sent: list[dict[str, Any]] = []
-
-    async def send_json(self, data: dict[str, Any]) -> None:
-        self.sent.append(data)
-
-
-def _expand_refs(refs: list[list[int]], pool: list[dict]) -> list[dict]:
-    """Port of `expandEvents`' expandRefs: [[start, end_excl], ...] → pool slices."""
-    return [pool[i] for s, e in refs for i in range(s, e)]
 
 
 async def _amain(dump_path: Path | None = None) -> None:
@@ -80,12 +66,12 @@ async def _amain(dump_path: Path | None = None) -> None:
 
     # a settled ModelEvent: input condensed to refs, input itself emptied.
     model_events = [
-        m
-        for m in conn.sent
-        if m["t"] == "event" and m["event"]["event"] == "model"
+        m for m in conn.sent if m["t"] == "event" and m["event"]["event"] == "model"
     ]
     condensed = [
-        m for m in model_events if m["event"]["input_refs"] and m["event"]["input"] == []
+        m
+        for m in model_events
+        if m["event"]["input_refs"] and m["event"]["input"] == []
     ]
     assert condensed, "expected ≥1 model event with non-empty input_refs and input==[]"
 
@@ -94,11 +80,12 @@ async def _amain(dump_path: Path | None = None) -> None:
     for m in condensed:
         uuid = m["event"]["uuid"]
         updates = [
-            u
-            for u in conn.sent
-            if u["t"] == "update" and u["event"]["uuid"] == uuid
+            u for u in conn.sent if u["t"] == "update" and u["event"]["uuid"] == uuid
         ]
-        lens = [len(json.dumps(u["event"]["output"]["choices"][0]["message"]["content"])) for u in updates]
+        lens = [
+            len(json.dumps(u["event"]["output"]["choices"][0]["message"]["content"]))
+            for u in updates
+        ]
         if len(lens) >= 1 and lens == sorted(lens) and lens[-1] > 0:
             streamed_uuid = uuid
             break
@@ -110,7 +97,9 @@ async def _amain(dump_path: Path | None = None) -> None:
     # rebuild the pool exactly as a client would from the pool deltas.
     pool: list[dict] = []
     for m in pool_msgs:
-        assert m["from"] == len(pool), f"pool delta gap: from={m['from']} have={len(pool)}"
+        assert m["from"] == len(pool), (
+            f"pool delta gap: from={m['from']} have={len(pool)}"
+        )
         pool.extend(m["entries"])
 
     # the last target ModelEvent (system + user prompt at minimum).

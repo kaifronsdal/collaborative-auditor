@@ -7,7 +7,11 @@
  * `input_refs` range list pointing into the pool; the frontend resolves it with
  * `expandEvents`.
  */
-import type { ChatMessage, Event, ModelOutput } from "@tsmono/inspect-common";
+import type { ChatMessage, Event, ModelOutput, Timeline } from "@tsmono/inspect-common";
+
+/** Server-built `Timeline` (petri's `build_target_timeline`), event refs as UUIDs. */
+export type ServerTimeline = Timeline;
+export type TimelineMap = Record<BranchId, Partial<Record<Role, ServerTimeline>>>;
 
 export type Role = "auditor" | "target";
 export type BranchId = string;
@@ -35,6 +39,7 @@ export type Down =
       current: string | null;
       status: Status | null;
       branches: Record<BranchId, BranchMeta>;
+      timelines?: TimelineMap;
     }
   | { t: "pool"; v: number; from: number; entries: ChatMessage[] }
   | { t: "event"; v: number; event: Event }
@@ -47,6 +52,7 @@ export type Down =
       role: Role;
       message: ChatMessage;
     }
+  | { t: "timeline"; v: number; branch: BranchId; role: Role; timeline: ServerTimeline }
   | { t: "error"; v: number; message: string };
 
 export type Up =
@@ -67,4 +73,21 @@ export type Up =
   | { t: "branch"; at: string }
   | { t: "resample"; at: string }
   | { t: "edit"; at: string; output: ModelOutput }
+  | { t: "branch_auditor"; branch: BranchId; turn_index: number }
+  | { t: "resample_auditor"; branch: BranchId; turn_index: number }
+  | {
+      t: "edit_auditor_call";
+      branch: BranchId;
+      turn_index: number;
+      call_id: string;
+      args: Record<string, unknown>;
+    }
+  | {
+      t: "edit_target_message";
+      branch: BranchId;
+      message_id: string;
+      role: "user" | "system" | "tool";
+      content: string;
+      tool_call_id?: string;
+    }
   | { t: "switch"; branch: BranchId };

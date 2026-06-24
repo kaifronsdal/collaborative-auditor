@@ -6,9 +6,21 @@
  * column is added/updated, so Zustand short-circuits and only the
  * streaming column re-renders per flush.
  */
+import { useMemo } from "react";
 import type { ChatMessage, Event, ModelEvent } from "@tsmono/inspect-common";
+import {
+  computeFlatSwimlaneRows,
+  computeRowLayouts,
+  computeTimeMapping,
+  convertServerTimeline,
+  splice,
+  type RowLayout,
+  type SwimlaneRow,
+  type Timeline,
+  type TimelineSpan,
+} from "@tsmono/inspect-components/transcript/timeline";
 
-import { isModelEvent } from "./events";
+import { buildEventTree, isModelEvent, type EventNode } from "./events";
 import type { BranchId, Role } from "./wire";
 import { useSession } from "../store/session";
 
@@ -30,6 +42,90 @@ export function usePending(branch: BranchId, role: Role): ModelEvent | null {
 
 export function useQueued(branch: BranchId, role: Role): ChatMessage[] {
   return useSession((s) => s.queued[branch]?.[role] ?? EMPTY_MSGS);
+}
+
+const STAGING_TOOLS: Record<string, ChatMessage["role"]> = {
+  set_system_message: "system",
+  send_message: "user",
+  send_tool_call_result: "tool",
+};
+
+/**
+ * Messages the auditor has staged for the target but the target hasn't
+ * consumed yet (no `resume` → no target ModelEvent after them). Derived
+ * from the auditor column's ToolEvents — no backend change needed.
+ */
+export function useStagedForTarget(branch: BranchId): ChatMessage[] {
+  const auditorEvs = useEvents(branch, "auditor");
+  const targetEvs = useEvents(branch, "target");
+  return useMemo(() => {
+    const lastTargetTs = [...targetEvs].reverse().find(isModelEvent)?.timestamp ?? "";
+    const out: ChatMessage[] = [];
+    for (const ev of auditorEvs) {
+      if (ev.event !== "tool" || ev.timestamp <= lastTargetTs) continue;
+      const role = STAGING_TOOLS[ev.function];
+      if (!role) continue;
+      const args = ev.arguments as Record<string, unknown>;
+      const content =
+        role === "system" ? String(args.system_message ?? "")
+        : role === "user" ? String(args.message ?? "")
+        : String(args.result ?? "");
+      if (content) out.push({ role, content, id: ev.uuid ?? undefined } as ChatMessage);
+    }
+    return out;
+  }, [auditorEvs, targetEvs]);
+}
+
+/**
+ * inspect's display tree (`treeifyEvents`) over the current event set.
+ *
+ * Derived (not stored) so it can never go stale relative to `events`. Memoized
+ * on the `events` Map reference, which the reducer replaces on every mutation,
+ * so the tree rebuilds exactly when the underlying events change. O(n) at
+ * audit scale; profile before optimizing (INSPECT-REUSE.md §3).
+ */
+export function useEventTree(): EventNode[] {
+  const events = useSession((s) => s.events);
+  return useMemo(() => buildEventTree(events.values()), [events]);
+}
+
+/**
+ * inspect-view's Timeline + swimlane rows for one (branch, role) column.
+ *
+ * The server ships petri's `build_target_timeline()` output (event refs as
+ * UUIDs); `convertServerTimeline` resolves them against the store's events
+ * exactly as inspect-view does. `computeFlatSwimlaneRows({showBranches:true})`
+ * then yields one row per trajectory, with `branch: true` rows for rollback
+ * forks. `splice(root, span)` reconstructs any row's full conversation lineage.
+ */
+export type Swimlanes = {
+  timeline: Timeline | null;
+  rows: SwimlaneRow[];
+  /** Gantt-bar layouts for inspect's `TimelineSwimLanes` (time-positioned). */
+  layouts: RowLayout[];
+  /** Reconstruct a row's full event lineage (ancestor prefix + own content). */
+  lineage: (span: TimelineSpan) => Event[];
+};
+
+export function useSwimlanes(branch: BranchId, role: Role): Swimlanes {
+  const serverTl = useSession((s) => s.timelines[branch]?.[role]);
+  const events = useSession((s) => s.events);
+  return useMemo(() => {
+    if (!serverTl) return { timeline: null, rows: [], layouts: [], lineage: () => [] };
+    const timeline = convertServerTimeline(serverTl, [...events.values()]);
+    const rows = computeFlatSwimlaneRows(timeline.root, {
+      includeUtility: true,
+      showBranches: true,
+    });
+    const mapping = computeTimeMapping(timeline.root);
+    const layouts = computeRowLayouts(rows, mapping, "direct", ["branch", "error"]);
+    return {
+      timeline,
+      rows,
+      layouts,
+      lineage: (span) => splice(timeline.root, span),
+    };
+  }, [serverTl, events]);
 }
 
 const EMPTY: Event[] = [];

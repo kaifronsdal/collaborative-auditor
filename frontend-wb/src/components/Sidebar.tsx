@@ -1,11 +1,9 @@
 import type { JSX } from "react";
 
-import { modelLabel } from "../lib/presets";
 import type { BranchId, BranchMeta } from "../lib/wire";
 import { useSession } from "../store/session";
-import { ModelPicker, readStoredConfig } from "./ModelPicker";
-import type { GenerateConfigDict } from "./ModelPicker";
 import { useState } from "react";
+import { Chevron } from "./icons";
 
 const COLLAPSED_KEY = "workbench.sidebarCollapsed";
 
@@ -50,9 +48,10 @@ function BranchNode({
   const children = Object.entries(allBranches).filter(([, m]) => m.parent === id);
 
   return (
-    <div style={{ paddingLeft: depth > 0 ? `${depth * 12}px` : undefined }}>
+    <div>
       <button
         className={`side-row${isActive ? " active" : ""}`}
+        style={{ paddingLeft: 10 + depth * 14 }}
         title={label}
         onClick={() => onSwitch(id)}
       >
@@ -86,20 +85,8 @@ export function Sidebar(): JSX.Element {
   const sessionsList = useSession((s) => s.sessionsList);
   const current = useSession((s) => s.current);
   const status = useSession((s) => s.status);
-  const nextConfig = useSession((s) => s.nextConfig);
-  const setNextConfig = useSession((s) => s.setNextConfig);
   const branches = useSession((s) => s.branches);
-  const branchConfig = useSession((s) =>
-    s.current ? s.branchConfig[s.current] : undefined
-  );
   const send = useSession((s) => s.send);
-
-  const [sideAuditorCfg, setSideAuditorCfg] = useState<Partial<GenerateConfigDict>>(
-    () => readStoredConfig("auditor"),
-  );
-  const [sideTargetCfg, setSideTargetCfg] = useState<Partial<GenerateConfigDict>>(
-    () => readStoredConfig("target"),
-  );
 
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
@@ -132,33 +119,21 @@ export function Sidebar(): JSX.Element {
     return (
       <aside className="sidebar sidebar--collapsed">
         <button
-          className="sidebar-expand-btn"
+          className="side-icon-btn"
           onClick={toggleCollapsed}
           title="Expand sidebar"
           aria-label="Expand sidebar"
         >
-          ›
+          <Chevron size={12} />
         </button>
         <button
-          className="side-new-icon"
+          className="side-icon-btn"
           onClick={() => { toggleCollapsed(); newAudit(); }}
           title="New audit"
           aria-label="New audit"
         >
-          +
+          <span className="plus">+</span>
         </button>
-        {/* Status dots for recent audits */}
-        {sessionsList.slice(0, 6).map((s) => {
-          const isActive = s.id === current;
-          const entryStatus = isActive ? (status ?? "ended") : "ended";
-          return (
-            <span
-              key={s.id}
-              className={`status-dot dot-${entryStatus} sidebar-dot`}
-              title={s.title}
-            />
-          );
-        })}
       </aside>
     );
   }
@@ -170,17 +145,17 @@ export function Sidebar(): JSX.Element {
           workbench<span className="wordmark-dot">.</span>
         </div>
         <button
-          className="sidebar-collapse-btn"
+          className="side-icon-btn"
           onClick={toggleCollapsed}
           title="Collapse sidebar"
           aria-label="Collapse sidebar"
         >
-          ‹
+          <i className="bi bi-chevron-left" style={{ fontSize: 12 }} />
         </button>
       </div>
 
       <button className="side-new" onClick={newAudit}>
-        + New audit
+        <span className="plus">+</span> New audit
       </button>
 
       <div className="side-section">Recents</div>
@@ -190,8 +165,6 @@ export function Sidebar(): JSX.Element {
         ) : (
           sessionsList.map((s) => {
             const isActive = s.id === current;
-            // Use live status for the active entry; treat others as ended/unknown
-            const entryStatus = isActive ? (status ?? "ended") : "ended";
             return (
               <button
                 key={s.id}
@@ -210,7 +183,7 @@ export function Sidebar(): JSX.Element {
                   useSession.setState({ current: s.id, pendingNewAudit: false });
                 }}
               >
-                <span className={`status-dot dot-${entryStatus}`} title={entryStatus} />
+                {isActive && <span className={`status-dot dot-${status ?? "ended"}`} />}
                 <span className="side-row-title">{s.title}</span>
                 <span className="side-row-time">{relTime(s.updatedAt)}</span>
               </button>
@@ -221,55 +194,8 @@ export function Sidebar(): JSX.Element {
 
       {current && (
         <>
-          <div className="side-sep" />
-          <div className="side-section">{current ? "This audit · config" : "Next audit · config"}</div>
-          <div className="cfg">
-            {current && branchConfig ? (
-              // Read-only view of server-authoritative branch config
-              <>
-                <div className="c-row"><span className="c-lab">auditor</span><span className="c-val">{modelLabel(branchConfig.auditor_model)}</span></div>
-                <div className="c-row"><span className="c-lab">target</span><span className="c-val">{modelLabel(branchConfig.target_model)}</span></div>
-              </>
-            ) : (
-              // Editable nextConfig for next audit — compact ModelPicker
-              <>
-                <div className="c-row">
-                  <span className="c-lab">auditor</span>
-                  <span className="c-val c-val--picker">
-                    <ModelPicker
-                      role="auditor"
-                      value={nextConfig.auditor_model}
-                      config={sideAuditorCfg}
-                      compact
-                      onChange={(m, cfg) => {
-                        setSideAuditorCfg(cfg);
-                        setNextConfig({ auditor_model: m, auditor_config: cfg });
-                      }}
-                    />
-                  </span>
-                </div>
-                <div className="c-row">
-                  <span className="c-lab">target</span>
-                  <span className="c-val c-val--picker">
-                    <ModelPicker
-                      role="target"
-                      value={nextConfig.target_model}
-                      config={sideTargetCfg}
-                      compact
-                      onChange={(m, cfg) => {
-                        setSideTargetCfg(cfg);
-                        setNextConfig({ target_model: m, target_config: cfg });
-                      }}
-                    />
-                  </span>
-                </div>
-              </>
-            )}
-          </div>
-
           {roots.length > 0 && (
             <>
-              <div className="side-sep" />
               <div className="side-section">Branches</div>
               <div className="side-branches">
                 {roots.map(([id, meta]) => (

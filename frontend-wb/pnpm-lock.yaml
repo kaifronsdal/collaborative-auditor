@@ -11,6 +11,18 @@ importers:
       '@tsmono/inspect-common':
         specifier: workspace:*
         version: link:../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/inspect-common
+      '@tsmono/inspect-components':
+        specifier: workspace:*
+        version: link:../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/inspect-components
+      '@tsmono/react':
+        specifier: workspace:*
+        version: link:../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/react
+      bootstrap-icons:
+        specifier: ^1.13.1
+        version: 1.13.1
+      marked:
+        specifier: ^18.0.5
+        version: 18.0.5
       react:
         specifier: ^19.2.0
         version: 19.2.7
@@ -62,10 +74,10 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8.60.1
+        specifier: ^8.61.1
         version: 8.61.1(eslint@9.39.4)(typescript@6.0.3)
       vitest:
-        specifier: ^4.1.8
+        specifier: ^4.1.9
         version: 4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@7.3.5(@types/node@25.9.3))
 
   ../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/inspect-components:
@@ -86,6 +98,9 @@ importers:
         specifier: ^2.1.1
         version: 2.1.1
     devDependencies:
+      '@tanstack/react-query':
+        specifier: ^5.101.0
+        version: 5.101.0(react@19.2.7)
       '@testing-library/react':
         specifier: ^16.3.1
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -102,14 +117,17 @@ importers:
         specifier: ^2.2.0
         version: 2.2.0
       '@types/node':
-        specifier: ^25.9.1
+        specifier: ^25.9.3
         version: 25.9.3
       '@types/react':
-        specifier: ^19.2.16
+        specifier: ^19.2.17
         version: 19.2.17
       '@types/react-dom':
         specifier: ^19.2.3
         version: 19.2.3(@types/react@19.2.17)
+      '@vscode-elements/react-elements':
+        specifier: ^2.4.0
+        version: 2.4.0(@types/react@19.2.17)(@vscode/codicons@0.0.45)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       eslint:
         specifier: ^9.39.4
         version: 9.39.4
@@ -135,10 +153,10 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8.60.1
+        specifier: ^8.61.1
         version: 8.61.1(eslint@9.39.4)(typescript@6.0.3)
       vitest:
-        specifier: ^4.1.8
+        specifier: ^4.1.9
         version: 4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@7.3.5(@types/node@25.9.3))
 
   ../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/react:
@@ -158,6 +176,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      dompurify:
+        specifier: ^3.4.10
+        version: 3.4.11
       lodash-es:
         specifier: ^4.18.1
         version: 4.18.1
@@ -172,16 +193,16 @@ importers:
         version: 2.3.0(@popperjs/core@2.11.8)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
     devDependencies:
       '@storybook/react':
-        specifier: ^10.4.1
+        specifier: ^10.4.5
         version: 10.4.6(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(storybook@10.4.6(@testing-library/dom@10.4.1)(@types/react@19.2.17)(prettier@3.8.4)(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(typescript@6.0.3)
       '@storybook/react-vite':
-        specifier: ^10.4.1
+        specifier: ^10.4.5
         version: 10.4.6(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(esbuild@0.28.1)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(rollup@4.62.0)(storybook@10.4.6(@testing-library/dom@10.4.1)(@types/react@19.2.17)(prettier@3.8.4)(react-dom@19.2.7(react@19.2.7))(react@19.2.7))(typescript@6.0.3)(vite@7.3.5(@types/node@25.9.3))
       '@tanstack/react-query':
-        specifier: ^5.100.14
+        specifier: ^5.101.0
         version: 5.101.0(react@19.2.7)
       '@tanstack/react-virtual':
-        specifier: ^3.14.1
+        specifier: ^3.14.3
         version: 3.14.3(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       '@testing-library/react':
         specifier: ^16.3.1
@@ -208,7 +229,7 @@ importers:
         specifier: ^1.26.5
         version: 1.26.6
       '@types/react':
-        specifier: ^19.2.16
+        specifier: ^19.2.17
         version: 19.2.17
       '@types/react-dom':
         specifier: ^19.2.3
@@ -238,19 +259,19 @@ importers:
         specifier: ^19.2.7
         version: 19.2.7(react@19.2.7)
       react-router-dom:
-        specifier: ^7.16.0
+        specifier: ^7.17.0
         version: 7.18.0(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       storybook:
-        specifier: ^10.4.1
+        specifier: ^10.4.5
         version: 10.4.6(@testing-library/dom@10.4.1)(@types/react@19.2.17)(prettier@3.8.4)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8.60.1
+        specifier: ^8.61.1
         version: 8.61.1(eslint@9.39.4)(typescript@6.0.3)
       vitest:
-        specifier: ^4.1.8
+        specifier: ^4.1.9
         version: 4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@7.3.5(@types/node@25.9.3))
 
   ../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/scout-components:
@@ -293,7 +314,7 @@ importers:
         specifier: ^4.0.2
         version: 4.0.3
       '@types/react':
-        specifier: ^19.2.16
+        specifier: ^19.2.17
         version: 19.2.17
       '@types/react-dom':
         specifier: ^19.2.3
@@ -320,10 +341,10 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8.60.1
+        specifier: ^8.61.1
         version: 8.61.1(eslint@9.39.4)(typescript@6.0.3)
       vitest:
-        specifier: ^4.1.8
+        specifier: ^4.1.9
         version: 4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@7.3.5(@types/node@25.9.3))
 
   ../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/theme:
@@ -341,10 +362,10 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8.60.1
+        specifier: ^8.61.1
         version: 8.61.1(eslint@9.39.4)(typescript@6.0.3)
       vitest:
-        specifier: ^4.1.8
+        specifier: ^4.1.9
         version: 4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@7.3.5(@types/node@25.9.3))
 
   ../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/util:
@@ -383,10 +404,10 @@ importers:
         specifier: ^6.0.3
         version: 6.0.3
       typescript-eslint:
-        specifier: ^8.60.1
+        specifier: ^8.61.1
         version: 8.61.1(eslint@9.39.4)(typescript@6.0.3)
       vitest:
-        specifier: ^4.1.8
+        specifier: ^4.1.9
         version: 4.1.9(@types/node@25.9.3)(jsdom@29.1.1)(vite@7.3.5(@types/node@25.9.3))
 
   ../../inspect_ai/src/inspect_ai/_view/ts-mono/tooling/eslint-config:
@@ -410,10 +431,10 @@ importers:
         specifier: ^7.1.1
         version: 7.1.1(eslint@9.39.4)
       eslint-plugin-react-refresh:
-        specifier: ^0.5.2
+        specifier: ^0.5.3
         version: 0.5.3(eslint@9.39.4)
       typescript-eslint:
-        specifier: ^8.60.1
+        specifier: ^8.61.1
         version: 8.61.1(eslint@9.39.4)(typescript@6.0.3)
     devDependencies:
       eslint:
@@ -2078,6 +2099,9 @@ packages:
   bidi-js@1.0.3:
     resolution: {integrity: sha512-RKshQI1R3YQ+n9YJz2QQ147P66ELpa1FQEg20Dk8oW9t2KgLbpDLLp9aGZ7y8WHSshDknG0bknqGw5/tyCs5tw==}
 
+  bootstrap-icons@1.13.1:
+    resolution: {integrity: sha512-ijombt4v6bv5CLeXvRWKy7CuM3TRTuPEuGaGKvTV5cz65rQSY8RQ2JcHt6b90cBBAC7s8fsf2EkQDldzCoXUjw==}
+
   brace-expansion@1.1.15:
     resolution: {integrity: sha512-EwOCDEex4quD37XhqM3omwtMoJjr//isUZz1JopUNWms+4Z2ViyM/k1YIRePpoVNnQhENnxtFjLaxNHrT7xIUg==}
 
@@ -2257,6 +2281,9 @@ packages:
 
   dom-accessibility-api@0.6.3:
     resolution: {integrity: sha512-7ZgogeTnjuHbo+ct10G9Ffp0mif17idi0IyWNVA/wcwcm7NPOD/WEHVP3n7n3MhXqxoIYm8d6MuZohYWIZ4T3w==}
+
+  dompurify@3.4.11:
+    resolution: {integrity: sha512-zhlUV12GsaRzMsf9q5M254YhA4+VuF0fG+QFqu6aYpoGlKtz+w8//jBcGVYBgQkR5GHjUomejY84AV+/uPbWdw==}
 
   dunder-proto@1.0.1:
     resolution: {integrity: sha512-KIN/nDJBQRcXw0MLVhZE9iQHmG68qAVIBg9CqmUYjmQIhgij9U5MFvrqkUL5FbtyyzZuOeOt0zdeRe4UY7ct+A==}
@@ -2889,6 +2916,11 @@ packages:
 
   markdown-it@14.2.0:
     resolution: {integrity: sha512-1TGiQiJVRQ3NPmZH6sx5Cfnmg6GQm9jvC1ch4TK511NjSJvjzKLzn5pPfZRNZkRPZP0HqCioSndqH8v2nRaWVQ==}
+    hasBin: true
+
+  marked@18.0.5:
+    resolution: {integrity: sha512-S6GcvALHg6K4ohtu4E7x0a1AqhAjp6cV8KhLSyN9qVapnzJkusVBxZRcIU9AeYsbe6P1hKDusSbEOzGyyuce6w==}
+    engines: {node: '>= 20'}
     hasBin: true
 
   math-intrinsics@1.1.0:
@@ -3781,7 +3813,7 @@ snapshots:
       '@babel/types': 7.29.7
       '@jridgewell/remapping': 2.3.5
       convert-source-map: 2.0.0
-      debug: 4.4.3(supports-color@10.2.2)
+      debug: 4.4.3
       gensync: 1.0.0-beta.2
       json5: 2.2.3
       semver: 6.3.1
@@ -3865,7 +3897,7 @@ snapshots:
       '@babel/parser': 7.29.7
       '@babel/template': 7.29.7
       '@babel/types': 7.29.7
-      debug: 4.4.3(supports-color@10.2.2)
+      debug: 4.4.3
     transitivePeerDependencies:
       - supports-color
 
@@ -5114,6 +5146,8 @@ snapshots:
     dependencies:
       require-from-string: 2.0.2
 
+  bootstrap-icons@1.13.1: {}
+
   brace-expansion@1.1.15:
     dependencies:
       balanced-match: 1.0.2
@@ -5241,6 +5275,10 @@ snapshots:
     dependencies:
       ms: 2.1.3
 
+  debug@4.4.3:
+    dependencies:
+      ms: 2.1.3
+
   debug@4.4.3(supports-color@10.2.2):
     dependencies:
       ms: 2.1.3
@@ -5287,6 +5325,10 @@ snapshots:
   dom-accessibility-api@0.5.16: {}
 
   dom-accessibility-api@0.6.3: {}
+
+  dompurify@3.4.11:
+    optionalDependencies:
+      '@types/trusted-types': 2.0.7
 
   dunder-proto@1.0.1:
     dependencies:
@@ -6100,6 +6142,8 @@ snapshots:
       mdurl: 2.0.0
       punycode.js: 2.3.1
       uc.micro: 2.1.0
+
+  marked@18.0.5: {}
 
   math-intrinsics@1.1.0: {}
 

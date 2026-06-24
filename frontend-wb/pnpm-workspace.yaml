@@ -12,3 +12,12 @@ onlyBuiltDependencies:
 allowBuilds:
   esbuild: true
   unrs-resolver: true
+# We import only the pure ./transcript/transform subpath from
+# @tsmono/inspect-components; its UI peer deps are not needed.
+peerDependencyRules:
+  ignoreMissing:
+    - react-virtuoso
+    - "@tanstack/react-query"
+    - "@vscode-elements/react-elements"
+    - jsondiffpatch
+    - json5

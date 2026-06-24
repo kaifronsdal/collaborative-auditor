@@ -22,42 +22,12 @@ import anyio
 from inspect_petri._auditor import AuditTape, audit_context
 from inspect_petri.target import Channel, Controller, Tape
 
+from workbench._smoke_util import FakeConn, model_events_for
 from workbench.run import Branch
 from workbench.session import Session
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
 SEED = "test seed"
-
-
-def _model_events_for_span(session: Session, span_id: str) -> list[dict]:
-    """Wire ModelEvents routed (by span ancestry) to `span_id`, in send order."""
-    out: list[dict] = []
-    for conn in session.connections:
-        sent = getattr(conn, "sent", None)
-        if sent is None:
-            continue
-        for m in sent:
-            if m["t"] not in ("event", "update"):
-                continue
-            ev = m["event"]
-            if ev["event"] != "model":
-                continue
-            cur: str | None = ev["span_id"]
-            while cur is not None and cur != span_id:
-                cur = session.span_parent.get(cur)
-            if cur == span_id:
-                out.append(ev)
-    return out
-
-
-class FakeConn:
-    """A WebSocket-shaped sink that records every wire message it receives."""
-
-    def __init__(self) -> None:
-        self.sent: list[dict] = []
-
-    async def send_json(self, data: dict) -> None:
-        self.sent.append(data)
 
 
 async def _amain() -> None:
@@ -76,11 +46,16 @@ async def _amain() -> None:
 
     log = b1.audit_tape.log
     # slice at a point that includes ≥1 auditor and ≥1 target ModelOutput.
-    target_idx = next(i for i, s in enumerate(log) if s.source == "Model.generate")
+    target_idx = next(
+        (i for i, s in enumerate(log) if s.source == "Model.generate"), None
+    )
+    assert target_idx is not None, "branch 1 produced no target ModelOutput step"
     cut = target_idx + 1
     prefix = log[:cut]
     expected_auditor = sum(
-        1 for s in prefix if s.source == "auditor:Model.generate" and s.value is not None
+        1
+        for s in prefix
+        if s.source == "auditor:Model.generate" and s.value is not None
     )
     expected_target = sum(
         1 for s in prefix if s.source == "Model.generate" and s.value is not None
@@ -115,7 +90,7 @@ async def _amain() -> None:
     # synthesised prefix events carry `input=[]`; with no input there is nothing
     # to intern, so `condense` leaves `input_refs` at its `None` default. Live
     # turns always have a populated `input_refs` list. That is the discriminator.
-    auditor_evts = _model_events_for_span(session, b2.auditor_span_id)
+    auditor_evts = model_events_for(conn2, session, b2.auditor_span_id)
     synth = [
         ev for ev in auditor_evts if ev["input"] == [] and ev["input_refs"] is None
     ]
@@ -137,7 +112,7 @@ async def _amain() -> None:
 
     target_synth = [
         ev
-        for ev in _model_events_for_span(session, b2.target_span_id)
+        for ev in model_events_for(conn2, session, b2.target_span_id)
         if ev["input"] == [] and ev["input_refs"] is None
     ]
     target_synth_uuids = {ev["uuid"] for ev in target_synth}

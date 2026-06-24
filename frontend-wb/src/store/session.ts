@@ -21,7 +21,9 @@ import {
   resolveRole,
   type EventsByRole,
 } from "../lib/events";
-import type { BranchId, BranchMeta, Down, QueuedMap, Role, Status, Up } from "../lib/wire";
+import type {
+  BranchId, BranchMeta, Down, QueuedMap, Role, Status, TimelineMap, Up,
+} from "../lib/wire";
 import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
 import type { GenerateConfigDict } from "../components/ModelPicker";
 
@@ -54,6 +56,29 @@ export type BranchConfig = {
 /** Local id for the just-started Recents stub, before `current` arrives. */
 const PENDING_ID = "__pending__";
 
+/** Status precedence for optimistic-vs-backend reconciliation. */
+const STATUS_RANK: Record<Status | "null", number> = {
+  null: 0, idle: 1, paused: 2, running: 3, ended: 4,
+};
+
+/**
+ * Reconcile an optimistic local status with an incoming backend status.
+ *
+ * While a pending start/branch is in flight the backend's first `state` may
+ * still read null/"idle" (the branch task hasn't reached "paused" yet). Keep
+ * the optimistic status unless the backend's is further along — never regress.
+ */
+function reconcileStatus(
+  optimistic: Status | null,
+  incoming: Status | null,
+  hadPendingOp: boolean
+): Status | null {
+  if (!hadPendingOp || optimistic == null) return incoming;
+  return STATUS_RANK[incoming ?? "null"] > STATUS_RANK[optimistic]
+    ? incoming
+    : optimistic;
+}
+
 /** Truncate seed text into a Recents-row title. */
 function titleFromSeed(seed: string): string {
   const trimmed = seed.trim().replace(/\s+/g, " ");
@@ -79,6 +104,9 @@ export type SessionState = {
    * re-renders per flush.
    */
   byRole: EventsByRole;
+  /** Server-built petri timelines (`build_target_timeline`), keyed by branch/role.
+   *  Event refs are UUIDs; resolve via `convertServerTimeline(tl, [...events])`. */
+  timelines: TimelineMap;
   spanParent: Map<string, string | null>;
   spanRole: Map<string, [BranchId, Role]>;
   queued: QueuedMap;
@@ -159,6 +187,32 @@ export type SessionState = {
   editAt: (anchorId: string, output: import("@tsmono/inspect-common").ModelOutput) => void;
 
   /**
+   * Edit a target-side user/system/tool message. Backend maps it to the
+   * auditor staging tool_call that produced it and replays that turn with
+   * the edited content (WISHLIST 3c).
+   */
+  editTargetMessage: (
+    messageId: string,
+    role: "user" | "system" | "tool",
+    content: string,
+    toolCallId?: string
+  ) => void;
+
+  /** Regenerate the auditor's `turnIdx`-th response (WISHLIST 3a tape model). */
+  resampleAuditor: (turnIdx: number, anchorId: string) => void;
+
+  /** Fork the auditor conversation at `turnIdx` (same backend op as resample). */
+  branchAuditor: (turnIdx: number, anchorId: string) => void;
+
+  /** Edit an auditor tool_call's args and replay that turn (WISHLIST 3a). */
+  editAuditorCall: (
+    turnIdx: number,
+    anchorId: string,
+    callId: string,
+    args: Record<string, unknown>
+  ) => void;
+
+  /**
    * Flip `status` locally before the round-trip: play→running, pause→paused,
    * step→running, end→ended. Then send the wire command.
    */
@@ -228,6 +282,7 @@ export const useSession = create<SessionState>((set, get) => ({
   pool: [],
   events: new Map(),
   byRole: {},
+  timelines: {},
   spanParent: new Map(),
   spanRole: new Map(),
   queued: {},
@@ -303,30 +358,11 @@ export const useSession = create<SessionState>((set, get) => ({
           // switch to an existing branch.
           const resolvedCurrent = state.pendingNewAudit ? null : msg.current;
 
-          // Preserve optimistic status while a pending start/branch is in flight.
-          // The backend may send status=null or "idle" on its first state
-          // broadcast (the session was just created and hasn't started running
-          // yet), which would clobber our optimistic "paused". Keep the
-          // optimistic status unless the backend provides a more-advanced one
-          // (paused > idle, running > paused, ended > running).
-          const wasPendingStart = state.current === PENDING_ID;
-          const wasPendingBranch = state.current === PENDING_BRANCH;
-          const hadPendingOp = wasPendingStart || wasPendingBranch;
-          const STATUS_RANK: Record<Status | "null", number> = {
-            null: 0, idle: 1, paused: 2, running: 3, ended: 4,
-          };
-          let resolvedStatus: Status | null;
-          if (state.pendingNewAudit) {
-            resolvedStatus = null;
-          } else if (hadPendingOp && state.status != null) {
-            // We set an optimistic status — only advance it, never regress to
-            // null/idle. Take whichever is further along.
-            const optimisticRank = STATUS_RANK[state.status];
-            const backendRank = STATUS_RANK[msg.status ?? "null"];
-            resolvedStatus = backendRank > optimisticRank ? msg.status : state.status;
-          } else {
-            resolvedStatus = msg.status;
-          }
+          const hadPendingOp =
+            state.current === PENDING_ID || state.current === PENDING_BRANCH;
+          const resolvedStatus = state.pendingNewAudit
+            ? null
+            : reconcileStatus(state.status, msg.status, hadPendingOp);
 
           // The real `state` broadcast naturally supersedes any PENDING_BRANCH
           // optimistic state — `byRole` and `branches` are rebuilt from the
@@ -335,6 +371,7 @@ export const useSession = create<SessionState>((set, get) => ({
             pool,
             events,
             byRole: buildByRole(events.values(), spanParent, spanRole),
+            timelines: msg.timelines ?? {},
             spanRole,
             spanParent,
             queued: msg.queued,
@@ -369,8 +406,7 @@ export const useSession = create<SessionState>((set, get) => ({
           return {
             pool,
             events,
-            byRole: buildByRole(events.values(), state.spanParent, state.spanRole),
-            version: msg.v,
+            byRole: buildByRole(events.values(), state.spanParent, state.spanRole),            version: msg.v,
           };
         }
 
@@ -389,8 +425,7 @@ export const useSession = create<SessionState>((set, get) => ({
             spanParent,
             byRole: role
               ? assignByRole(state.byRole, role[0], role[1], ev, undefined)
-              : state.byRole,
-            queued: reconcileQueued(state.queued, ev),
+              : state.byRole,            queued: reconcileQueued(state.queued, ev),
             version: msg.v,
           };
         }
@@ -406,8 +441,7 @@ export const useSession = create<SessionState>((set, get) => ({
             events,
             byRole: role
               ? assignByRole(state.byRole, role[0], role[1], ev, prev)
-              : state.byRole,
-            version: msg.v,
+              : state.byRole,            version: msg.v,
           };
         }
 
@@ -420,6 +454,16 @@ export const useSession = create<SessionState>((set, get) => ({
             roles[msg.role].push(msg.message);
           }
           return { queued, version: msg.v };
+        }
+
+        case "timeline": {
+          return {
+            timelines: {
+              ...state.timelines,
+              [msg.branch]: { ...state.timelines[msg.branch], [msg.role]: msg.timeline },
+            },
+            version: msg.v,
+          };
         }
 
         case "error": {
@@ -457,10 +501,13 @@ export const useSession = create<SessionState>((set, get) => ({
       return;
     }
     ws?.close();
-    // Configurable so a second dev instance can run alongside e2e/agents
-    // (e.g. `VITE_WS_PORT=8766 pnpm dev --port 5174`).
-    const wsPort = import.meta.env.VITE_WS_PORT ?? "8765";
-    const next = new WebSocket(`ws://localhost:${wsPort}/ws/${sessionId}`);
+    // Same-origin /ws (Vite proxies to the backend) so only one port needs
+    // forwarding. Override with VITE_WS_URL for a direct connection
+    // (e.g. `VITE_WS_URL=ws://localhost:8766 pnpm dev --port 5174`).
+    const base =
+      import.meta.env.VITE_WS_URL ??
+      `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
+    const next = new WebSocket(`${base}/ws/${sessionId}`);
     next.onmessage = (e) => get().apply(JSON.parse(e.data) as Down);
     next.onclose = () => {
       // Clear only if this is still the live socket (a newer connect may have
@@ -556,73 +603,54 @@ export const useSession = create<SessionState>((set, get) => ({
 
   dismissError: () => set({ error: null }),
 
-  branchAt: (anchorId: string) => {
-    const state = get();
-    const current = state.current;
+  branchAt: (anchorId) => _pendingChild(set, get, anchorId, { t: "branch", at: anchorId }),
+  resampleAt: (anchorId) => _pendingChild(set, get, anchorId, { t: "resample", at: anchorId }),
+  editAt: (anchorId, output) =>
+    _pendingChild(set, get, anchorId, { t: "edit", at: anchorId, output }),
+
+  editTargetMessage: (messageId, role, content, toolCallId) => {
+    const current = get().current;
     if (current == null) return;
-    const truncated = _truncateByRole(state, current, anchorId);
-    set({
-      prevCurrent: current,
-      current: PENDING_BRANCH,
-      status: "paused",
-      byRole: { ...state.byRole, [PENDING_BRANCH]: truncated },
-      branches: {
-        ...state.branches,
-        [PENDING_BRANCH]: {
-          parent: current,
-          branched_at: anchorId,
-          status: "paused",
-          seed: state.branches[current]?.seed ?? "",
-        },
-      },
+    _pendingChild(set, get, messageId, {
+      t: "edit_target_message",
+      branch: current,
+      message_id: messageId,
+      role,
+      content,
+      ...(toolCallId != null ? { tool_call_id: toolCallId } : {}),
     });
-    get().send({ t: "branch", at: anchorId });
   },
 
-  resampleAt: (anchorId: string) => {
-    const state = get();
-    const current = state.current;
+  resampleAuditor: (turnIdx, anchorId) => {
+    const current = get().current;
     if (current == null) return;
-    const truncated = _truncateByRole(state, current, anchorId);
-    set({
-      prevCurrent: current,
-      current: PENDING_BRANCH,
-      status: "paused",
-      byRole: { ...state.byRole, [PENDING_BRANCH]: truncated },
-      branches: {
-        ...state.branches,
-        [PENDING_BRANCH]: {
-          parent: current,
-          branched_at: anchorId,
-          status: "paused",
-          seed: state.branches[current]?.seed ?? "",
-        },
-      },
+    _pendingChild(set, get, anchorId, {
+      t: "resample_auditor",
+      branch: current,
+      turn_index: turnIdx,
     });
-    get().send({ t: "resample", at: anchorId });
   },
 
-  editAt: (anchorId: string, output) => {
-    const state = get();
-    const current = state.current;
+  branchAuditor: (turnIdx, anchorId) => {
+    const current = get().current;
     if (current == null) return;
-    const truncated = _truncateByRole(state, current, anchorId);
-    set({
-      prevCurrent: current,
-      current: PENDING_BRANCH,
-      status: "paused",
-      byRole: { ...state.byRole, [PENDING_BRANCH]: truncated },
-      branches: {
-        ...state.branches,
-        [PENDING_BRANCH]: {
-          parent: current,
-          branched_at: anchorId,
-          status: "paused",
-          seed: state.branches[current]?.seed ?? "",
-        },
-      },
+    _pendingChild(set, get, anchorId, {
+      t: "branch_auditor",
+      branch: current,
+      turn_index: turnIdx,
     });
-    get().send({ t: "edit", at: anchorId, output });
+  },
+
+  editAuditorCall: (turnIdx, anchorId, callId, args) => {
+    const current = get().current;
+    if (current == null) return;
+    _pendingChild(set, get, anchorId, {
+      t: "edit_auditor_call",
+      branch: current,
+      turn_index: turnIdx,
+      call_id: callId,
+      args,
+    });
   },
 
   transport: (cmd) => {
@@ -649,6 +677,39 @@ export const useSession = create<SessionState>((set, get) => ({
     get().send({ t: "inject", branch, role, message });
   },
 }));
+
+/**
+ * Shared body for `branchAt` / `resampleAt` / `editAt`: optimistically install
+ * a `PENDING_BRANCH` snapshot truncated at `anchorId`, then send `cmd`. The
+ * backend's `state` broadcast replaces the pending entry with the real branch.
+ */
+function _pendingChild(
+  set: (partial: Partial<SessionState>) => void,
+  get: () => SessionState,
+  anchorId: string,
+  cmd: Up
+): void {
+  const state = get();
+  const current = state.current;
+  if (current == null) return;
+  const truncated = _truncateByRole(state, current, anchorId);
+  set({
+    prevCurrent: current,
+    current: PENDING_BRANCH,
+    status: "paused",
+    byRole: { ...state.byRole, [PENDING_BRANCH]: truncated },
+    branches: {
+      ...state.branches,
+      [PENDING_BRANCH]: {
+        parent: current,
+        branched_at: anchorId,
+        status: "paused",
+        seed: state.branches[current]?.seed ?? "",
+      },
+    },
+  });
+  get().send(cmd);
+}
 
 /**
  * Build a truncated `{auditor, target}` snapshot of the current branch's

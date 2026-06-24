@@ -5,10 +5,28 @@
  * and registers their ids in `span_role`. Every event carries a `span_id`; to
  * find which column it belongs to we walk `span_id → parent → …` until we hit a
  * registered role span (model/tool calls nest under e.g. `send_message`).
+ *
+ * The display tree (`EventNode[]`) is built via inspect's `treeifyEvents`, which
+ * applies presentational unwrapping (tool/subtask span collapse, etc.) — that
+ * tree feeds BranchPoint/digest UI. Role routing uses the *raw* span graph
+ * (`spanParent`), not the display tree, so a model event under a `tool` span
+ * under the `target` span still resolves to `target`.
  */
 import type { Event, ModelEvent } from "@tsmono/inspect-common";
+import {
+  treeifyEvents,
+  type EventNode,
+} from "@tsmono/inspect-components/transcript/transform";
 
 import type { BranchId, Role } from "./wire";
+
+export type { EventNode };
+
+/** inspect's display tree over the current event set. Rebuilt on full
+ *  snapshots; cheap at audit scale (INSPECT-REUSE.md §3). */
+export function buildEventTree(events: Iterable<Event>): EventNode[] {
+  return treeifyEvents([...events], 0);
+}
 
 export function resolveRole(
   spanId: string | null | undefined,
@@ -82,4 +100,114 @@ export function assignByRole(
 
 export function isModelEvent(ev: Event): ev is ModelEvent {
   return ev.event === "model";
+}
+
+/**
+ * Convert a column's event stream into per-turn rows for rendering, reusing
+ * inspect-view's chat resolution.
+ *
+ * Both columns are event-driven: walk `ModelEvent`s in order, each becomes one
+ * `Turn`. The conversation body is reconstructed once from the *last* event's
+ * `input` (which already contains every prior turn's output and tool results)
+ * plus the last event's own output, then fed through inspect's
+ * {@link resolveMessages} so `assistant.tool_calls[i]` get paired with their
+ * following `ChatMessageTool` by `tool_call_id` — the same code path
+ * inspect-view's `ChatView` uses. The resolved stream is chunked back into
+ * turns at each assistant message (the n-th assistant = the n-th ModelEvent's
+ * output, by construction).
+ *
+ * `hasToolEvents` distinguishes the auditor column (real `ToolEvent`s exist —
+ * results render as `ToolPair` cards from those, so `ChatMessageTool` rows are
+ * dropped from the conversation to avoid doubling) from the target column
+ * (calls are simulated; results live only in the conversation, so they stay
+ * and `resolveMessages` pairs them).
+ */
+import {
+  resolveMessages,
+  type ResolvedMessage,
+} from "@tsmono/inspect-components/chat/messages";
+import type {
+  ChatMessage,
+  ChatMessageTool,
+  ToolCall,
+  ToolEvent,
+} from "@tsmono/inspect-common";
+
+export type { ResolvedMessage };
+
+export type Turn = {
+  ev: ModelEvent;
+  /** Messages belonging to this turn — everything after the previous
+   *  assistant, through this one — with tool results already paired onto the
+   *  assistant via inspect's `resolveMessages`. */
+  resolved: ResolvedMessage[];
+  /** Real tool executions this turn produced (auditor column only). */
+  tools: ToolEvent[];
+};
+
+export function eventsToTurns(
+  events: readonly Event[],
+  hasToolEvents: boolean
+): Turn[] {
+  const models: ModelEvent[] = [];
+  const toolsAfter: ToolEvent[][] = [];
+  for (const ev of events) {
+    if (ev.event === "model") {
+      models.push(ev);
+      toolsAfter.push([]);
+    } else if (ev.event === "tool" && toolsAfter.length > 0) {
+      toolsAfter[toolsAfter.length - 1].push(ev);
+    }
+  }
+  if (models.length === 0) return [];
+
+  const last = models[models.length - 1];
+  const out = last.output?.choices?.[0]?.message;
+  let convo: ChatMessage[] = out ? [...last.input, out] : [...last.input];
+  if (hasToolEvents) convo = convo.filter((m) => m.role !== "tool");
+  const resolved = resolveMessages(convo);
+
+  const turns: Turn[] = [];
+  let bucket: ResolvedMessage[] = [];
+  let mi = 0;
+  for (const rm of resolved) {
+    bucket.push(rm);
+    if (rm.message.role === "assistant" && mi < models.length) {
+      turns.push({ ev: models[mi], resolved: bucket, tools: toolsAfter[mi] });
+      bucket = [];
+      mi++;
+    }
+  }
+  // A pending tail event whose output hasn't landed yet still gets a turn so
+  // its input tail (the just-sent user message) and the streaming cursor show.
+  if (mi < models.length) {
+    turns.push({ ev: models[mi], resolved: bucket, tools: toolsAfter[mi] });
+  }
+  return turns;
+}
+
+/** Pair an assistant message's `tool_calls` with their results from the same
+ *  turn's `toolMessages` (inspect-view's `ChatMessageRow` matching rule:
+ *  by `tool_call_id`, falling back to positional). */
+export function pairToolCalls(
+  rm: ResolvedMessage
+): { call: ToolCall; result?: ChatMessageTool }[] {
+  const msg = rm.message;
+  if (msg.role !== "assistant" || !msg.tool_calls?.length) return [];
+  const pool = rm.toolMessages;
+  return msg.tool_calls.map((call, i) => ({
+    call,
+    result: call.id ? pool.find((t) => t.tool_call_id === call.id) : pool[i],
+  }));
+}
+
+/** Greatest index `i` with `turns[i].ev.timestamp <= ts`, or `-1`. */
+export function bisectTurns(turns: readonly Turn[], ts: string): number {
+  let lo = 0, hi = turns.length - 1, ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (turns[mid].ev.timestamp <= ts) { ans = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return ans;
 }

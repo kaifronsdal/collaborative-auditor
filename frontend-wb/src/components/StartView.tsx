@@ -69,8 +69,6 @@ export function StartView(): JSX.Element {
   return (
     <div className="start-view">
       <div className="start-card">
-        <div className="start-card-label">New audit</div>
-
         {/* preset chips above the textarea */}
         <div className="seed-chips">
           {SEED_PRESETS.map((p) => (
@@ -80,7 +78,6 @@ export function StartView(): JSX.Element {
               onClick={() => setSeed(p.seed)}
               title={p.seed}
             >
-              <span className="seed-icon">{p.icon}</span>
               {p.label}
             </button>
           ))}
@@ -107,8 +104,6 @@ export function StartView(): JSX.Element {
             }}
           />
 
-          <span className="controls-sep">·</span>
-
           <ModelPicker
             role="target"
             value={targetModel}
@@ -125,7 +120,7 @@ export function StartView(): JSX.Element {
             disabled={!canStart}
             onClick={handleStart}
           >
-            Start →
+            Start
           </button>
         </div>
       </div>

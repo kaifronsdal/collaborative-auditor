@@ -1,18 +1,43 @@
-import { type JSX, useEffect, useLayoutEffect, useRef } from "react";
+import {
+  type JSX,
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from "react";
 
-import { isModelEvent } from "../lib/events";
-import { useEvents, useQueued } from "../lib/selectors";
+import { bisectTurns, eventsToTurns, isModelEvent } from "../lib/events";
+import { useEvents, useQueued, useStagedForTarget } from "../lib/selectors";
 import type { BranchId, Role } from "../lib/wire";
 import { useSession } from "../store/session";
 import { Bubble } from "./Bubble";
-import { EventRow } from "./EventRow";
+import { ModelEventRow } from "./ModelEventRow";
 import { ShimmerBubble } from "./ShimmerBubble";
 
-type Props = { branch: BranchId; role: Role };
+type Props = {
+  branch: BranchId;
+  role: Role;
+  /** When true, scrolling this column emits `onSync(ts)` (debounced) with the
+   *  timestamp of the row nearest the viewport center. */
+  linked?: boolean;
+  onSync?: (ts: string) => void;
+};
 
-export function Column({ branch, role }: Props): JSX.Element {
+export type ColumnHandle = {
+  scrollToTimestamp: (ts: string) => void;
+  /** Timestamp of the row nearest the viewport center, or null if empty. */
+  centeredTimestamp: () => string | null;
+};
+
+export const Column = forwardRef<ColumnHandle, Props>(function Column(
+  { branch, role, linked, onSync },
+  ref
+): JSX.Element {
   const events = useEvents(branch, role);
   const queued = useQueued(branch, role);
+  const staged = useStagedForTarget(branch);
   const status = useSession((s) => s.status);
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -27,12 +52,15 @@ export function Column({ branch, role }: Props): JSX.Element {
     stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
-  // useLayoutEffect so the scroll lands before paint (no visible jump). Depends
-  // on the rendered content length so it fires on every streaming flush.
+  // Follow the live tail on every render where content could have grown —
+  // including streaming `update`s that mutate the last event in place (so
+  // `events.length` is unchanged). `events` itself is replaced on every
+  // reducer update (assignByRole clones the array), so depending on the
+  // reference catches both new events and partial-output flushes.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [events.length, queued.length]);
+  });
 
   // On first mount, pin to bottom regardless.
   useEffect(() => {
@@ -40,8 +68,58 @@ export function Column({ branch, role }: Props): JSX.Element {
     if (el) el.scrollTop = el.scrollHeight;
   }, []);
 
-  // prevInputLen[i] = input.length of the most recent ModelEvent before i.
-  let prevModelInputLen = 0;
+  // One Turn per ModelEvent. Auditor has real ToolEvents (`hasToolEvents`),
+  // target relies on resolveMessages pairing instead.
+  const turns = useMemo(
+    () => eventsToTurns(events, role === "auditor"),
+    [events, role]
+  );
+  const rowEls = useRef(new Map<string, HTMLElement>());
+
+  const centeredTimestamp = (): string | null => {
+    const sc = scrollRef.current;
+    if (!sc) return null;
+    const mid = sc.getBoundingClientRect().top + sc.clientHeight / 2;
+    let best: { d: number; ts: string } | null = null;
+    for (const turn of turns) {
+      const el = rowEls.current.get(turn.ev.uuid!);
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      const d = Math.abs((r.top + r.bottom) / 2 - mid);
+      if (best == null || d < best.d) best = { d, ts: turn.ev.timestamp };
+    }
+    return best?.ts ?? null;
+  };
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToTimestamp(ts) {
+        let i = bisectTurns(turns, ts);
+        while (i >= 0 && !rowEls.current.has(turns[i].ev.uuid!)) i--;
+        const el = i >= 0 ? rowEls.current.get(turns[i].ev.uuid!) : undefined;
+        if (!el) return;
+        stick.current = false;
+        el.scrollIntoView({ block: "center", behavior: "auto" });
+      },
+      centeredTimestamp,
+    }),
+    [turns]
+  );
+
+  // Linked-scroll: lockstep — emit on every scroll frame (rAF-coalesced so we
+  // don't thrash on high-frequency wheel events, but no perceptible delay).
+  const syncRaf = useRef<number | null>(null);
+  useEffect(() => () => { if (syncRaf.current) cancelAnimationFrame(syncRaf.current); }, []);
+  const onScrollLinked = (): void => {
+    onScroll();
+    if (!linked || !onSync || syncRaf.current != null) return;
+    syncRaf.current = requestAnimationFrame(() => {
+      syncRaf.current = null;
+      const ts = centeredTimestamp();
+      if (ts) onSync(ts);
+    });
+  };
 
   // Show a shimmer at the column tail in two cases:
   //  1. Running but no pending (streaming) event yet — a generate is expected.
@@ -53,17 +131,27 @@ export function Column({ branch, role }: Props): JSX.Element {
     (status === "paused" && events.length === 0);
 
   return (
-    <div className="column" ref={scrollRef} onScroll={onScroll}>
+    <div className="column" ref={scrollRef} onScroll={onScrollLinked}>
       <div className="column-head">{role}</div>
-      {events.map((ev) => {
-        const prevInputLen = prevModelInputLen;
-        if (isModelEvent(ev)) prevModelInputLen = ev.input.length;
-        return <EventRow key={ev.uuid} ev={ev} prevInputLen={prevInputLen} role={role} />;
-      })}
+      {turns.map((turn, i) => (
+        <ModelEventRow
+          key={turn.ev.uuid}
+          turn={turn}
+          turnIndex={i}
+          auditor={role === "auditor"}
+          rowRef={(el) => {
+            if (el) rowEls.current.set(turn.ev.uuid!, el);
+            else rowEls.current.delete(turn.ev.uuid!);
+          }}
+        />
+      ))}
+      {role === "target" && staged.map((m, i) => (
+        <Bubble key={m.id ?? `s${i}`} msg={m} ghost byline={`staged · ${m.role}`} />
+      ))}
       {queued.map((m, i) => (
         <Bubble key={m.id ?? `q${i}`} msg={m} ghost byline="queued" />
       ))}
       {showShimmer && <ShimmerBubble />}
     </div>
   );
-}
+});

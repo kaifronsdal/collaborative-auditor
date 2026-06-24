@@ -17,46 +17,16 @@ Run:  uv run python -m workbench._smoke_branch
 
 from __future__ import annotations
 
-from typing import Any
-
 import anyio
 from inspect_petri._auditor import AuditTape, audit_context
 from inspect_petri.target import Channel, Controller, Step, Tape
 
+from workbench._smoke_util import FakeConn, model_events_for
 from workbench.run import Branch, slice_at
 from workbench.session import Session
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
 SEED = "test seed"
-
-
-class FakeConn:
-    """A WebSocket-shaped sink that records every wire message it receives."""
-
-    def __init__(self) -> None:
-        self.sent: list[dict[str, Any]] = []
-
-    async def send_json(self, data: dict[str, Any]) -> None:
-        self.sent.append(data)
-
-
-def _model_events_for_span(
-    conn: FakeConn, session: Session, span_id: str
-) -> list[dict[str, Any]]:
-    """Wire ModelEvents routed (by span ancestry) to `span_id`, in send order."""
-    out: list[dict[str, Any]] = []
-    for m in conn.sent:
-        if m["t"] not in ("event", "update"):
-            continue
-        ev = m["event"]
-        if ev["event"] != "model":
-            continue
-        cur: str | None = ev["span_id"]
-        while cur is not None and cur != span_id:
-            cur = session.span_parent.get(cur)
-        if cur == span_id:
-            out.append(ev)
-    return out
 
 
 def _test_mid_rollback_slice() -> None:
@@ -130,7 +100,9 @@ async def _amain() -> None:
     prefix = slice_at(log, anchor)
     expected_value_steps = sum(1 for s in prefix if s.value is not None)
     expected_auditor = sum(
-        1 for s in prefix if s.source == "auditor:Model.generate" and s.value is not None
+        1
+        for s in prefix
+        if s.source == "auditor:Model.generate" and s.value is not None
     )
     expected_target = sum(
         1 for s in prefix if s.source == "Model.generate" and s.value is not None
@@ -149,13 +121,15 @@ async def _amain() -> None:
     conn2 = FakeConn()
     session.connections.append(conn2)
 
+    # max_turns covers the replayed prefix's auditor steps plus headroom for
+    # ≥1 live turn — without eager_resume the prefix can carry up to 3.
     b2 = Branch(
         session,
         "b2",
         seed=SEED,
         auditor_model=MODEL,
         target_model=MODEL,
-        max_turns=3,
+        max_turns=expected_auditor + 2,
         resume=prefix,
         parent_id="b1",
         branched_at=anchor,
@@ -175,8 +149,8 @@ async def _amain() -> None:
 
     # (b) prefix synthesis: settled events (input==[], input_refs==None) on b2's
     # auditor and target spans appear before the first live turn.
-    auditor_evts = _model_events_for_span(conn2, session, b2.auditor_span_id)
-    target_evts = _model_events_for_span(conn2, session, b2.target_span_id)
+    auditor_evts = model_events_for(conn2, session, b2.auditor_span_id)
+    target_evts = model_events_for(conn2, session, b2.target_span_id)
 
     synth_auditor = [
         ev for ev in auditor_evts if ev["input"] == [] and ev["input_refs"] is None

@@ -25,13 +25,14 @@ from typing import TYPE_CHECKING, Any, Protocol
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from fastapi import WebSocketDisconnect
-from inspect_ai.event import Event, ModelEvent, SpanBeginEvent
+from inspect_ai.event import BranchEvent, Event, ModelEvent, SpanBeginEvent
 from inspect_ai.event._pool import (  # noqa: PLC2701
     _msg_hash,
     condense_model_event_inputs_with_lookup,
 )
 from inspect_ai.log._transcript import Transcript, init_transcript
 from inspect_ai.model import ChatMessage
+from inspect_petri._auditor._target_timeline import build_target_timeline  # noqa: PLC2701
 
 from workbench.view import Role
 
@@ -49,10 +50,11 @@ class Connection(Protocol):
 
 class Session:
     def __init__(self) -> None:
-        # one transcript per session, set BEFORE any task group (F2) so sibling
-        # auditor/target tasks inherit it.
+        # One transcript per session. The contextvar is NOT set here — __init__
+        # runs in whichever WS task created the session, and a `start` from a
+        # later connection spawns `Branch.run()` in a different task context
+        # that wouldn't inherit it. `Branch.run()` sets it explicitly instead.
         self.transcript = Transcript()
-        init_transcript(self.transcript)
         self.transcript._subscribe(self._on_event)  # noqa: SLF001
 
         self.branches: dict[str, Branch] = {}
@@ -74,12 +76,14 @@ class Session:
         self.branch_tasks: list[asyncio.Task[None]] = []  # detached branch.run() tasks
         self._dispatch_lock = asyncio.Lock()
 
-        # sync handler → drain task hand-off. Unbounded buffer: the handler must
-        # never block (it runs inline in the generating task).
+        # sync handler → drain task hand-off. Bounded buffer: the handler runs
+        # inline in the generating task and must not block, so on overflow we
+        # log + drop rather than back-pressure (which would stall generate) or
+        # grow unbounded (which would OOM under a stalled client).
         self._send: MemoryObjectSendStream[dict[str, Any]]
         self._recv: MemoryObjectReceiveStream[dict[str, Any]]
         self._send, self._recv = anyio.create_memory_object_stream[dict[str, Any]](
-            max_buffer_size=float("inf")
+            max_buffer_size=2048
         )
 
         # `drain` is owned by the session, not by any one branch (STREAMING.md
@@ -114,7 +118,19 @@ class Session:
             await self._send.aclose()
 
     async def close(self) -> None:
-        """Shut down the drain task: close the send stream so `drain` exits."""
+        """Cancel running branches, then shut down the drain task.
+
+        Branch tasks are cancelled first so they don't try to enqueue onto a
+        closed `_send` stream (which would raise `ClosedResourceError`).
+        """
+        for t in self.branch_tasks:
+            if not t.done():
+                t.cancel()
+        for t in self.branch_tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         self._closed.set()
         if self._run_task is not None:
             await self._run_task
@@ -150,6 +166,7 @@ class Session:
         )
 
     def _on_event(self, ev: Event) -> None:
+        assert ev.uuid is not None, "event missing uuid at ingress"
         is_update = ev.uuid in self.events
 
         if isinstance(ev, SpanBeginEvent):
@@ -161,13 +178,63 @@ class Session:
 
         self.events[ev.uuid] = dumped
         self.version += 1
-        self._send.send_nowait(
+        self._enqueue(
             {
                 "t": "update" if is_update else "event",
                 "v": self.version,
                 "event": dumped,
             }
         )
+
+        # Rebuild + ship the target timeline when its structure or content
+        # changes: on BranchEvent (new trajectory) and on each new target
+        # ModelEvent (new turn — not streaming updates). `_on_event` runs in
+        # the branch task's context, so `build_target_timeline` can read
+        # `transcript().events`.
+        if not is_update and isinstance(ev, (BranchEvent, ModelEvent)):
+            resolved = self._resolve(ev.span_id)
+            if (
+                resolved is not None
+                and resolved[1] == "target"
+                and (branch := self.branches.get(resolved[0])) is not None
+            ):
+                self._enqueue(
+                    {
+                        "t": "timeline",
+                        "v": self.version,
+                        "branch": branch.branch_id,
+                        "role": "target",
+                        "timeline": self._target_timeline(branch),
+                    }
+                )
+
+    def _resolve(self, span_id: str | None) -> tuple[str, Role] | None:
+        """Walk `span_id → parent → …` to the nearest registered role span."""
+        cur = span_id
+        while cur is not None:
+            hit = self.span_role.get(cur)
+            if hit is not None:
+                return hit
+            cur = self.span_parent.get(cur)
+        return None
+
+    def _target_timeline(self, branch: "Branch") -> dict[str, Any]:
+        return build_target_timeline(
+            branch.history, branch.target_span_id, f"{branch.branch_id}:target"
+        ).model_dump(mode="json")
+
+    def _enqueue(self, msg: dict[str, Any]) -> None:
+        try:
+            self._send.send_nowait(msg)
+        except anyio.WouldBlock:
+            # bounded buffer full — a client is stalled. Drop rather than block
+            # the generating task or OOM. The next `state` snapshot resyncs.
+            logger.warning(
+                "wire buffer full; dropping %r (v=%d)", msg["t"], msg.get("v")
+            )
+        except anyio.ClosedResourceError:
+            # session.close() raced a late event from a branch's finally block.
+            pass
 
     # -- wire emission (enqueue only; drain() owns the socket) ----------------
 
@@ -177,7 +244,7 @@ class Session:
             return
         entries = [m.model_dump(mode="json") for m in self.pool[self.pool_sent :]]
         self.version += 1
-        self._send.send_nowait(
+        self._enqueue(
             {
                 "t": "pool",
                 "v": self.version,
@@ -194,7 +261,7 @@ class Session:
 
     async def broadcast(self, msg: dict[str, Any]) -> None:
         dead: list[Connection] = []
-        for conn in self.connections:
+        for conn in list(self.connections):
             try:
                 await conn.send_json(msg)
             except (WebSocketDisconnect, ConnectionError, OSError, RuntimeError) as exc:
@@ -209,6 +276,12 @@ class Session:
 
     def view(self) -> dict[str, Any]:
         """The full session snapshot (STREAMING.md §C `state` message body)."""
+        # `build_target_timeline` reads `transcript().events`; set the var in
+        # this task's context so it resolves to the session's transcript.
+        init_transcript(self.transcript)
+        timelines = {
+            bid: {"target": self._target_timeline(b)} for bid, b in self.branches.items()
+        }
         queued = {
             bid: {
                 role: [m.model_dump(mode="json") for m in msgs]
@@ -221,7 +294,7 @@ class Session:
                 "parent": b.meta.parent,
                 "branched_at": b.meta.branched_at,
                 "status": b.status,
-                "seed": b.seed[:80],
+                "seed": b.meta.seed[:80],
             }
             for bid, b in self.branches.items()
         }
@@ -233,6 +306,7 @@ class Session:
             "current": self.current,
             "status": self.current_status(),
             "branches": branches_meta,
+            "timelines": timelines,
         }
 
     def current_status(self) -> str | None:
