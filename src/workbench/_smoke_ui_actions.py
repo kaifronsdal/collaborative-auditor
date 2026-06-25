@@ -226,7 +226,7 @@ async def _amain() -> None:
             )
             await expect(lead).to_have_count(1)
             await lead.hover()
-            await lead.locator(".msg-actions button", has_text="edit").click()
+            await lead.locator('.msg-actions button[title*="edit" i]').click()
             ta = tgt.locator(".edit-textarea")
             await expect(ta).to_be_visible()
             await ta.fill("EDITED-one")
@@ -267,7 +267,7 @@ async def _amain() -> None:
                 row1.locator('.tool-pair[data-fn="send_message"] .tp-sig')
             ).to_contain_text(orig_probe)
             await row1.hover()
-            await row1.locator(".actions button", has_text="resample").click()
+            await row1.locator('.actions button[title*="resample" i]').click()
 
             fork2 = await _wait_fork(session, prev=2)
             await _play_to_end(session, fork2)

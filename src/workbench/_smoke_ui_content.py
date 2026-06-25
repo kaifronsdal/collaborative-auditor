@@ -179,7 +179,7 @@ async def _amain() -> None:
 
             # ── raw modal opens (not inline) ──
             await aud.locator(".model-event-row").first.hover()
-            await aud.locator(".actions button", has_text="raw").first.click()
+            await aud.locator('.actions button[title*="raw" i]').first.click()
             await expect(page.locator(".raw-modal")).to_be_visible()
             await page.keyboard.press("Escape")
             await expect(page.locator(".raw-modal")).to_have_count(0)

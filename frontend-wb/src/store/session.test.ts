@@ -405,10 +405,14 @@ describe("rollback fixture (smoke_rollback) — server timeline → swimlanes", 
     expect(lineage.length).toBeGreaterThanOrEqual(ownContent);
   });
 
-  it("emits ≥2 {t:'timeline'} ops (on BranchEvent + post-rollback target turns)", () => {
-    const tlOps = rbMessages.filter((m) => m.t === "timeline");
+  it("emits ≥2 target {t:'timeline'} ops (on BranchEvent + post-rollback target turns)", () => {
+    // Both roles now ship a timeline (auditor swimlane added in the splice
+    // refactor); the rollback-creates-a-branch assertion is target-specific.
+    const tlOps = rbMessages.filter(
+      (m): m is Extract<typeof m, { t: "timeline" }> =>
+        m.t === "timeline" && m.role === "target"
+    );
     expect(tlOps.length).toBeGreaterThanOrEqual(2);
-    // The last one should reflect the final tree (≥1 branch with content).
     const last = tlOps[tlOps.length - 1];
     expect(last.timeline.root.branches?.length ?? 0).toBeGreaterThanOrEqual(1);
   });

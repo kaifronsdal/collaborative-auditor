@@ -115,16 +115,16 @@ async def _amain() -> None:
             await _shot(page, "05b-auditor-tools-expanded", clip=await aud.bounding_box())
 
             # ── 06 Target column (swimlane) ──
-            tgt = page.locator(".swimlane-column")
+            tgt = page.locator(".swimlane-column").last
             box = await tgt.bounding_box()
             if box:
                 await _shot(page, "06-target-swimlane", clip=box)
             # switch to branch 1 (click first gantt row's label cell)
-            await page.locator('.lane-gantt-host [role="row"]').first.locator("> div").first.click()
+            await tgt.locator('.lane-gantt-host [role="row"]').first.locator("> div").first.click()
             await _shot(page, "06b-target-branch1", clip=await tgt.bounding_box())
 
             # ── 07 Gantt close-up ──
-            gantt = page.locator(".lane-gantt-host")
+            gantt = tgt.locator(".lane-gantt-host")
             box = await gantt.bounding_box()
             if box:
                 pad = 8
@@ -135,7 +135,7 @@ async def _amain() -> None:
                 )
 
             # ── 08 Composer (3 states) ──
-            comp = page.locator(".composer-zone")
+            comp = page.locator(".composer")
             box = await comp.bounding_box()
             if box:
                 await _shot(page, "08-composer-empty", clip=box)

@@ -23,6 +23,8 @@ type Props = {
   siblingPos?: { idx: number; total: number };
   /** Step to an adjacent sibling at this fork point. */
   onSwitchSibling?: (direction: 1 | -1) => void;
+  /** Briefly pulse the row's background — set after a sync-pill jump lands. */
+  highlighted?: boolean;
   rowRef?: (el: HTMLDivElement | null) => void;
 };
 
@@ -108,6 +110,7 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
   if (editing) {
     return (
       <div className="bubble-wrap">
+        <div className="bubble-by">{role}</div>
         <div className={`bubble ${role} editing`}>
           <textarea
             className="edit-textarea"
@@ -121,7 +124,6 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
             <button className="edit-cancel" onClick={() => setEditing(false)}>cancel</button>
           </div>
         </div>
-        <div className="bubble-by">{role}</div>
       </div>
     );
   }
@@ -193,9 +195,11 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
       <Bubble msg={msg} byline={role} />
       {editable && (
         <div className="msg-actions">
-          <button onClick={open} title="edit this message and replay">edit</button>
+          <button onClick={open} title="edit this message and replay">
+            <i className="bi bi-pencil" />
+          </button>
           <button onClick={() => openRewrite()} title="rewrite with auditor model">
-            <i className="bi bi-stars" /> rewrite
+            <i className="bi bi-stars" />
           </button>
         </div>
       )}
@@ -217,7 +221,7 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
 }
 
 export function ModelEventRow({
-  turn, turnIndex, auditor, siblingPos, onSwitchSibling, rowRef,
+  turn, turnIndex, auditor, siblingPos, onSwitchSibling, highlighted, rowRef,
 }: Props): JSX.Element {
   const { ev, resolved, tools } = turn;
   const branchAt = useSession((s) => s.branchAt);
@@ -274,7 +278,7 @@ export function ModelEventRow({
       : content.some((b) => "text" in b ? b.text.trim() : true));
 
   return (
-    <div className="model-event-row" ref={rowRef}>
+    <div className={`model-event-row${highlighted ? " row-highlight" : ""}`} ref={rowRef}>
       {lead.map((rm, i) =>
         auditor ? (
           <Bubble key={rm.message.id ?? i} msg={rm.message} byline={rm.message.role} />
@@ -360,45 +364,46 @@ export function ModelEventRow({
         </div>
       )}
 
-      {siblingPos && onSwitchSibling && (
-        <BranchNav
-          idx={siblingPos.idx}
-          total={siblingPos.total}
-          onPrev={() => onSwitchSibling(-1)}
-          onNext={() => onSwitchSibling(1)}
-        />
-      )}
-
-      {/* Hover-only action row.
-          Target assistant: branch · resample · raw (edit removed — operators
-          may resample but not put words in the target's mouth).
-          Auditor assistant: branch · resample · raw · copy. */}
+      {/* Hover-reveal icon row (claude.ai style). When this turn is a fork
+          point the BranchNav chip sits inline and forces the row visible
+          (`.actions:has(.branch-nav)`) so fork points stay scannable.
+          Target assistant: copy · resample · branch · raw (edit deliberately
+          absent — operators may resample but not put words in the target's
+          mouth). Auditor assistant: same set. */}
       <div className="actions">
+        {siblingPos && onSwitchSibling && (
+          <BranchNav
+            idx={siblingPos.idx}
+            total={siblingPos.total}
+            onPrev={() => onSwitchSibling(-1)}
+            onNext={() => onSwitchSibling(1)}
+          />
+        )}
         <button
-          onClick={handleBranch}
-          disabled={disabled}
-          title={auditor ? "fork auditor at this turn" : "branch at this turn"}
+          onClick={() => navigator.clipboard.writeText(
+            typeof content === "string" ? content : JSON.stringify(content)
+          )}
+          title="copy text"
         >
-          branch
+          <i className="bi bi-clipboard" />
         </button>
         <button
           onClick={handleResample}
           disabled={disabled}
-          title="regenerate this response"
+          title="resample — regenerate this response"
         >
-          resample
+          <i className="bi bi-arrow-clockwise" />
         </button>
-        <button onClick={() => setShowRaw((v) => !v)} title="toggle raw JSON">raw</button>
-        {auditor && (
-          <button
-            onClick={() => navigator.clipboard.writeText(
-              typeof content === "string" ? content : JSON.stringify(content)
-            )}
-            title="copy text"
-          >
-            copy
-          </button>
-        )}
+        <button
+          onClick={handleBranch}
+          disabled={disabled}
+          title={auditor ? "branch — fork auditor at this turn" : "branch at this turn"}
+        >
+          <i className="bi bi-signpost-split" />
+        </button>
+        <button onClick={() => setShowRaw((v) => !v)} title="raw JSON">
+          <i className="bi bi-braces" />
+        </button>
       </div>
 
       {showRaw && (

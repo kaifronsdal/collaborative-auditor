@@ -6,6 +6,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 
 import { bisectTurns, eventsToTurns, isModelEvent } from "../lib/events";
@@ -102,6 +103,11 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
   );
   const rowEls = useRef(new Map<string, HTMLElement>());
 
+  // Transient highlight: pulse the row a sync-jump landed on, then clear.
+  const [highlightedUuid, setHighlightedUuid] = useState<string | null>(null);
+  const hlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (hlTimer.current) clearTimeout(hlTimer.current); }, []);
+
   const centeredTimestamp = (): string | null => {
     const sc = scrollRef.current;
     if (!sc) return null;
@@ -127,6 +133,9 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
         if (!el) return;
         stick.current = false;
         el.scrollIntoView({ block: "center", behavior: "auto" });
+        setHighlightedUuid(turns[i].ev.uuid!);
+        if (hlTimer.current) clearTimeout(hlTimer.current);
+        hlTimer.current = setTimeout(() => setHighlightedUuid(null), 1500);
       },
       centeredTimestamp,
     }),
@@ -165,6 +174,7 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
           turn={turn}
           turnIndex={i}
           auditor={role === "auditor"}
+          highlighted={highlightedUuid === turn.ev.uuid}
           rowRef={(el) => {
             if (el) rowEls.current.set(turn.ev.uuid!, el);
             else rowEls.current.delete(turn.ev.uuid!);

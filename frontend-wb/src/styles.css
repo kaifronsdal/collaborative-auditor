@@ -409,12 +409,12 @@ body {
   color: var(--ink-faint); padding: 0 0 10px;
   /* fade content out behind the sticky header as it scrolls under */
   background: linear-gradient(var(--bg-100) 70%, transparent);
-  margin: 0 -22px; padding-left: 22px; padding-right: 22px; padding-top: 14px;
+  margin: 0 -22px var(--sp-1); padding-left: 22px; padding-right: 22px; padding-top: 14px;
 }
 
 /* user / system input-tail = soft right-set bubble (claude.ai user style,
    mockups-v4). assistant output = plain left-set text, no chrome. */
-.bubble-wrap { display: flex; flex-direction: column; margin: 16px 0 4px; }
+.bubble-wrap { display: flex; flex-direction: column; margin: var(--sp-3) 0 4px; }
 .bubble {
   max-width: 82%; padding: 10px 16px; border-radius: 16px;
   white-space: pre-wrap; word-break: break-word; line-height: 1.55;
@@ -434,11 +434,12 @@ body {
   background: transparent;
 }
 
-/* byline: uppercase, letter-spaced, faint — sits under its bubble, aligned to
-   the bubble's side (right for user/ghost, left for system/assistant). */
+/* byline: uppercase, letter-spaced, faint — sits *above* its bubble (matches
+   the assistant `.turn-head` so all role labels share one position), aligned
+   to the bubble's side (right for user/ghost, left for system/assistant). */
 .bubble-by {
   font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
-  color: var(--ink-faint); margin-top: 5px;
+  color: var(--ink-faint); margin-bottom: 5px;
 }
 .bubble-wrap:has(.user) > .bubble-by,
 .bubble-wrap:has(.ghost) > .bubble-by { align-self: flex-end; }
@@ -468,45 +469,51 @@ body {
   100% { background-position: -200% 0; }
 }
 
-/* model-event-row — explicit gap so spacing survives when the bubble is omitted. */
-.model-event-row + .model-event-row { margin-top: 18px; }
-.turn-head { margin: var(--sp-3) 0 var(--sp-1); }
+/* model-event-row — explicit gap so spacing survives when the bubble is omitted.
+   Kept tight: auditor turns are mostly tool-only, so turn-head + tool-pairs +
+   row margins stack — sp-2/sp-1 keeps the column scannable. */
+.model-event-row + .model-event-row { margin-top: var(--sp-2); }
+.turn-head { margin: var(--sp-1) 0 var(--sp-1); }
 .model-event-row:first-child .turn-head { margin-top: 0; }
 
-/* Hover-only action row, indented to the tool-rail (14px) so it reads with
-   its own turn rather than the next one. */
+/* Hover-reveal icon row under each assistant turn (claude.ai style): bare
+   icons, no separators or underline — just `gap: 12px`, faint → mid on hover.
+   Stays visible when it contains a `.branch-nav` chip so fork points are
+   scannable without hover. */
 .actions {
   margin: var(--sp-1) 0 0 0;
-  display: flex; align-items: center; gap: 8px;
-  font-family: var(--mono); font-size: var(--fs-xs); color: var(--ink-faint);
+  display: flex; align-items: center; gap: 12px;
   opacity: 0; transition: opacity .12s;
 }
-.model-event-row:hover .actions { opacity: 1; }
-.actions button {
-  border: none; background: none; cursor: pointer;
-  color: inherit; font: inherit; padding: 0;
+.model-event-row:hover .actions,
+.actions:has(.branch-nav) { opacity: 1; }
+/* Direct-child only so the nested `.branch-nav` chevron buttons keep their
+   own (smaller, pill-hover) styling. */
+.actions > button {
+  border: none; background: none; cursor: pointer; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--ink-faint); font-size: var(--fs-md); line-height: 1;
 }
-.actions button:not(:first-child)::before {
-  content: "·"; color: var(--ink-faint); margin-right: 8px; cursor: default;
-}
-.actions button:hover:not(:disabled) { text-decoration: underline; }
-.actions button:disabled { cursor: not-allowed; opacity: 0.35; }
+.actions > button:hover:not(:disabled) { color: var(--ink-mid); }
+.actions > button:disabled { cursor: not-allowed; opacity: 0.35; }
+.actions .branch-nav { margin: 0; }
 
-/* Per-message hover actions on non-assistant lead bubbles (target column). */
+/* Per-message hover icons on non-assistant lead bubbles (target column) —
+   same icon treatment as `.actions`. */
 .lead-wrap { position: relative; }
 .msg-actions {
-  display: flex; gap: 8px; margin: 2px 0 0;
-  font-family: var(--mono); font-size: var(--fs-xs); color: var(--ink-faint);
+  display: flex; align-items: center; gap: 12px; margin: var(--sp-1) 0 0;
   opacity: 0; transition: opacity .12s;
 }
 .lead-wrap:has(.user) .msg-actions,
 .lead-wrap:has(.ghost) .msg-actions { justify-content: flex-end; }
 .lead-wrap:hover .msg-actions { opacity: 1; }
 .msg-actions button {
-  border: none; background: none; cursor: pointer;
-  color: inherit; font: inherit; padding: 0;
+  border: none; background: none; cursor: pointer; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--ink-faint); font-size: var(--fs-md); line-height: 1;
 }
-.msg-actions button:hover { text-decoration: underline; }
+.msg-actions button:hover { color: var(--ink-mid); }
 
 /* Inline edit textarea inside a bubble (.editing). */
 .bubble.editing {
@@ -700,7 +707,7 @@ body {
   animation: pulse 1.2s ease-in-out infinite;
 }
 
-/* ---------- runline — single header bar (status-dot · seed | step end) ---------- */
+/* ---------- runline — single header bar (status-dot · seed) ---------- */
 .runline {
   flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-2);
   padding: 8px 22px; border-bottom: 1px solid var(--border);
@@ -718,31 +725,13 @@ body {
   font-size: var(--fs-sm); color: var(--ink-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-.rl-controls { margin-left: auto; display: flex; align-items: center; gap: var(--sp-2); }
-.rl-link {
-  height: 20px; line-height: 1; padding: 0 var(--sp-2);
-  border: 1px solid var(--border); border-radius: var(--r-pill);
-  background: none; cursor: pointer;
-  font: var(--fs-xs) var(--sans); color: var(--ink-faint);
-}
-.rl-link:hover { color: var(--ink-mid); }
-.rl-link.on {
-  background: var(--accent-dim); color: var(--accent-text);
-  border-color: var(--accent);
-}
-.col-wrap { min-width: 0; min-height: 0; display: flex; }
-.col-wrap > .column { flex: 1; }
-.rl-step, .rl-end {
-  display: inline-flex; align-items: center; gap: var(--sp-1);
-  height: 20px; line-height: 1;
-  border: none; background: none; cursor: pointer;
-  font: var(--fs-sm) var(--sans); color: var(--ink-faint);
-  padding: 0;
-}
-.rl-step:hover:not(:disabled) { color: var(--ink-mid); }
-.rl-end:hover:not(:disabled) { color: var(--danger); }
-.rl-step:disabled, .rl-end:disabled { opacity: .45; cursor: default; }
-.rl-step i, .rl-end i { line-height: 1; }
+
+/* `.col-wrap` is a flex column: the scrollable `.column` fills it; the auditor
+ * side additionally docks the composer below (non-scrolling). The target side
+ * has no second child, so its `.column` runs to the bottom of `.desk-body`. */
+.col-wrap { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.col-wrap > .column { flex: 1; min-height: 0; }
+.col-wrap > .composer { flex-shrink: 0; margin: var(--sp-1) 22px var(--sp-2); }
 
 @keyframes pulse { 50% { opacity: .35; } }
 
@@ -765,21 +754,11 @@ body {
   border-radius: 999px; background: var(--bg-100);
 }
 
-/* ---------- composer zone ---------- */
+/* ---------- composer ---------- */
 .desk-body {
   display: flex; flex-direction: column;
   flex: 1; min-height: 0;
 }
-/* Composer docks under the auditor column only — same grid template as
- * `.columns` so it tracks the drag split (vars are set on `.desk-body`). */
-.composer-zone {
-  flex-shrink: 0;
-  display: grid;
-  grid-template-columns: var(--auditor-width, 1fr) 4px var(--target-width, 1fr);
-  padding: var(--sp-1) 0 var(--sp-2);
-  border-top: 1px solid var(--border);
-}
-.composer-zone > .composer { grid-column: 1; margin: 0 var(--sp-2) 0 22px; }
 .composer-hint { font-size: var(--fs-xs); color: var(--ink-faint); }
 .composer {
   background: var(--bg-000); border: 1px solid var(--border);
@@ -825,12 +804,40 @@ body {
 .composer-lower .primary:disabled { opacity: .4; cursor: default; animation: none; }
 .composer-lower .primary:not(:disabled):hover { filter: brightness(1.08); }
 
-/* drag handle is the column divider — no separate border-right on .column. */
+/* Column divider: full-height drag handle + an Overleaf-style sync pill
+ * vertically centered on top of it. The pill overflows the 4px grid track
+ * (translate(-50%, -50%)), so it visually straddles both columns. */
+.col-divider { position: relative; min-width: 0; }
 .col-drag-handle {
-  width: 4px; flex-shrink: 0; cursor: col-resize;
+  position: absolute; inset: 0;
+  cursor: col-resize;
   background: var(--border); transition: background 120ms;
 }
 .col-drag-handle:hover { background: var(--accent); }
+.sync-pill {
+  position: absolute; left: 50%; top: 50%;
+  transform: translate(-50%, -50%); z-index: 3;
+  display: flex; align-items: center;
+  padding: 2px; gap: 1px;
+  background: hsl(0 0% 18%); border-radius: var(--r-pill);
+  box-shadow: 0 2px 8px hsl(0 0% 0% / .2);
+}
+.sync-pill button {
+  width: 24px; height: 22px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: none; border-radius: var(--r-pill);
+  background: none; cursor: pointer;
+  color: hsl(0 0% 75%); font-size: 13px; line-height: 1;
+}
+.sync-pill button:hover { background: hsl(0 0% 28%); color: #fff; }
+.sync-pill button.on { background: var(--accent); color: #fff; }
+
+/* Row pulse after a sync-pill jump lands. */
+.row-highlight { animation: pulse-highlight 1.5s ease-out; }
+@keyframes pulse-highlight {
+  0%   { background: var(--accent-dim); }
+  100% { background: transparent; }
+}
 
 /* ---------- RawModal — fixed overlay JSON inspector ---------- */
 .raw-modal-overlay {
@@ -897,7 +904,7 @@ body {
 .md th, .md td { border: 1px solid var(--border); padding: 3px var(--sp-2); text-align: left; }
 .md th { background: var(--bg-100); font-weight: 600; }
 
-/* ---- CollapsibleContent — inspect-view-style [more]/[less] clamp ---- */
+/* ---- CollapsibleContent — inspect-view-style more/less clamp ---- */
 .cc-wrap { position: relative; }
 /* Mask the clipped region itself (not an overlay) so the fade works on any
    bubble background. The inner measuring div is unclamped, so ResizeObserver
@@ -907,18 +914,18 @@ body {
   mask-image: linear-gradient(to bottom, black calc(100% - 48px), transparent);
 }
 /* Sticky-bottom toggle: rests after the content in normal flow, but sticks to
-   the column viewport's bottom edge while the panel extends past it — so
-   [more] is reachable without scrolling through the whole clip, and [less]
-   stays in view while reading expanded content. */
+   the column viewport's bottom edge while the panel extends past it — so the
+   toggle is reachable without scrolling through the whole clip, and stays in
+   view while reading expanded content. Borderless/faint so it doesn't compete
+   with the content it gates. */
 .cc-toggle {
   position: sticky; bottom: var(--sp-1);
   display: block; width: fit-content;
-  margin: var(--sp-1) 0 0 auto; padding: 1px var(--sp-2);
-  border: 1px solid var(--border); border-radius: var(--r-md);
-  background: var(--bg-000); color: var(--ink-dim);
-  font: var(--fs-sm) var(--mono); cursor: pointer;
+  margin: var(--sp-1) 0 0 auto; padding: 1px var(--sp-1);
+  border: none; background: transparent; color: var(--ink-faint);
+  font: var(--fs-xs) var(--sans); cursor: pointer;
 }
-.cc-toggle:hover { color: var(--ink); background: var(--bg-100); }
+.cc-toggle:hover { color: var(--ink-mid); text-decoration: underline; }
 
 /* ── inspect-view CSS-var bridge ────────────────────────────────────────────
  * @tsmono/inspect-components (TimelineSwimLanes, ToolCallView, Modal, …) read
@@ -967,7 +974,10 @@ body {
   position: sticky; top: 36px; z-index: 2;
   /* Full-bleed to the column edges (match .column-head's -22px), then pad
      back so the TimelineSwimLanes content stays where it was. */
-  margin: 0 -22px var(--sp-2); padding: 0 12px;
+  margin: 0 -22px var(--sp-2); padding: var(--sp-1) 12px 0;
   background: var(--bg-000);
   border-bottom: 1px solid var(--border);
 }
+/* The TimelineSwimLanes collapse tab is redundant here (gantt is small and
+   always-on); it also overhangs the bottom border and looks unanchored. */
+.lane-gantt-host [class*="collapseToggle"] { display: none; }

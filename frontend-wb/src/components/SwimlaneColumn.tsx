@@ -115,6 +115,11 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   );
   const rowEls = useRef(new Map<string, HTMLElement>());
 
+  // Transient highlight: pulse the row a sync-jump landed on, then clear.
+  const [highlightedUuid, setHighlightedUuid] = useState<string | null>(null);
+  const hlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (hlTimer.current) clearTimeout(hlTimer.current); }, []);
+
   // Fork points keyed by assistant message id → sibling row keys + our idx.
   const forks = useMemo(
     () => computeForks(rows, selected?.key ?? null),
@@ -169,6 +174,9 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
         if (!el) return;
         stick.current = false;
         el.scrollIntoView({ block: "center", behavior: "auto" });
+        setHighlightedUuid(laneTurns[i].ev.uuid!);
+        if (hlTimer.current) clearTimeout(hlTimer.current);
+        hlTimer.current = setTimeout(() => setHighlightedUuid(null), 1500);
       },
       centeredTimestamp,
     }),
@@ -239,6 +247,7 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
             turn={turn}
             turnIndex={i}
             auditor={isAuditor}
+            highlighted={highlightedUuid === turn.ev.uuid}
             siblingPos={fork && { idx: fork.idx, total: fork.siblings.length }}
             onSwitchSibling={
               fork && anchor != null ? (d) => switchSibling(anchor, d) : undefined

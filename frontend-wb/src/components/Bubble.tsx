@@ -59,8 +59,8 @@ export function Bubble({ msg, role, ghost, byline, children }: Props): JSX.Eleme
   );
   return (
     <div className="bubble-wrap">
-      <div className={cls}>{inner}</div>
       {byline && <div className="bubble-by">{byline}</div>}
+      <div className={cls}>{inner}</div>
     </div>
   );
 }

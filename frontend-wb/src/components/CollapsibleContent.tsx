@@ -59,7 +59,7 @@ export function CollapsibleContent({ children, maxHeight = 280 }: Props): JSX.El
       </div>
       {overflows && (
         <button type="button" className="cc-toggle" onClick={toggle}>
-          [{expanded ? "less" : "more"}]
+          {expanded ? "less" : "more"}
         </button>
       )}
     </div>

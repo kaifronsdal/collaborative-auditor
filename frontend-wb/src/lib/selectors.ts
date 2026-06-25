@@ -9,6 +9,7 @@
 import { useMemo } from "react";
 import type { ChatMessage, Event, ModelEvent } from "@tsmono/inspect-common";
 import {
+  computeBranchMappings,
   computeFlatSwimlaneRows,
   computeRowLayouts,
   computeTimeMapping,
@@ -118,7 +119,10 @@ export function useSwimlanes(branch: BranchId, role: Role): Swimlanes {
       showBranches: true,
     });
     const mapping = computeTimeMapping(timeline.root);
-    const layouts = computeRowLayouts(rows, mapping, "direct", ["branch", "error"]);
+    // Fork-relative: each branch row's bar starts at its parent's fork point
+    // and is sized by its own duration, not absolute wall-clock.
+    const branchMappings = computeBranchMappings(rows, mapping);
+    const layouts = computeRowLayouts(rows, mapping, "direct", ["branch", "error"], branchMappings);
     return {
       timeline,
       rows,

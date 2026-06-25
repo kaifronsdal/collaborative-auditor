@@ -7,6 +7,14 @@ it, pushes full state, then dispatches commands: `start` (create + run a Branch)
 
 from __future__ import annotations
 
+import os
+
+# Lower inspect's partial-output flush throttle for smoother live streaming.
+# Must be set before any inspect_ai import — the constant is read at module
+# load. The workbench has at most a handful of in-flight model calls, so the
+# extra event churn vs. inspect's batch-eval default (0.1s) is negligible.
+os.environ.setdefault("INSPECT_STREAM_FLUSH_INTERVAL", "0.025")
+
 import asyncio
 import logging
 

@@ -5,7 +5,7 @@ import { type JSX, useCallback, useEffect, useRef, useState } from "react";
 import { useSession } from "../store/session";
 import { Column, type ColumnHandle } from "./Column";
 import { SwimlaneColumn } from "./SwimlaneColumn";
-import { IconClose, IconPause, IconPlay, IconSend, IconStep, IconStop } from "./icons";
+import { IconClose, IconPause, IconPlay, IconSend } from "./icons";
 
 function uuid(): string {
   return crypto.randomUUID();
@@ -13,7 +13,7 @@ function uuid(): string {
 
 /**
  * The running-audit desk: two transcript columns + a thin seed header + the
- * runline (only transport control) + composer at the bottom.
+ * composer docked under the auditor column.
  */
 export function DeskView(): JSX.Element {
   const transport = useSession((s) => s.transport);
@@ -40,6 +40,15 @@ export function DeskView(): JSX.Element {
     (from === "auditor" ? targetRef : auditorRef).current?.scrollToTimestamp(ts);
   }, []);
 
+  // One-shot sync (pill arrows): scroll `to` so its centered row matches the
+  // other column's currently-centered timestamp.
+  const syncTo = useCallback((to: "auditor" | "target") => {
+    const src = (to === "auditor" ? targetRef : auditorRef).current;
+    const dst = (to === "auditor" ? auditorRef : targetRef).current;
+    const ts = src?.centeredTimestamp();
+    if (ts) dst?.scrollToTimestamp(ts);
+  }, []);
+
   // `.` jumps the counterpart of whichever column is hovered to its centered row.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -55,8 +64,7 @@ export function DeskView(): JSX.Element {
 
   const [feedback, setFeedback] = useState("");
 
-  // Drag-to-resize: vars live on `.desk-body` so the composer (which sits
-  // under the auditor column only) tracks the same split as `.columns`.
+  // Drag-to-resize: vars live on `.desk-body` so both grid columns track the split.
   const bodyRef = useRef<HTMLDivElement>(null);
   const onMoveRef = useRef<((mv: PointerEvent) => void) | null>(null);
   const onUpRef = useRef<(() => void) | null>(null);
@@ -122,36 +130,11 @@ export function DeskView(): JSX.Element {
         </div>
       )}
 
-      {/* Single header bar: status-dot · seed (left) — step / end (right).
-          Play/pause lives in the composer's primary button. */}
+      {/* Single header bar: status-dot · seed. Play/pause lives in the
+          composer's primary button; step/end are gone. */}
       <div className={`runline status-${status ?? "idle"}`}>
         <span className={`rl-dot rl-dot-${status ?? "idle"}`} title={status ?? "idle"} />
         <span className="rl-seed" title={seedTitle}>{seedTitle || "—"}</span>
-        <div className="rl-controls">
-          <button
-            className={`rl-link${linked ? " on" : ""}`}
-            onClick={() => setLinked((v) => !v)}
-            title={linked ? "Unlink scroll (columns scroll independently)" : "Link scroll (scrolling one column tracks the other). Press . for a one-off jump."}
-          >
-            link scroll
-          </button>
-          <button
-            className="rl-step"
-            onClick={() => transport("step")}
-            disabled={isRunning || isEnded}
-            title="Step one turn"
-          >
-            <IconStep size={12} /> step
-          </button>
-          <button
-            className="rl-end"
-            onClick={() => transport("end")}
-            disabled={isEnded}
-            title="End audit"
-          >
-            <IconStop size={12} /> end
-          </button>
-        </div>
       </div>
 
       <div className="desk-body" ref={bodyRef}>
@@ -164,8 +147,75 @@ export function DeskView(): JSX.Element {
               linked={linked}
               onSync={(ts) => syncFrom("auditor", ts)}
             />
+            {/* Composer docks under the auditor column — the only thing it sends to. */}
+            <div className="composer">
+              <textarea
+                className="composer-input"
+                rows={1}
+                value={feedback}
+                onChange={(e) => {
+                  setFeedback(e.target.value);
+                  const t = e.target;
+                  t.style.height = "auto";
+                  t.style.height = `${Math.min(t.scrollHeight, 140)}px`;
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    if (!isEnded || hasText) primary.onClick();
+                  }
+                }}
+                placeholder="Steer the auditor…"
+              />
+              <div className="composer-lower">
+                <span className="composer-hint">enter to send · shift+enter newline</span>
+                <button
+                  className={`primary primary-${primary.mode}`}
+                  onClick={primary.onClick}
+                  disabled={!hasText && isEnded}
+                  title={hasText ? primary.title : `${primary.title} (Enter)`}
+                >
+                  <primary.Icon size={16} />
+                </button>
+              </div>
+            </div>
           </div>
-          <div className="col-drag-handle" onPointerDown={onHandlePointerDown} />
+
+          {/* Divider hosts the drag handle (full height) plus the Overleaf-style
+              sync pill: ← scrolls auditor to target's center, → the reverse,
+              middle toggles linked-scroll. */}
+          <div className="col-divider">
+            <div className="col-drag-handle" onPointerDown={onHandlePointerDown} />
+            <div className="sync-pill">
+              <button
+                type="button"
+                onClick={() => syncTo("auditor")}
+                title="Scroll auditor to match target"
+              >
+                <i className="bi bi-arrow-left" />
+              </button>
+              <button
+                type="button"
+                className={linked ? "on" : undefined}
+                onClick={() => setLinked((v) => !v)}
+                title={
+                  linked
+                    ? "Unlink scroll (columns scroll independently)"
+                    : "Link scroll (scrolling one column tracks the other). Press . for a one-off jump."
+                }
+              >
+                <i className="bi bi-link-45deg" />
+              </button>
+              <button
+                type="button"
+                onClick={() => syncTo("target")}
+                title="Scroll target to match auditor"
+              >
+                <i className="bi bi-arrow-right" />
+              </button>
+            </div>
+          </div>
+
           <div onPointerEnter={() => (hoverRole.current = "target")} className="col-wrap">
             <SwimlaneColumn
               ref={targetRef}
@@ -173,42 +223,6 @@ export function DeskView(): JSX.Element {
               linked={linked}
               onSync={(ts) => syncFrom("target", ts)}
             />
-          </div>
-        </div>
-
-        {/* Composer docks under the auditor column — the only thing it sends to.
-            The grid matches .columns so it tracks the drag split. */}
-        <div className="composer-zone">
-          <div className="composer">
-            <textarea
-              className="composer-input"
-              rows={1}
-              value={feedback}
-              onChange={(e) => {
-                setFeedback(e.target.value);
-                const t = e.target;
-                t.style.height = "auto";
-                t.style.height = `${Math.min(t.scrollHeight, 140)}px`;
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  if (!isEnded || hasText) primary.onClick();
-                }
-              }}
-              placeholder="Steer the auditor…"
-            />
-            <div className="composer-lower">
-              <span className="composer-hint">enter to send · shift+enter newline</span>
-              <button
-                className={`primary primary-${primary.mode}`}
-                onClick={primary.onClick}
-                disabled={!hasText && isEnded}
-                title={hasText ? primary.title : `${primary.title} (Enter)`}
-              >
-                <primary.Icon size={16} />
-              </button>
-            </div>
           </div>
         </div>
       </div>
