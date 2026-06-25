@@ -32,7 +32,8 @@ from inspect_ai.event._pool import (  # noqa: PLC2701
 )
 from inspect_ai.log._transcript import Transcript, init_transcript
 from inspect_ai.model import ChatMessage
-from inspect_petri._auditor._target_timeline import build_target_timeline  # noqa: PLC2701
+from inspect_petri._auditor import build_history_timeline
+from inspect_petri.target import History, Trajectory
 
 from workbench.view import Role
 
@@ -57,6 +58,11 @@ class Session:
         self.transcript = Transcript()
         self.transcript._subscribe(self._on_event)  # noqa: SLF001
 
+        # The session-wide level-2 audit `History` (PETRI-L2-HISTORY). Each
+        # `Branch` wraps one `Trajectory` from this tree; `start` creates a
+        # restart child of `.root`, `fork` calls `.branch(anchor, …)`. The
+        # auditor timeline is built directly from this tree.
+        self.audit_history = History()
         self.branches: dict[str, Branch] = {}
         self.current: str | None = None
 
@@ -178,13 +184,14 @@ class Session:
 
         resolved = self._resolve(ev.span_id)
 
-        # Splice model: while a forked branch is replaying its *shared* prefix
-        # (the run of `resume` steps identical to the parent's tape), drop
-        # every auditor-role event — those are duplicates of what the parent
-        # already emitted, and the auditor column splices them in from the
-        # parent's `TimelineSpan` instead. Target-role events are kept (the
-        # target timeline is per-branch, no cross-branch splice; `EmittingTape`
-        # supplies the served `ModelEvent`s).
+        # Splice model: while a forked branch is replaying its *shared*
+        # prefix (`tape.log[:prefix_len]`), drop every auditor-role event —
+        # `execute_tools` runs live on the served `ModelOutput`, so its
+        # `ToolEvent`s have the parent's `tool_call_id`s and would double up
+        # in `_anchor_lookup` (D3-no, PETRI-L2-HISTORY). The auditor column
+        # splices the parent's events in instead. Target-role events are
+        # kept: `_anchor_lookup` dedups `AnchorEvent`s (parent's wins) and no
+        # target `ModelEvent` is emitted on a serve, so they're harmless.
         if (
             resolved is not None
             and resolved[1] == "auditor"
@@ -212,7 +219,7 @@ class Session:
         # Rebuild + ship a column's timeline when its structure or content
         # changes: on BranchEvent (new trajectory) and on each new ModelEvent
         # (new turn — not streaming updates). `_on_event` runs in the branch
-        # task's context, so `build_target_timeline` can read
+        # task's context, so `build_history_timeline` can read
         # `transcript().events`.
         if (
             not is_update
@@ -247,7 +254,7 @@ class Session:
         return None
 
     def _target_timeline(self, branch: "Branch") -> dict[str, Any]:
-        return build_target_timeline(
+        return build_history_timeline(
             branch.history, branch.target_span_id, f"{branch.branch_id}:target"
         ).model_dump(mode="json")
 
@@ -324,9 +331,9 @@ class Session:
         }
         branches_meta = {
             bid: {
-                "parent": b.meta.parent,
-                "branched_at": b.meta.branched_at,
-                "branched_at_turn": b.meta.branched_at_turn,
+                "parent": b.parent_id,
+                "branched_at": b.branched_at,
+                "branched_at_turn": b.branched_at_turn,
                 "status": b.status,
                 "seed": b.meta.seed[:80],
             }
@@ -361,33 +368,29 @@ class Session:
 
 
 def build_auditor_timeline(session: Session) -> dict[str, Any]:
-    """The session-wide auditor `Timeline`: one `TimelineSpan` per `Branch`.
+    """The session-wide auditor `Timeline`, one `TimelineSpan` per `Branch`.
 
-    Mirrors `build_target_timeline`'s wire shape (dumped `Timeline` —
-    `TimelineEvent.event` serialised as a uuid string) so the same frontend
-    `convertServerTimeline` / `computeFlatSwimlaneRows` / `splice` path renders
-    the auditor column. Each `Branch` becomes a `span_type="branch"` span whose
-    `content` is its own (post-shared-prefix) auditor-role events; `branches`
-    are workbench forks with `parent == this`; `branched_from` is the last
-    shared auditor turn's anchor — `splice()` matches it against the parent's
-    `TURN_END_SOURCE` `AnchorEvent`, which sits *after* that turn's
-    `ToolEvent`s (the pre-tools `Tape.replayable` anchor is excluded so
-    `findIndex` resolves there).
+    Tree shape comes from `session.audit_history` (PETRI-L2-HISTORY): each
+    `Branch` *is* one L2 `Trajectory`, so `TimelineSpan.id == branch_id` and
+    `branched_from == trajectory.branched_from` (already normalised by
+    `Branch.fork()` to the last anchored step in the shared prefix, which is
+    what `splice()` cuts on, inclusive). The synthetic `audit_history.root`
+    is the wrapper span — it never runs, so its `content` is empty and each
+    real root branch has `branched_from=None` (`splice()` discards the
+    wrapper's prefix).
+
+    `content` is the branch's own (post-shared-prefix) auditor-role events
+    from `_by_role`, not `build_history_timeline(audit_history)` directly:
+    the L2 tape records *every* model call (auditor and target), so the
+    anchor-keyed content would interleave target `ModelEvent`s into the
+    auditor column. Filtering to `_by_role[(bid, "auditor")]` keeps the
+    existing `eventsToTurns(hasToolEvents=true)` render path unchanged.
 
     Built directly as the dumped dict (rather than via `Timeline.model_dump`)
     because `session.events` already holds dumped events — reconstructing
     `Event` objects just to re-serialise their uuids would be wasted work.
-
-    The same tree is shipped at every `timelines[branch_id]["auditor"]` —
-    `SwimlaneColumn` selects the row whose `TimelineSpan.id == branch_id` and
-    `splice()` reconstructs that branch's full lineage.
     """
     from workbench.run import GEN_SOURCE  # noqa: PLC0415
-
-    children: dict[str | None, list[str]] = {}
-    for bid, b in session.branches.items():
-        children.setdefault(b.meta.parent, []).append(bid)
-    roots = children.get(None, [])
 
     def content_for(bid: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -395,41 +398,49 @@ def build_auditor_timeline(session: Session) -> dict[str, Any]:
             d = session.events.get(uuid)
             if d is None:
                 continue
-            # Exclude petri's pre-`execute_tools` `AnchorEvent` (see docstring)
-            # so the `TURN_END_SOURCE` one is the only `findIndex` match.
+            # Exclude petri's pre-`execute_tools` `AnchorEvent` so the
+            # `TURN_END_SOURCE` one (after the turn's `ToolEvent`s) is the
+            # only `findIndex` match for `splice()`.
             if d["event"] == "anchor" and d.get("source") == GEN_SOURCE:
                 continue
             out.append({"type": "event", "event": uuid})
         return out
 
-    def to_span(bid: str, idx: int) -> dict[str, Any]:
-        b = session.branches[bid]
+    def auditor_branched_from(t: Trajectory) -> str | None:
+        # Last auditor generate in the shared prefix — the only anchors
+        # present in the parent's *auditor-role* content are the
+        # `TURN_END_SOURCE` `AnchorEvent`s keyed on auditor message ids, so
+        # `splice()` must cut there (`t.branched_from` may be a target or
+        # `Stage` anchor, which the auditor column never carries).
+        prefix = (list(t.tape.log) + list(t.tape.pending))[: t.tape.prefix_len]
+        return next(
+            (s.anchor_id for s in reversed(prefix) if s.source == GEN_SOURCE), None
+        )
+
+    counter = iter(range(1, 1 + len(session.branches)))
+
+    def to_span(t: Trajectory) -> dict[str, Any]:
         return {
             "type": "span",
-            "id": bid,
-            "name": f"branch {idx}",
+            "id": t.span_id,
+            "name": f"branch {next(counter)}",
             "span_type": "branch",
-            "branched_from": b.auditor_branched_from(),
-            "content": content_for(bid),
-            "branches": [
-                to_span(c, i) for i, c in enumerate(children.get(bid, []), idx + 1)
-            ],
+            "branched_from": auditor_branched_from(t),
+            "content": content_for(t.span_id),
+            "branches": [to_span(c) for c in t.children],
         }
 
-    if len(roots) == 1:
-        root = to_span(roots[0], 1)
-    else:
-        # Zero or multiple `start`s in one session — wrap under a synthetic
-        # root so the tree has a single entry point. Each real root has
-        # `branched_from=None`, so `splice()` discards the wrapper's (empty)
-        # prefix and starts fresh from the selected root.
-        root = {
+    root = session.audit_history.root
+    return {
+        "name": "auditor",
+        "description": "Auditor branch tree",
+        "root": {
             "type": "span",
-            "id": "auditor-root",
+            "id": root.span_id,
             "name": "auditor",
             "span_type": "branch",
             "branched_from": None,
             "content": [],
-            "branches": [to_span(r, i) for i, r in enumerate(roots, 1)],
-        }
-    return {"name": "auditor", "description": "Auditor branch tree", "root": root}
+            "branches": [to_span(c) for c in root.children],
+        },
+    }

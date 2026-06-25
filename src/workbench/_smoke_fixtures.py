@@ -44,7 +44,7 @@ from inspect_ai.model import (
 )
 from inspect_ai.tool import ToolCall, ToolChoice, ToolInfo
 
-from workbench.run import GEN_SOURCE, Branch
+from workbench.run import Branch
 from workbench.server import _dispatch, app  # noqa: PLC2701
 from workbench.session import Session
 
@@ -231,89 +231,29 @@ def _scalar_args(arguments: dict[str, Any]) -> frozenset[tuple[str, Any]]:
     )
 
 
-def _project(ev: dict[str, Any], role: str) -> tuple[str, str, tuple]:
-    msg = ev["output"]["choices"][0]["message"]
-    content = msg.get("content")
-    if isinstance(content, str):
-        text = content
-    elif isinstance(content, list):
-        text = "".join(c.get("text", "") for c in content if isinstance(c, dict))
-    else:
-        text = ""
-    calls = tuple(
-        (tc["function"], _scalar_args(tc.get("arguments") or {}))
-        for tc in (msg.get("tool_calls") or [])
-    )
-    return (role, text, calls)
-
-
-def _model_events(session: Session, bid: str, role: str) -> list[dict[str, Any]]:
-    """`(bid, role)`'s own ModelEvents in emission order, via `_by_role`."""
-    out: list[dict[str, Any]] = []
-    for uuid in session._by_role.get((bid, role), []):  # noqa: SLF001
-        ev = session.events.get(uuid)
-        if ev is not None and ev.get("event") == "model":
-            out.append(ev)
-    return out
-
-
-def _shared_auditor_turns(b: Branch) -> int:
-    """#auditor generates in `b`'s shared-with-parent prefix — i.e. the turns
-    `_on_event` dropped while `_replaying_shared`. NOT `meta.branched_at_turn`,
-    which counts the *full* `resume` and so over-counts by one for the
-    `edit_*` ops that append a divergent edited step."""
-    if b.resume is None:
-        return 0
-    return sum(
-        1
-        for s in b.resume[: b.shared_prefix_len]
-        if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
-    )
-
-
-def _auditor_lineage(session: Session, branch_id: str) -> list[dict[str, Any]]:
-    """`branch_id`'s full spliced auditor-ModelEvent list, root → leaf.
-
-    Walks `BranchMeta.parent` to the root, then replays the splice forward:
-    at each link, truncate the accumulated lineage to the child's shared
-    auditor-turn count (what was dropped) and append the child's own
-    post-shared auditor events. Mirrors the frontend `splice()`."""
-    chain: list[str] = []
-    bid: str | None = branch_id
-    while bid is not None:
-        chain.append(bid)
-        bid = session.branches[bid].meta.parent
-    chain.reverse()
-    aud: list[dict[str, Any]] = []
-    for cid in chain:
-        aud = aud[: _shared_auditor_turns(session.branches[cid])]
-        aud.extend(_model_events(session, cid, "auditor"))
-    return aud
-
-
 def normalize(session: Session, branch_id: str) -> list[tuple[str, str, tuple]]:
-    """Flatten `branch_id`'s spliced lineage into a comparable list.
+    """Flatten `branch_id`'s level-2 audit tape into a comparable list.
 
-    Post splice-refactor, a child's `session.events` holds only its *own*
-    events — target replays plus post-shared auditor turns; the shared
-    auditor prefix lives on the parent and `_on_event` drops the child's
-    duplicate. This rebuilds what the user sees: the spliced auditor lineage
-    zipped turn-for-turn with this branch's target ModelEvents (kept in full
-    by `_on_event`, replay included). Each entry is
-    `(role, text, ((fn, frozenset(scalar_args)), …))`.
-
-    The zip relies on the petri invariant that auditor turn *k* yields at
-    most one target generate (the `resume` tool's reply) before turn *k+1*;
-    a trailing `end_conversation` turn has none.
+    With the L2 `audit_history` (PETRI-L2-HISTORY), a child's
+    `trajectory.tape.log` IS its full lineage — replayed shared prefix
+    (steps `[:prefix_len]`, served verbatim from the parent) followed by
+    its own divergent + live calls. So the user-visible execution order is
+    exactly the tape's `ModelOutput` steps in log order, projected per role.
+    Each entry is `(role, text, ((fn, frozenset(scalar_args)), …))`.
     """
-    aud = _auditor_lineage(session, branch_id)
-    tgt = _model_events(session, branch_id, "target")
+    from workbench.run import GEN_SOURCE, TARGET_GEN_SOURCE  # noqa: PLC0415
+
+    roles = {GEN_SOURCE: "auditor", TARGET_GEN_SOURCE: "target"}
     out: list[tuple[str, str, tuple]] = []
-    for i in range(max(len(aud), len(tgt))):
-        if i < len(aud):
-            out.append(_project(aud[i], "auditor"))
-        if i < len(tgt):
-            out.append(_project(tgt[i], "target"))
+    for s in session.branches[branch_id].audit_tape.log:
+        role = roles.get(s.source)
+        if role is None or not isinstance(s.value, ModelOutput):
+            continue
+        msg = s.value.message
+        calls = tuple(
+            (tc.function, _scalar_args(tc.arguments)) for tc in msg.tool_calls or []
+        )
+        out.append((role, msg.text, calls))
     return out
 
 

@@ -10,7 +10,7 @@ Goes beyond `_smoke_branch.py` by exercising the historically-fragile paths:
     A4. no ModelEvent uuid lands under more than one branch's column
     A5. each branch's auditor + target columns are non-empty
     A6. b1/b2/b3 stores are pairwise distinct (footgun #5)
-    A7. b3's prefix length is consistent with slice_at over b2's log
+    A7. b3's prefix length is consistent with branching at b2's anchor
 
   Scenario B — target (level-1) rollback inside a single branch: the auditor
   is instructed to call `rollback_conversation` mid-run. Asserts:
@@ -40,7 +40,7 @@ from workbench._smoke_util import (
     resolve_role as _resolve_branch_role,
     wire_events as _events,
 )
-from workbench.run import Branch, slice_at
+from workbench.run import Branch
 from workbench.session import Session
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
@@ -97,37 +97,19 @@ async def scenario_a(dump_path: Path | None) -> None:
     await b1.run()
 
     anchor2 = _nth_target_anchor(b1.audit_tape.log, 2)
-    prefix2 = slice_at(b1.audit_tape.log, anchor2)
-    b2 = Branch(
-        session,
-        "b2",
-        seed=SEED_A,
-        auditor_model=MODEL,
-        target_model=MODEL,
-        max_turns=4,
-        resume=prefix2,
-        parent_id="b1",
-        branched_at=anchor2,
-    )
+    b2 = Branch.fork(session, b1, anchor=anchor2, branch_id="b2")
     session.branches["b2"] = b2
     session.current = "b2"
     await session.push_full_state(conn)
     b2.play()
     await b2.run()
 
-    anchor3 = _nth_target_anchor(b2.audit_tape.log, 1)
-    prefix3 = slice_at(b2.audit_tape.log, anchor3)
-    b3 = Branch(
-        session,
-        "b3",
-        seed=SEED_A,
-        auditor_model=MODEL,
-        target_model=MODEL,
-        max_turns=4,
-        resume=prefix3,
-        parent_id="b2",
-        branched_at=anchor3,
-    )
+    # b3 forks at b2's first *fresh* target step so its trajectory's parent
+    # is b2 (not b1 — `History.branch` attaches the child to the origin of
+    # the anchor, and a replayed-prefix anchor's origin is the ancestor).
+    anchor3 = _nth_target_anchor(b2.audit_tape.log[b2.audit_tape.prefix_len :], 1)
+    b3 = Branch.fork(session, b2, anchor=anchor3, branch_id="b3")
+    prefix3 = list(b3.audit_tape.pending)
     session.branches["b3"] = b3
     session.current = "b3"
     await session.push_full_state(conn)
@@ -174,10 +156,10 @@ async def scenario_a(dump_path: Path | None) -> None:
             )
             seen_in[u] = bid
 
-    # A5: every branch has both columns populated. For child branches the
-    # auditor column is *own* events only (shared-prefix auditor events are
-    # dropped while `_replaying_shared`; the parent supplies them via
-    # `splice()`), so this asserts each child produced ≥1 live auditor turn.
+    # A5: every branch has both columns populated. For child branches both
+    # columns are *own* events only (shared-prefix events are dropped or
+    # never emitted; the parent supplies them via `splice()` / anchor-keyed
+    # timeline), so this asserts each child produced ≥1 live turn per role.
     for bid in ("b1", "b2", "b3"):
         for role in ("auditor", "target"):
             uuids = by_branch_role.get((bid, role), set())
@@ -190,12 +172,11 @@ async def scenario_a(dump_path: Path | None) -> None:
         and b1.store is not b3.store
     ), "A6: branch stores are not pairwise distinct"
 
-    # ── A7: b3's prefix is consistent with slicing b2's log ──────────────────
-    # Splice model: `EmittingTape` emits a real settled ModelEvent (with full
-    # `input`) per replayed *target* generate; replayed *auditor* generates
-    # are dropped while `_replaying_shared` (b2 supplies them via `splice()`).
-    # So b3's target column covers the prefix's target ModelOutput steps, and
-    # b3's auditor column is strictly its own live turns.
+    # ── A7: b3's prefix is consistent with branching at b2's anchor ─────────
+    # Splice model: shared-prefix generates are *served* (no provider call →
+    # no `ModelEvent` under b3's spans). Anchors are stable
+    # (`Controller._gen_id` served), so b3's timelines reference b1/b2's
+    # events for the prefix. b3's own columns are strictly live turns.
     expected_b3_target_steps = sum(
         1
         for s in prefix3
@@ -206,11 +187,20 @@ async def scenario_a(dump_path: Path | None) -> None:
         for s in prefix3
         if s.source == "auditor:Model.generate" and isinstance(s.value, ModelOutput)
     )
-    assert len(b3.resume or []) == len(prefix3), "A7: b3.resume length mismatch"
+    assert b3.audit_tape.prefix_len == len(prefix3), "A7: prefix_len mismatch"
+    tape_target = sum(
+        1
+        for s in b3.audit_tape.log
+        if s.source == "Model.generate" and isinstance(s.value, ModelOutput)
+    )
+    assert tape_target >= expected_b3_target_steps, (
+        f"A7: b3 tape has {tape_target} target steps, expected "
+        f"≥{expected_b3_target_steps} replayed from prefix"
+    )
     b3_target = by_branch_role.get(("b3", "target"), set())
-    assert len(b3_target) >= expected_b3_target_steps, (
-        f"A7: b3 target column has {len(b3_target)} events, expected "
-        f"≥{expected_b3_target_steps} replayed prefix target steps"
+    assert len(b3_target) == tape_target - expected_b3_target_steps, (
+        f"A7: b3's own target ModelEvents should be live-only "
+        f"({tape_target - expected_b3_target_steps}), got {len(b3_target)}"
     )
     b3_auditor = by_branch_role.get(("b3", "auditor"), set())
     assert len(b3_auditor) <= b3.meta.max_turns - expected_b3_auditor_steps, (
@@ -218,20 +208,21 @@ async def scenario_a(dump_path: Path | None) -> None:
         f"{expected_b3_auditor_steps} shared-prefix turns should have been "
         f"dropped, leaving ≤{b3.meta.max_turns - expected_b3_auditor_steps} live"
     )
-    # No event anywhere still carries the old `input==[]` synth marker —
-    # EmittingTape supplies the caller's real `input`.
+    # No event anywhere carries an empty-`input` synth marker — every
+    # `ModelEvent` on the wire is either a real provider call or a divergent
+    # serve, both of which carry the caller's real `input`.
     assert not any(
         ev["event"] == "model"
         and ev["input"] == []
         and ev.get("input_refs") is None
         for ev in _events(conn)
-    ), "A7: found a ModelEvent with empty input — EmittingTape should fill it"
+    ), "A7: found a ModelEvent with empty input"
 
     print(
         f"A: branches=3 events={len(new_uuids)} "
         f"model_events={sum(len(v) for v in by_branch_role.values())} "
-        f"b3_target={len(b3_target)} (≥{expected_b3_target_steps} replayed) "
-        f"b3_auditor_own={len(b3_auditor)}"
+        f"b3_target_own={len(b3_target)} ({expected_b3_target_steps} "
+        f"replayed → ancestors) b3_auditor_own={len(b3_auditor)}"
     )
     print("✓ scenario A (level-2 branch chain) passed")
 

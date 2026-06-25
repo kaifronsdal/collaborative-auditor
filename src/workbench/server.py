@@ -33,7 +33,6 @@ from workbench.run import (
     find_target_step,
     generate_rewrite,
     locate_staging_call,
-    slice_at,
 )
 from workbench.session import Session
 
@@ -178,7 +177,7 @@ async def _dispatch(session: Session, data: dict) -> None:
                 if branch.status == "ended":
                     return
                 try:
-                    await branch.controller.end_conversation()
+                    await branch.channel.end_conversation()
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("end_conversation raised: %r", exc)
                 await _stop_running_branches(session)
@@ -221,8 +220,9 @@ async def _dispatch(session: Session, data: dict) -> None:
                     }
                 )
         case "branch":
-            # Inclusive slice at a target assistant anchor: the clicked target
-            # response is replayed; the *next* auditor turn goes live.
+            # Inclusive branch at a target assistant anchor: the clicked
+            # target response is in the replayed prefix; the *next* auditor
+            # turn goes live.
             async with session._dispatch_lock:  # noqa: SLF001
                 anchor = data["at"]
                 parent = _parent(session, data)
@@ -230,15 +230,14 @@ async def _dispatch(session: Session, data: dict) -> None:
                     logger.warning("branch before start — dropping")
                     return
                 try:
-                    prefix = slice_at(parent.audit_tape.log, anchor)
+                    child = Branch.fork(session, parent, anchor=anchor)
                 except ValueError as exc:
                     await _fork_error(session, exc)
                     return
-                child = Branch.fork(session, parent, resume=prefix, branched_at=anchor)
                 await _register_and_spawn(session, child, autoplay=False)
 
         case "resample":
-            # WISHLIST 3b: regenerate the clicked *target* response. Slice
+            # WISHLIST 3b: regenerate the clicked *target* response. Branch
             # exclusive of that target step — the auditor turn that produced
             # it replays from `pending`, the target generate goes live.
             async with session._dispatch_lock:  # noqa: SLF001
@@ -248,20 +247,19 @@ async def _dispatch(session: Session, data: dict) -> None:
                     logger.warning("resample before start — dropping")
                     return
                 try:
-                    idx, _ = find_target_step(parent.audit_tape.log, anchor)
+                    # validate `anchor` is a target generate (so the user
+                    # gets a precise error, not a desync mid-replay)
+                    find_target_step(parent.audit_tape.log, anchor)
+                    child = Branch.fork(
+                        session, parent, anchor=anchor, inclusive=False
+                    )
                 except ValueError as exc:
                     await _fork_error(session, exc)
                     return
-                child = Branch.fork(
-                    session,
-                    parent,
-                    resume=parent.audit_tape.log[:idx],
-                    branched_at=anchor,
-                )
                 await _register_and_spawn(session, child, autoplay=True)
 
         case "branch_auditor" | "resample_auditor":
-            # Regenerate the auditor's `turn_index`-th response: slice
+            # Regenerate the auditor's `turn_index`-th response: branch
             # exclusive of that auditor step so the next live call is the
             # auditor's generate at that turn. `branch_auditor` is the same
             # backend op (matching target `branch`/`resample` parity).
@@ -271,28 +269,26 @@ async def _dispatch(session: Session, data: dict) -> None:
                     logger.warning("%r before start — dropping", data.get("t"))
                     return
                 try:
-                    idx, step = find_auditor_step(
+                    _, step = find_auditor_step(
                         parent.audit_tape.log, int(data["turn_index"])
+                    )
+                    assert step.anchor_id is not None
+                    child = Branch.fork(
+                        session, parent, anchor=step.anchor_id, inclusive=False
                     )
                 except ValueError as exc:
                     await _fork_error(session, exc)
                     return
-                child = Branch.fork(
-                    session,
-                    parent,
-                    resume=parent.audit_tape.log[:idx],
-                    branched_at=step.anchor_id or "",
-                )
                 await _register_and_spawn(
                     session, child, autoplay=data["t"] == "resample_auditor"
                 )
 
         case "edit_auditor_call":
             # WISHLIST 3a: edit an auditor tool_call's args, replay the turn.
-            # Slice exclusive of the auditor step, append a copy with the
-            # edited tool_call. On replay the edited output is served from
-            # `pending`; `execute_tools` runs the edited args live, so the
-            # target sees the new staged message / tool result.
+            # Branch exclusive of the auditor step, append a copy with the
+            # edited tool_call past `prefix_len`. On replay the edited output
+            # is served from `pending`; `execute_tools` runs the edited args
+            # live, so the target sees the new staged message / tool result.
             async with session._dispatch_lock:  # noqa: SLF001
                 parent = _parent(session, data)
                 if parent is None:
@@ -300,13 +296,6 @@ async def _dispatch(session: Session, data: dict) -> None:
                     return
                 call_id = data["call_id"]
                 new_args = data["args"]
-                try:
-                    idx, orig = find_auditor_step(
-                        parent.audit_tape.log, int(data["turn_index"])
-                    )
-                except ValueError as exc:
-                    await _fork_error(session, exc)
-                    return
 
                 def mutate(out: ModelOutput) -> None:
                     for tc in out.message.tool_calls or []:
@@ -319,18 +308,21 @@ async def _dispatch(session: Session, data: dict) -> None:
                     )
 
                 try:
+                    _, orig = find_auditor_step(
+                        parent.audit_tape.log, int(data["turn_index"])
+                    )
+                    assert orig.anchor_id is not None
                     edited = edited_auditor_step(orig, mutate)
+                    child = Branch.fork(
+                        session,
+                        parent,
+                        anchor=orig.anchor_id,
+                        inclusive=False,
+                        edited=edited,
+                    )
                 except ValueError as exc:
                     await _fork_error(session, exc)
                     return
-                resume = parent.audit_tape.log[:idx] + [edited]
-                child = Branch.fork(
-                    session,
-                    parent,
-                    resume=resume,
-                    shared_prefix_len=len(resume) - 1,
-                    branched_at=orig.anchor_id or "",
-                )
                 await _register_and_spawn(session, child, autoplay=True)
 
         case "edit_target_message":
@@ -349,7 +341,7 @@ async def _dispatch(session: Session, data: dict) -> None:
                     return
                 content = data["content"]
                 try:
-                    aud_idx, orig, call_id, arg_key = locate_staging_call(
+                    _, orig, call_id, arg_key = locate_staging_call(
                         parent.audit_tape.log,
                         message_id=data["message_id"],
                         role=data["role"],
@@ -366,18 +358,27 @@ async def _dispatch(session: Session, data: dict) -> None:
                             return
                     raise ValueError(f"call_id {call_id!r} vanished")
 
-                edited = edited_auditor_step(orig, mutate)
-                resume = parent.audit_tape.log[:aud_idx] + [edited]
-                child = Branch.fork(
-                    session,
-                    parent,
-                    resume=resume,
-                    shared_prefix_len=len(resume) - 1,
-                    branched_at=data["message_id"],
-                )
+                assert orig.anchor_id is not None
+                try:
+                    edited = edited_auditor_step(orig, mutate)
+                    child = Branch.fork(
+                        session,
+                        parent,
+                        anchor=orig.anchor_id,
+                        inclusive=False,
+                        edited=edited,
+                    )
+                except ValueError as exc:
+                    await _fork_error(session, exc)
+                    return
                 await _register_and_spawn(session, child, autoplay=True)
 
         case "edit":
+            # Edit a *target* assistant response in place: branch exclusive
+            # of that target step, append the edited `ModelOutput` past
+            # `prefix_len`. The auditor turn that produced it replays from
+            # `pending`; the edited output is served (`_DivergentTape` emits
+            # its `ModelEvent`); the *next* auditor turn goes live.
             async with session._dispatch_lock:  # noqa: SLF001
                 anchor = data["at"]
                 parent = session.branches.get(session.current)  # type: ignore[arg-type]
@@ -385,63 +386,30 @@ async def _dispatch(session: Session, data: dict) -> None:
                     logger.warning("edit before start — dropping")
                     return
                 try:
-                    prefix = slice_at(parent.audit_tape.log, anchor)
+                    _, orig = find_target_step(parent.audit_tape.log, anchor)
                 except ValueError as exc:
-                    logger.warning("slice_at failed for edit %r: %s", anchor, exc)
-                    await session.broadcast(
-                        {"t": "error", "v": session.version, "message": str(exc)}
-                    )
-                    return
-                # Find the original anchor step so we can match its source. The
-                # anchor is the last value-bearing step with a matching anchor_id.
-                orig_step = next(
-                    (s for s in reversed(prefix) if s.anchor_id == anchor),
-                    None,
-                )
-                if orig_step is None:
-                    logger.warning("edit: anchor step not found after slice — dropping")
-                    return
-                if orig_step.source != "Model.generate":
-                    logger.warning(
-                        "edit: non-target step anchor %r (source=%r) — dropping",
-                        anchor,
-                        orig_step.source,
-                    )
-                    await session.broadcast(
-                        {
-                            "t": "error",
-                            "v": session.version,
-                            "message": "edit anchor is not a target step",
-                        }
-                    )
+                    await _fork_error(session, exc)
                     return
                 edited_output = ModelOutput.model_validate(data["output"])
-                # Use a fresh message id for the edited step so downstream code
-                # never sees a stale anchor ref (footgun #3). The anchor_id of the
-                # new step is the *new* message id.
+                # Fresh message id so downstream code never sees a stale
+                # anchor ref (footgun #3); the new step's anchor is the new id.
                 new_msg_id = uuid()
-                # Patch the message id on the edited output's first choice message.
                 if edited_output.choices:
                     edited_output.choices[0].message.id = new_msg_id
                 edited_step = Step(
-                    value=edited_output,
-                    source=orig_step.source,
-                    anchor_id=new_msg_id,
+                    value=edited_output, source=orig.source, anchor_id=new_msg_id
                 )
-                # Truncate at the anchor (exclusive) then append the edited step.
-                idx = next((i for i, s in enumerate(prefix) if s is orig_step), None)
-                if idx is None:
-                    # Invariant: orig_step came from `prefix`; if it's no longer
-                    # there something mutated `prefix` underneath us.
-                    raise RuntimeError("edit: orig_step vanished from prefix")
-                resume = prefix[:idx] + [edited_step]
-                child = Branch.fork(
-                    session,
-                    parent,
-                    resume=resume,
-                    shared_prefix_len=len(resume) - 1,
-                    branched_at=anchor,
-                )
+                try:
+                    child = Branch.fork(
+                        session,
+                        parent,
+                        anchor=anchor,
+                        inclusive=False,
+                        edited=edited_step,
+                    )
+                except ValueError as exc:
+                    await _fork_error(session, exc)
+                    return
                 await _register_and_spawn(session, child, autoplay=True)
 
         case "rewrite_tool_call":

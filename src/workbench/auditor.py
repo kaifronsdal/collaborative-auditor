@@ -114,14 +114,18 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
 
             for turn in range(max_turns):
                 # ── shared-prefix replay flag (splice model) ──────────────────
-                # While the tape's replayed prefix is still inside the part
-                # shared verbatim with the parent, the session drops every
-                # auditor-role event (the parent supplies them via splice).
-                # Past it — the divergent suffix (an edited step) and live
-                # turns — events flow normally.
+                # While the tape's log is still inside `[:prefix_len]` (the
+                # part shared verbatim with the parent), the session drops
+                # every auditor-role event (the parent supplies them via
+                # splice). Past it — the divergent suffix (an `edit_*` op's
+                # appended step at `log[prefix_len]`) and live turns — events
+                # flow normally. Flipped at the turn boundary, *not* derived
+                # live from `len(log) < prefix_len`: the last shared turn's
+                # trailing `ToolEvent`s are emitted after the target side has
+                # already advanced `len(log)` to `prefix_len`.
                 if (
                     branch._replaying_shared  # noqa: SLF001
-                    and len(tape.log) >= branch.shared_prefix_len
+                    and len(tape.log) >= tape.prefix_len
                 ):
                     branch._replaying_shared = False  # noqa: SLF001
 
@@ -176,9 +180,9 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
                 # End-of-turn anchor for the auditor timeline. petri's own
                 # `AnchorEvent` (from `Tape.replayable`) lands *before*
                 # `execute_tools`, so `splice()` on it would drop this
-                # turn's `ToolEvent`s; this one comes *after* them.
-                # `build_auditor_timeline` keeps only `TURN_END_SOURCE`
-                # anchors, so `splice()`'s `findIndex` resolves to this.
+                # turn's `ToolEvent`s; this one comes *after* them. The
+                # auditor timeline keeps only `TURN_END_SOURCE` anchors, so
+                # `splice()`'s `findIndex` resolves to this.
                 if state.output.message.id:
                     transcript()._event(  # noqa: SLF001
                         AnchorEvent(

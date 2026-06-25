@@ -1,6 +1,16 @@
 """Branch lifecycle — petri's `run_audit` driven by our `workbench_auditor`.
 
-`Branch.run()` sets up the channel / controller / history / audit-tape via
+A `Session` owns one level-2 `audit_history: History` (PETRI-L2-HISTORY).
+Each `Branch` wraps one `Trajectory` from that tree: the root branches are
+created via `History.branch("")` (a fresh restart under the synthetic root);
+forks via `History.branch(anchor, from_trajectory=parent.trajectory,
+inclusive=…)`. The trajectory carries the level-2 `Tape` (`audit_tape`),
+the auditor span id (`trajectory.span_id`), and the tree position
+(`parent`, `branched_from`) — so `BranchMeta` is just the run config the
+child inherits, and `branch_id` / `auditor_span_id` / `shared_prefix_len`
+are properties over the trajectory.
+
+`Branch.run()` sets up the channel / controller / level-1 history via
 `audit_context()`, registers its auditor and target span ids on the owning
 `Session` for routing (STREAMING.md §B), and runs petri's `run_audit()` (the
 auditor/target task group). The auditor is `workbench_auditor()` — a small
@@ -21,13 +31,12 @@ import functools
 import json
 import logging
 import re
-from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import anyio
-from inspect_ai.event import ModelEvent
+from inspect_ai.event import AnchorEvent, ModelEvent
 from inspect_ai.model import (
     ChatMessage,
     ChatMessageUser,
@@ -39,16 +48,15 @@ from inspect_ai.model import (
 from inspect_ai.log._transcript import init_transcript, transcript  # noqa: PLC2701
 from inspect_ai.util import Store
 from inspect_petri._auditor import audit_context, run_audit
+from inspect_petri._auditor.agent import GEN_SOURCE  # noqa: PLC2701
 from inspect_petri.target import (
     Channel,
-    Controller,
     History,
     Step,
     Tape,
+    Trajectory,
     target_agent,
 )
-from inspect_petri._auditor.agent import GEN_SOURCE  # noqa: PLC2701
-from inspect_petri.target._history import _find_cutoff  # noqa: PLC2701
 from shortuuid import uuid
 
 from workbench.auditor import workbench_auditor
@@ -62,13 +70,10 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class BranchMeta:
-    """What a branch was started with — the config a child inherits on `fork()`."""
+    """The run config a child inherits on `fork()` — seed, models, generate
+    settings. Tree position (`parent`, `branched_at`, `branched_at_turn`) is
+    *not* here: it's read from the branch's `Trajectory` (PETRI-L2-HISTORY)."""
 
-    parent: str | None  # branch_id this was branched from
-    branched_at: str | None  # anchor_id where the slice happened
-    branched_at_turn: int | None
-    """Auditor turn index at the slice — count of `GEN_SOURCE` steps in `resume`.
-    Stable across edits (anchor ids re-mint, the index doesn't)."""
     seed: str
     auditor_model: str
     target_model: str
@@ -80,87 +85,34 @@ class BranchMeta:
     target_model_args: dict | None = None
 
 
-def slice_at(steps: list[Step], anchor_id: str) -> list[Step]:
-    """Slice a level-2 audit tape at a re-sync point (footgun #1).
-
-    Delegates the cutoff search (last matching `anchor_id`, advance past
-    trailing `boundary=="out"` acks) to petri's `_find_cutoff` — the same
-    routine `Trajectory` uses for level-1 branching — then applies the
-    workbench-specific mid-rollback guard.
-
-    Raises `ValueError` if `anchor_id` is not found, or if the slice would land
-    mid-rollback (the last included auditor step issued `rollback_conversation`
-    but no `boundary=="in"` re-sync follows in the prefix).
-    """
-    cutoff = _find_cutoff(steps, anchor_id)
-    if cutoff is None:
-        raise ValueError(
-            f"anchor_id {anchor_id!r} not found in audit tape ({len(steps)} steps)"
-        )
-    prefix = steps[: cutoff + 1]
-
-    # Mid-rollback guard: if the last auditor ModelOutput in the prefix carries
-    # a rollback_conversation tool call, there must be a subsequent
-    # boundary=="in" step (the channel re-sync) — otherwise the level-1 tree
-    # would desync on resume.
-    last_auditor_out: Step | None = None
-    resynced_after = False
-    for step in prefix:
-        if step.source == "auditor:Model.generate" and isinstance(
-            step.value, ModelOutput
-        ):
-            last_auditor_out = step
-            resynced_after = False
-        elif step.boundary == "in":
-            resynced_after = True
-
-    if last_auditor_out is not None and not resynced_after:
-        mo = last_auditor_out.value
-        assert isinstance(mo, ModelOutput)
-        tool_calls = (mo.choices[0].message.tool_calls or []) if mo.choices else []
-        if any(tc.function == "rollback_conversation" for tc in tool_calls):
-            raise ValueError(
-                f"anchor_id {anchor_id!r} lands mid-rollback: the last auditor "
-                "step issued rollback_conversation but no boundary=='in' "
-                "re-sync follows in the prefix. Slice at a completed turn."
-            )
-
-    return prefix
-
-
 TARGET_GEN_SOURCE = "Model.generate"
 
 #: `workbench_auditor` emits an `AnchorEvent` with this `source` at the *end*
-#: of each turn (after `execute_tools`). `build_auditor_timeline` keeps only
+#: of each turn (after `execute_tools`). The auditor timeline keeps only
 #: these — petri's own `Tape.replayable` `AnchorEvent` (source = `GEN_SOURCE`)
 #: lands *before* the turn's `ToolEvent`s, so splicing on it would drop them.
 TURN_END_SOURCE = "workbench:turn"
 
 # Tape sources that correspond to a model.generate() — those are the steps
-# whose serve path should emit a settled ModelEvent so a forked branch's
-# replayed prefix is wire-indistinguishable from a live run.
+# whose divergent serve must emit a settled `ModelEvent` so an `edit_*` op's
+# edited turn (the one served step past `prefix_len`) is wire-visible.
 _GEN_ROLES: dict[str, Role] = {
     GEN_SOURCE: "auditor",
     TARGET_GEN_SOURCE: "target",
 }
 
 
-class EmittingTape(Tape):
-    """Level-2 audit `Tape` whose serve path emits a real settled `ModelEvent`.
+class _DivergentTape(Tape):
+    """Level-2 `Tape` whose serve path emits a `ModelEvent` for *divergent*
+    served steps only — those at ``log[prefix_len:]``.
 
-    petri's `Tape.replayable` returns the cached `ModelOutput` without calling
-    `Model.generate`, so a forked branch's replayed turn produces no event for
-    that generate. This subclass detects the serve path for the two generate
-    sources and emits the event itself, with the caller's actual `input` (the
-    loop's `state.messages` at that point), inside the live span (so
-    `transcript()._event()` auto-fills `span_id` and the session's subscriber
-    routes it to this branch's column).
-
-    The session then drops auditor-role events emitted while the branch is
-    `_replaying_shared` (the prefix shared verbatim with the parent — those
-    come from the parent via `splice()`), and keeps the rest: the divergent
-    suffix (e.g. an `edit_*` op's edited turn) and every target-role serve
-    (the target column is per-branch, no cross-branch splice).
+    `History.branch(inclusive=False)` seeds `pending` with the shared prefix
+    (length `prefix_len`); the caller appends one edited step. That step is
+    served past `prefix_len`, has a fresh anchor, and is the only `Step`
+    no other branch's transcript carries — so it needs an explicit
+    `ModelEvent` + `AnchorEvent` here for `build_history_timeline`'s anchor
+    lookup to resolve it. Shared-prefix serves emit nothing (anchors stable;
+    the timeline references the parent's events — PETRI-L2-HISTORY §3).
     """
 
     def replayable(self, fn, *, boundary=None, source=None):  # type: ignore[override]
@@ -173,11 +125,15 @@ class EmittingTape(Tape):
         @functools.wraps(fn)
         async def w(*a: Any, **kw: Any) -> Any:
             # Mirror `Tape._pop`'s guard so `served` is true iff `base` will
-            # take the serve path (and only then). Peek before; emit after.
+            # take the serve path. `past_prefix` is checked *before* the call
+            # (the append happens inside `base`).
             head = self.pending[0] if self.pending else None
-            served = head is not None and head.source == src and head.boundary == boundary
+            served = (
+                head is not None and head.source == src and head.boundary == boundary
+            )
+            past_prefix = len(self.log) >= self.prefix_len
             out = await base(*a, **kw)
-            if served and isinstance(out, ModelOutput):
+            if served and past_prefix and isinstance(out, ModelOutput):
                 model = get_model(role=role)
                 transcript()._event(  # noqa: SLF001
                     ModelEvent(
@@ -191,6 +147,10 @@ class EmittingTape(Tape):
                         pending=False,
                     )
                 )
+                if (anchor := out.message.id) is not None:
+                    transcript()._event(  # noqa: SLF001
+                        AnchorEvent(anchor_id=anchor, source=src)
+                    )
             return out
 
         return w
@@ -409,7 +369,7 @@ class Branch:
     def __init__(
         self,
         session: Session,
-        branch_id: str,
+        branch_id: str | None = None,
         *,
         seed: str,
         auditor_model: str,
@@ -419,19 +379,10 @@ class Branch:
         target_config: dict | None = None,
         auditor_model_args: dict | None = None,
         target_model_args: dict | None = None,
-        resume: list[Step] | None = None,
-        shared_prefix_len: int | None = None,
-        parent_id: str | None = None,
-        branched_at: str | None = None,
-        branched_at_turn: int | None = None,
+        trajectory: Trajectory | None = None,
     ) -> None:
         self.session = session
-        self.branch_id = branch_id
-        self.resume = resume
         self.meta = BranchMeta(
-            parent=parent_id,
-            branched_at=branched_at,
-            branched_at_turn=branched_at_turn,
             seed=seed,
             auditor_model=auditor_model,
             target_model=target_model,
@@ -442,39 +393,54 @@ class Branch:
             target_model_args=target_model_args,
         )
 
+        # Level-2 trajectory. A root branch (`start`, `make_base`) gets a
+        # fresh restart child of the session's `audit_history.root`; a fork
+        # passes its `History.branch(...)`-built trajectory in directly.
+        if trajectory is None:
+            trajectory = session.audit_history.branch("")
+            trajectory.span_id = branch_id or uuid()
+            trajectory.branched_from = None
+        self.trajectory = trajectory
+
+        #: Auditor turn index at the branch point — count of `GEN_SOURCE`
+        #: steps in the replayed prefix. Stable across edits (anchor ids
+        #: re-mint, the index doesn't). Captured at construction from
+        #: `pending` (drained on first use).
+        self.branched_at_turn: int | None = (
+            sum(
+                1
+                for s in self.trajectory.tape.pending
+                if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
+            )
+            if self.trajectory.tape.prefix_len > 0
+            else None
+        )
+
         # per-branch Store: `AuditTape` is a StoreModel, so without a branch-
         # private store every branch in this process would read/write the
-        # process-global default and cross-contaminate `config_digest`/`steps`
-        # (petri footgun #5). `audit_context(store=...)` installs it per branch.
+        # process-global default and cross-contaminate `config_digest`/
+        # `trajectories` (petri footgun #5). `audit_context(store=...)`
+        # installs it per branch.
         self.store = Store()
         self.error: str | None = None
 
-        # petri target plumbing. On resume, seed the audit tape's replay queue
-        # from the parent branch's recorded steps (value-bearing only — the
-        # `value is not None` filter matches petri's `_read_resume_seed`), so
-        # the prefix replays from `pending` instead of re-calling the model.
+        # petri target plumbing. `audit_context(channel=, audit_trajectory=)`
+        # constructs the `Controller` with `audit_tape=trajectory.tape` so
+        # `stage_*` `ChatMessage.id`s are served on level-2 replay → a child's
+        # level-1 anchors match the parent's exactly (PETRI-L2-HISTORY §2).
         self.channel = Channel(seed_instructions=seed)
-        self.controller = Controller(self.channel)
         self.history = History()
-        self.audit_tape: Tape = (
-            EmittingTape(pending=deque(s for s in resume if s.value is not None))
-            if resume is not None
-            else Tape()
-        )
 
-        # Splice-model bookkeeping. `shared_prefix_len` is how many `resume`
-        # steps are *identical* to the parent's tape (= `len(resume)` for
-        # `branch`/`resample`; `len(resume) - 1` for `edit_*` whose last step
-        # is the edited one). While `len(audit_tape.log) < shared_prefix_len`
-        # the auditor loop holds `_replaying_shared = True`; the session drops
-        # auditor-role events emitted under that flag (the parent supplies
-        # them via `splice()`). The divergent suffix (the edited step, if
-        # any) is past the shared prefix, so its `EmittingTape` `ModelEvent`
-        # is kept.
-        self.shared_prefix_len: int = (
-            len(resume) if shared_prefix_len is None else shared_prefix_len
-        ) if resume is not None else 0
-        self._replaying_shared: bool = resume is not None and self.shared_prefix_len > 0
+        # Splice-model bookkeeping. While the auditor loop is replaying the
+        # *shared* prefix (`tape.log[:prefix_len]`, identical to the parent's
+        # tape), the session drops every auditor-role event — those are
+        # duplicates of what the parent already emitted, and the auditor
+        # column splices them in from the parent's `TimelineSpan` instead.
+        # The flag is flipped at the turn boundary by `workbench_auditor`
+        # (not derived from `len(tape.log) < prefix_len` directly, because
+        # the last shared turn's trailing `ToolEvent`s are emitted *after*
+        # the target side has already advanced `len(log)` to `prefix_len`).
+        self._replaying_shared: bool = self.trajectory.tape.prefix_len > 0
 
         # step gate — `workbench_auditor` awaits `_gate.wait()` each turn then
         # replaces it (one-shot Event). `play()` sets `_free_running`; the loop
@@ -484,11 +450,11 @@ class Branch:
         self._gate = anyio.Event()
         self._free_running = False
         # Set by `workbench_auditor` once `tape.pending` is drained — i.e. the
-        # deterministic prefix has finished replaying (and emitting its real
-        # events via `EmittingTape`). `_register_and_spawn` awaits this so the
-        # dispatch handler doesn't return until the child's columns are hot.
+        # deterministic prefix (and any appended divergent step) has finished
+        # replaying. `_register_and_spawn` awaits this so the dispatch handler
+        # doesn't return until the child's columns are hot.
         self._replayed = anyio.Event()
-        if resume is None:
+        if not self.trajectory.tape.pending:
             self._replayed.set()
 
         # user-injected messages awaiting the next turn boundary (STREAMING.md §B).
@@ -497,10 +463,48 @@ class Branch:
         self.generating: Role | None = None
 
         # span ids — registered on the session so events route to this branch.
-        self.auditor_span_id = uuid()
+        # The auditor span id IS the trajectory's span id (`run_audit` opens
+        # `span(id=audit_trajectory.span_id)` for the auditor); the target
+        # span id is workbench-allocated.
         self.target_span_id = uuid()
-        session.span_role[self.auditor_span_id] = (branch_id, "auditor")
-        session.span_role[self.target_span_id] = (branch_id, "target")
+        session.span_role[self.auditor_span_id] = (self.branch_id, "auditor")
+        session.span_role[self.target_span_id] = (self.branch_id, "target")
+
+    # -- trajectory-derived properties ---------------------------------------
+
+    @property
+    def branch_id(self) -> str:
+        return self.trajectory.span_id
+
+    @property
+    def auditor_span_id(self) -> str:
+        return self.trajectory.span_id
+
+    @property
+    def audit_tape(self) -> Tape:
+        return self.trajectory.tape
+
+    @property
+    def shared_prefix_len(self) -> int:
+        return self.trajectory.tape.prefix_len
+
+    @property
+    def parent_id(self) -> str | None:
+        """The parent `Branch`'s id, or ``None`` for a root branch.
+
+        The synthetic `audit_history.root` is the L2 tree's container, not a
+        runnable branch; a trajectory whose `parent` is the root is a
+        workbench root branch (a `start`).
+        """
+        p = self.trajectory.parent
+        if p is None or p is self.session.audit_history.root:
+            return None
+        return p.span_id
+
+    @property
+    def branched_at(self) -> str | None:
+        """The L2 splice anchor — last anchored step in the replayed prefix."""
+        return self.trajectory.branched_from
 
     # -- step gate ------------------------------------------------------------
 
@@ -551,11 +555,13 @@ class Branch:
 
             # `audit_context()` installs every contextvar children inherit
             # (transcript was set by the Session). `store=self.store` keeps
-            # `AuditTape` per-branch (footgun #5). Drain is session-owned
-            # (footgun #12), so this just runs the audit.
+            # `AuditTape` per-branch (footgun #5). `channel=` builds the
+            # `Controller` with `audit_tape=trajectory.tape` so anchors are
+            # stable across replay. Drain is session-owned (footgun #12), so
+            # this just runs the audit.
             with audit_context(
-                controller=self.controller,
-                audit_tape=self.audit_tape,
+                channel=self.channel,
+                audit_trajectory=self.trajectory,
                 store=self.store,
                 active_model=target_model,
                 model_roles={"auditor": auditor_model, "target": target_model},
@@ -565,8 +571,7 @@ class Branch:
                     target=target_agent(),
                     channel=self.channel,
                     history=self.history,
-                    audit_tape=self.audit_tape,
-                    auditor_span_id=self.auditor_span_id,
+                    audit_trajectory=self.trajectory,
                     target_span_id=self.target_span_id,
                     # name timelines per branch: multiple branches share the
                     # session's one Transcript, so the default would collide.
@@ -601,23 +606,49 @@ class Branch:
         session: Session,
         parent: "Branch",
         *,
-        resume: list[Step],
-        branched_at: str,
-        shared_prefix_len: int | None = None,
+        anchor: str,
+        inclusive: bool = True,
+        edited: Step | None = None,
+        branch_id: str | None = None,
     ) -> "Branch":
-        """A child branch inheriting `parent`'s config (seed, models, turns).
+        """A child branch inheriting `parent`'s config, branched at `anchor`
+        on the session's `audit_history`.
 
-        `shared_prefix_len` is how many leading `resume` steps are byte-
-        identical to `parent.audit_tape.log` (defaults to `len(resume)` —
-        callers that append an edited step pass `len(resume) - 1`).
+        Args:
+            anchor: Level-2 anchor to branch at (any anchored step on
+                `parent`'s lineage — auditor generate, target generate, or
+                a `Stage` mark).
+            inclusive: When ``True`` (`branch`) the matched step is in the
+                replayed prefix; when ``False`` (`resample`/`edit_*`) it is
+                excluded so the child regenerates it live.
+            edited: Optional divergent step appended past `prefix_len`
+                (`edit_*` ops). Served on the first post-prefix turn;
+                `_DivergentTape` emits its `ModelEvent`/`AnchorEvent` so
+                `build_history_timeline` resolves it.
         """
-        m = parent.meta
-        turn = sum(
-            1 for s in resume if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
+        traj = session.audit_history.branch(
+            anchor, from_trajectory=parent.trajectory, inclusive=inclusive
         )
+        if branch_id is not None:
+            traj.span_id = branch_id
+        # `splice()` cuts the parent's content at the `AnchorEvent` matching
+        # `branched_from`, *inclusive*. For `inclusive=False` the matched step
+        # is not in the prefix, so point `branched_from` at the last anchored
+        # step that *is* — recovered from `pending` exactly as
+        # `Tape.replayable` does for `BranchEvent`. (No-op for
+        # `inclusive=True`: the matched step is the last anchored.)
+        traj.branched_from = next(
+            (s.anchor_id for s in reversed(traj.tape.pending) if s.anchor_id), None
+        )
+        if edited is not None:
+            traj.tape.pending.append(edited)
+            new = _DivergentTape(pending=traj.tape.pending)
+            new.prefix_len = traj.tape.prefix_len
+            new._errors = traj.tape._errors  # noqa: SLF001
+            traj.tape = new
+        m = parent.meta
         return cls(
             session,
-            uuid(),
             seed=m.seed,
             auditor_model=m.auditor_model,
             target_model=m.target_model,
@@ -626,29 +657,8 @@ class Branch:
             target_config=m.target_config,
             auditor_model_args=m.auditor_model_args,
             target_model_args=m.target_model_args,
-            resume=resume,
-            shared_prefix_len=shared_prefix_len,
-            parent_id=parent.branch_id,
-            branched_at=branched_at,
-            branched_at_turn=turn,
+            trajectory=traj,
         )
-
-    def auditor_branched_from(self) -> str | None:
-        """Anchor id of the last auditor generate in the *shared* prefix.
-
-        This is the splice anchor for the auditor timeline: the parent's
-        auditor span has a `TURN_END_SOURCE` `AnchorEvent` with this id at the
-        end of that turn (after its `ToolEvent`s), so `splice()` on it yields
-        the parent's full turns up to and including that one. `None` when the
-        shared prefix has no auditor turn (e.g. an edit at turn 0) — `splice()`
-        treats a falsy `branchedFrom` as "discard ancestor prefix".
-        """
-        if self.resume is None:
-            return None
-        for s in reversed(self.resume[: self.shared_prefix_len]):
-            if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput):
-                return s.anchor_id
-        return None
 
     def _build_models(self) -> tuple[Model, Model]:
         # force streaming so provider partial-output flushes fire (default

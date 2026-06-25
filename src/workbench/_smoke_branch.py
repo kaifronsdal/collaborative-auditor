@@ -1,18 +1,20 @@
 """Branch smoke test for the audit-workbench.
 
-Runs a branch to completion, then uses `slice_at` to cut at the first
-target-model turn and creates a second branch from that prefix. Asserts:
+Runs a branch to completion, then forks at the first target-model turn via
+`Branch.fork()` (which delegates to `session.audit_history.branch()` —
+PETRI-L2-HISTORY) and runs the child. Asserts:
 
-(a) The new branch's `audit_tape.pending` has the right length (matching the
-    prefix's value-bearing steps).
-(b) Splice model: the new branch's *target* column gets the prefix's target
-    turns as real `ModelEvent`s (emitted by `EmittingTape` with full `input`);
-    its *auditor* column carries only the post-prefix live turns —
-    shared-prefix auditor events are dropped while `_replaying_shared` (the
-    parent supplies them via `splice()`).
-(c) The new branch goes live and produces ≥1 fresh auditor ModelEvent.
-(d) `slice_at` raises `ValueError` for an unknown anchor_id.
-(e) The session `view()` includes a `branches` key with parent/branched_at metadata.
+(a) The child's `audit_tape` prefix (`tape.prefix_len`) matches the parent's
+    log up to the cutoff, unfiltered (marks included — `_mark` pops `pending`).
+(b) Splice model: the child's *own* auditor-role events (in `_by_role`) are
+    post-prefix only — shared-prefix events are dropped while
+    `_replaying_shared`; the parent supplies them via `splice()`. Anchors
+    are stable across replay (`Controller._gen_id` served), so the child's
+    target timeline references the parent's `ModelEvent`s for the prefix.
+(c) The child goes live and produces ≥1 fresh auditor `ModelEvent`.
+(d) `Branch.fork()` raises `ValueError` for an unknown anchor.
+(e) `view()` includes a `branches` key with parent/branched_at metadata
+    derived from the `Trajectory`.
 
 Run:  uv run python -m workbench._smoke_branch
 """
@@ -24,58 +26,14 @@ from inspect_petri._auditor import AuditTape, audit_context
 from inspect_petri.target import Channel, Controller, Step, Tape
 
 from workbench._smoke_util import FakeConn, model_events_for
-from workbench.run import Branch, slice_at
+from workbench.run import Branch
 from workbench.session import Session
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
 SEED = "test seed"
 
 
-def _test_mid_rollback_slice() -> None:
-    """slice_at should raise ValueError when anchor lands mid-rollback."""
-    from inspect_ai.model import (
-        ChatCompletionChoice,
-        ChatMessageAssistant,
-        ModelOutput,
-    )
-    from inspect_ai.model._model import ModelUsage
-    from inspect_ai.tool import ToolCall
-    from inspect_petri.target import Step
-
-    # Build a minimal ModelOutput with a rollback_conversation tool call.
-    rollback_call = ToolCall(
-        id="tc1",
-        function="rollback_conversation",
-        arguments={"message_id": "m0"},
-        type="function",
-    )
-    mo = ModelOutput(
-        model="test",
-        choices=[],
-        usage=ModelUsage(),
-        error=None,
-    )
-    msg = ChatMessageAssistant(content="", tool_calls=[rollback_call], id="anchor1")
-    choice = ChatCompletionChoice(message=msg, stop_reason="tool_calls")
-    mo.choices = [choice]
-
-    auditor_step = Step(value=mo, source="auditor:Model.generate", anchor_id="anchor1")
-    # NO subsequent boundary=="in" step — this is mid-rollback
-    target_step = Step(value=None, source="Model.generate", anchor_id="anchor2")
-
-    log = [auditor_step, target_step]
-
-    try:
-        slice_at(log, "anchor2")
-        raise AssertionError("Expected slice_at to raise ValueError mid-rollback")
-    except ValueError as exc:
-        assert "mid-rollback" in str(exc), f"Expected 'mid-rollback' in error: {exc}"
-    print("✓ mid-rollback slice guard test passed")
-
-
 async def _amain() -> None:
-    _test_mid_rollback_slice()
-
     session = Session()
     await session.start()
 
@@ -90,7 +48,7 @@ async def _amain() -> None:
 
     log: list[Step] = b1.audit_tape.log
 
-    # Slice at the first target-model step.
+    # Fork at the first target-model step (inclusive — `branch` semantics).
     target_step = next(
         (s for s in log if s.source == "Model.generate" and s.value is not None),
         None,
@@ -99,91 +57,94 @@ async def _amain() -> None:
     assert target_step.anchor_id is not None, "target step has no anchor_id"
     anchor = target_step.anchor_id
 
-    prefix = slice_at(log, anchor)
-    expected_value_steps = sum(1 for s in prefix if s.value is not None)
-    expected_auditor = sum(
-        1
-        for s in prefix
-        if s.source == "auditor:Model.generate" and s.value is not None
-    )
-    expected_target = sum(
-        1 for s in prefix if s.source == "Model.generate" and s.value is not None
-    )
-    assert expected_auditor >= 1, "prefix has no auditor steps"
-    assert expected_target >= 1, "prefix has no target steps"
-
-    # ── (d) slice_at raises for unknown anchor ────────────────────────────────
+    # ── (d) Branch.fork raises for unknown anchor ────────────────────────────
     try:
-        slice_at(log, "unknown-anchor-id-xyz")
-        raise AssertionError("slice_at should have raised ValueError")
+        Branch.fork(session, b1, anchor="unknown-anchor-id-xyz")
+        raise AssertionError("Branch.fork should have raised ValueError")
     except ValueError:
         pass
 
-    # ── branch 2: resume from prefix ─────────────────────────────────────────
+    # ── branch 2: fork from b1 at the target anchor ──────────────────────────
     conn2 = FakeConn()
     session.connections.append(conn2)
 
+    b2 = Branch.fork(session, b1, anchor=anchor)
     # max_turns covers the replayed prefix's auditor steps plus headroom for
     # ≥1 live turn — without eager_resume the prefix can carry up to 3.
-    b2 = Branch(
-        session,
-        "b2",
-        seed=SEED,
-        auditor_model=MODEL,
-        target_model=MODEL,
-        max_turns=expected_auditor + 2,
-        resume=prefix,
-        parent_id="b1",
-        branched_at=anchor,
+    expected_auditor = sum(
+        1
+        for s in b2.audit_tape.pending
+        if s.source == "auditor:Model.generate" and s.value is not None
     )
-    session.branches["b2"] = b2
-    session.current = "b2"
+    expected_target = sum(
+        1
+        for s in b2.audit_tape.pending
+        if s.source == "Model.generate" and s.value is not None
+    )
+    assert expected_auditor >= 1, "prefix has no auditor steps"
+    assert expected_target >= 1, "prefix has no target steps"
+    b2.meta = b2.meta.__class__(
+        **{**b2.meta.__dict__, "max_turns": expected_auditor + 2}
+    )
+    session.branches[b2.branch_id] = b2
+    session.current = b2.branch_id
 
-    # (a) pending has the right count — value-bearing steps only (the
-    # `audit_tape.pending` filter strips value=None markers).
-    assert len(b2.audit_tape.pending) == expected_value_steps, (
-        f"pending length {len(b2.audit_tape.pending)} != expected {expected_value_steps}"
+    # (a) prefix is unfiltered: every step (marks included) is in `pending`,
+    # and `prefix_len` matches.
+    assert len(b2.audit_tape.pending) == b2.audit_tape.prefix_len, (
+        f"pending length {len(b2.audit_tape.pending)} != "
+        f"prefix_len {b2.audit_tape.prefix_len}"
+    )
+    assert b2.audit_tape.prefix_len == log.index(target_step) + 2, (
+        "prefix_len should cover through the matched step + its trailing ack"
     )
 
     b2.play()
     await b2.run()
     await session.close()
 
-    # (b) splice model. Target: per-branch column, no cross-branch splice —
-    # `EmittingTape` emits a real settled ModelEvent (with full `input`, so
-    # `input_refs` is populated) for each replayed target generate. b2's
-    # target column must carry at least the prefix's target steps.
+    # (b)/(c) Auditor: while `_replaying_shared`, `_on_event` drops every
+    # auditor-role event — the shared prefix is spliced from the parent's
+    # `TimelineSpan`, not re-emitted per branch. So b2's *own* auditor
+    # column is live-only; the `expected_auditor` shared turns are absent.
     auditor_evts = model_events_for(conn2, session, b2.auditor_span_id)
-    target_evts = model_events_for(conn2, session, b2.target_span_id)
-
-    target_uuids = {ev["uuid"] for ev in target_evts}
-    assert len(target_uuids) >= expected_target, (
-        f"expected ≥{expected_target} replayed target events on b2, "
-        f"got {len(target_uuids)}"
-    )
-    assert all(ev["input_refs"] for ev in target_evts), (
-        "replayed target event missing input_refs — EmittingTape should emit "
-        "full `input`, not the old `input==[]` synth marker"
-    )
-
-    # Auditor: while `_replaying_shared`, `_on_event` drops every auditor-role
-    # event (the parent's `TimelineSpan` supplies the shared prefix via
-    # `splice()`). So b2's *own* auditor column is live-only — the
-    # `expected_auditor` shared turns must NOT appear here.
     auditor_uuids = {ev["uuid"] for ev in auditor_evts}
     assert len(auditor_uuids) <= b2.meta.max_turns - expected_auditor, (
         f"b2 auditor column has {len(auditor_uuids)} events; shared-prefix "
         f"({expected_auditor}) should have been dropped, leaving "
         f"≤{b2.meta.max_turns - expected_auditor} live"
     )
-
-    # (c) at least one fresh (live) auditor turn after the prefix.
     assert auditor_uuids, "branch 2 produced no live auditor turn after prefix"
 
-    # (e) session view() includes branches metadata.
+    # (b) Target: shared-prefix target generates are *served* (no provider
+    # call → no `ModelEvent` under b2's span). Anchors are stable, so the
+    # b2 target timeline references b1's events for those steps; only b2's
+    # *live* target generates land under its own span.
+    target_evts = model_events_for(conn2, session, b2.target_span_id)
+    target_uuids = {ev["uuid"] for ev in target_evts}
+    # b2's L2 tape carries the full lineage; its target steps must be ≥
+    # the prefix's (replayed) plus ≥1 live.
+    tape_target = sum(
+        1
+        for s in b2.audit_tape.log
+        if s.source == "Model.generate" and s.value is not None
+    )
+    assert tape_target >= expected_target, (
+        f"b2 tape has {tape_target} target steps, expected ≥{expected_target} "
+        f"replayed from prefix"
+    )
+    assert all(ev["input_refs"] for ev in target_evts), (
+        "b2 target event missing input_refs"
+    )
+    assert len(target_uuids) == tape_target - expected_target, (
+        f"b2's own target ModelEvents should be live-only "
+        f"({tape_target - expected_target}), got {len(target_uuids)}"
+    )
+
+    # (e) session view() includes branches metadata derived from Trajectory.
     view = session.view()
     assert "branches" in view, "view() missing 'branches' key"
-    b2_meta = view["branches"].get("b2")
+    b2_meta = view["branches"].get(b2.branch_id)
     assert b2_meta is not None, "b2 not in view branches"
     assert b2_meta["parent"] == "b1", f"wrong parent: {b2_meta['parent']!r}"
     assert b2_meta["branched_at"] == anchor, (
@@ -208,10 +169,11 @@ async def _amain() -> None:
     assert digests["b2"], "b2 config_digest empty"
 
     print(
-        f"branch: prefix_len={len(prefix)} value_steps={expected_value_steps} "
-        f"b2_target={len(target_uuids)} (≥{expected_target} replayed) "
-        f"b2_auditor_own={len(auditor_uuids)} (live-only; {expected_auditor} "
-        f"shared dropped); parent=b1 branched_at={anchor[:8]}…"
+        f"branch: prefix_len={b2.audit_tape.prefix_len} "
+        f"b2_target_own={len(target_uuids)} (live-only; {expected_target} "
+        f"replayed → b1's events) b2_auditor_own={len(auditor_uuids)} "
+        f"(live-only; {expected_auditor} shared dropped); "
+        f"parent=b1 branched_at={anchor[:8]}…"
     )
     print("✓ branch smoke passed")
 
