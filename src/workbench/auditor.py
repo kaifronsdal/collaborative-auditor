@@ -29,6 +29,8 @@ from typing import TYPE_CHECKING
 
 import anyio
 from inspect_ai.agent import Agent, AgentState, agent
+from inspect_ai.event import AnchorEvent
+from inspect_ai.log._transcript import transcript  # noqa: PLC2701
 from inspect_ai.model import (
     ChatMessageSystem,
     ChatMessageUser,
@@ -108,13 +110,35 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
                 ChatMessageUser(content=AUDITOR_USER_MESSAGE.format_map(template_vars)),
             ]
 
+            from workbench.run import TURN_END_SOURCE  # noqa: PLC0415
+
             for turn in range(max_turns):
+                # ── shared-prefix replay flag (splice model) ──────────────────
+                # While the tape's replayed prefix is still inside the part
+                # shared verbatim with the parent, the session drops every
+                # auditor-role event (the parent supplies them via splice).
+                # Past it — the divergent suffix (an edited step) and live
+                # turns — events flow normally.
+                if (
+                    branch._replaying_shared  # noqa: SLF001
+                    and len(tape.log) >= branch.shared_prefix_len
+                ):
+                    branch._replaying_shared = False  # noqa: SLF001
+
                 # ── step-gate + queued-feedback drain, inline ─────────────────
-                await branch._gate.wait()  # noqa: SLF001
-                branch._gate = anyio.Event()  # noqa: SLF001
-                state.messages.extend(branch.queued["auditor"])
-                branch.queued["auditor"].clear()
-                branch.generating = "auditor"
+                # Replay turns (served from `pending`) are deterministic and
+                # I/O-free — burn through them ungated so the prefix events
+                # land before the dispatch handler returns. Gate, drain
+                # queued feedback, and flip `generating` only on *live*
+                # turns.
+                if not tape.pending:
+                    if not branch._replayed.is_set():  # noqa: SLF001
+                        branch._replayed.set()  # noqa: SLF001
+                    await branch._gate.wait()  # noqa: SLF001
+                    branch._gate = anyio.Event()  # noqa: SLF001
+                    state.messages.extend(branch.queued["auditor"])
+                    branch.queued["auditor"].clear()
+                    branch.generating = "auditor"
                 # ──────────────────────────────────────────────────────────────
 
                 state.output = await generate(input=state.messages, tools=tools)
@@ -147,6 +171,20 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
                 else:
                     state.messages.append(
                         ChatMessageUser(content=AUDITOR_CONTINUE_PROMPT)
+                    )
+
+                # End-of-turn anchor for the auditor timeline. petri's own
+                # `AnchorEvent` (from `Tape.replayable`) lands *before*
+                # `execute_tools`, so `splice()` on it would drop this
+                # turn's `ToolEvent`s; this one comes *after* them.
+                # `build_auditor_timeline` keeps only `TURN_END_SOURCE`
+                # anchors, so `splice()`'s `findIndex` resolves to this.
+                if state.output.message.id:
+                    transcript()._event(  # noqa: SLF001
+                        AnchorEvent(
+                            anchor_id=state.output.message.id,
+                            source=TURN_END_SOURCE,
+                        )
                     )
 
             return state

@@ -21,7 +21,7 @@ import {
 } from "@tsmono/inspect-components/transcript/timeline";
 
 import { buildEventTree, isModelEvent, type EventNode } from "./events";
-import type { BranchId, BranchMeta, Role } from "./wire";
+import type { BranchId, Role } from "./wire";
 import { useSession } from "../store/session";
 
 export function useEvents(branch: BranchId, role: Role): Event[] {
@@ -132,7 +132,7 @@ export function useSwimlanes(branch: BranchId, role: Role): Swimlanes {
 export type ForkGroup = { siblings: string[]; idx: number };
 
 /**
- * Per-anchor fork groups for the target swimlane column.
+ * Per-anchor fork groups over a swimlane row set (either column).
  *
  * A `SwimlaneRow` with `branch: true` carries `branchedFrom` — the assistant
  * message id it forked at. The group at that anchor is `[parentRowKey,
@@ -140,7 +140,7 @@ export type ForkGroup = { siblings: string[]; idx: number };
  * position of `selectedKey` within the group, resolved by key-prefix so a
  * nested-branch selection still maps to the ancestor that lives in the group.
  */
-export function computeTargetForks(
+export function computeForks(
   rows: SwimlaneRow[],
   selectedKey: string | null
 ): Map<string, ForkGroup> {
@@ -176,58 +176,6 @@ export function computeTargetForks(
       }
     }
     out.set(anchor, { siblings, idx });
-  }
-  return out;
-}
-
-/**
- * Per-anchor fork groups for the auditor column of the current branch.
- *
- * Two cases produce a chip at a turn whose assistant id is `A`:
- *  - children: branches with `parent === current && branched_at === A` →
- *    group `[current, ...children]`, `idx = 0`.
- *  - own fork point: `current.branched_at === A` → group `[current.parent,
- *    ...siblings-with-same-parent-and-branched_at]`, `idx = position of
- *    current`. Takes precedence when both apply.
- */
-export function useAuditorBranchPoints(): Map<string, ForkGroup> {
-  const current = useSession((s) => s.current);
-  const branches = useSession((s) => s.branches);
-  return useMemo(
-    () => computeAuditorForks(branches, current),
-    [branches, current]
-  );
-}
-
-export function computeAuditorForks(
-  branches: Record<BranchId, BranchMeta>,
-  current: BranchId | null
-): Map<string, ForkGroup> {
-  const out = new Map<string, ForkGroup>();
-  if (current == null) return out;
-
-  const childrenAt = new Map<string, BranchId[]>();
-  for (const [id, meta] of Object.entries(branches)) {
-    if (meta.parent === current && meta.branched_at != null) {
-      const g = childrenAt.get(meta.branched_at) ?? [];
-      g.push(id);
-      childrenAt.set(meta.branched_at, g);
-    }
-  }
-  for (const [anchor, kids] of childrenAt) {
-    out.set(anchor, { siblings: [current, ...kids], idx: 0 });
-  }
-
-  const me = branches[current];
-  if (me?.parent != null && me.branched_at != null) {
-    const sibs: BranchId[] = [];
-    for (const [id, meta] of Object.entries(branches)) {
-      if (meta.parent === me.parent && meta.branched_at === me.branched_at) {
-        sibs.push(id);
-      }
-    }
-    const siblings = [me.parent, ...sibs];
-    out.set(me.branched_at, { siblings, idx: siblings.indexOf(current) });
   }
   return out;
 }

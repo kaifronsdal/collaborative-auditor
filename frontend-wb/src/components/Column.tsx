@@ -10,16 +10,17 @@ import {
 
 import { bisectTurns, eventsToTurns, isModelEvent } from "../lib/events";
 import {
-  useAuditorBranchPoints,
   useEvents,
   useQueued,
   useStagedForTarget,
+  useSwimlanes,
 } from "../lib/selectors";
 import type { BranchId, Role } from "../lib/wire";
 import { useSession } from "../store/session";
 import { Bubble } from "./Bubble";
 import { ModelEventRow } from "./ModelEventRow";
 import { ShimmerBubble } from "./ShimmerBubble";
+import { SwimlaneColumn } from "./SwimlaneColumn";
 
 type Props = {
   branch: BranchId;
@@ -36,7 +37,27 @@ export type ColumnHandle = {
   centeredTimestamp: () => string | null;
 };
 
+/**
+ * The auditor column: once the server-built session-wide auditor timeline is
+ * available, render via the same swimlane/splice path as the target column —
+ * `splice()` reconstructs the shared prefix from the parent branch's real
+ * events. {@link LinearColumn} remains the no-timeline-yet fallback (and
+ * `SwimlaneColumn`'s own fallback for the target column).
+ */
 export const Column = forwardRef<ColumnHandle, Props>(function Column(
+  props,
+  ref
+): JSX.Element {
+  const { branch, role } = props;
+  const { timeline, rows } = useSwimlanes(branch, role);
+  if (role === "auditor" && timeline && rows.length > 0) {
+    return <SwimlaneColumn ref={ref} {...props} />;
+  }
+  return <LinearColumn ref={ref} {...props} />;
+});
+
+/** Linear (non-swimlane) renderer over `byRole[branch][role]`. */
+export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColumn(
   { branch, role, linked, onSync },
   ref
 ): JSX.Element {
@@ -44,21 +65,6 @@ export const Column = forwardRef<ColumnHandle, Props>(function Column(
   const queued = useQueued(branch, role);
   const staged = useStagedForTarget(branch);
   const status = useSession((s) => s.status);
-  const send = useSession((s) => s.send);
-
-  // Auditor-only: per-anchor sibling workbench-branches for the inline
-  // `‹ idx/total ›` chip. Empty map for the target role (target uses
-  // swimlane-row siblings via `SwimlaneColumn` instead).
-  const auditorForks = useAuditorBranchPoints();
-  const switchAuditorSibling = (anchor: string, dir: 1 | -1): void => {
-    const g = auditorForks.get(anchor);
-    if (!g) return;
-    const next = g.idx + dir;
-    if (next < 0 || next >= g.siblings.length) return;
-    const id = g.siblings[next];
-    send({ t: "switch", branch: id });
-    useSession.setState({ current: id, pendingNewAudit: false });
-  };
 
   const scrollRef = useRef<HTMLDivElement>(null);
   // Follow the live edge: stick to the bottom as new content streams in, but
@@ -153,27 +159,18 @@ export const Column = forwardRef<ColumnHandle, Props>(function Column(
   return (
     <div className="column" ref={scrollRef} onScroll={onScrollLinked}>
       <div className="column-head">{role}</div>
-      {turns.map((turn, i) => {
-        const anchor = turn.ev.output?.choices?.[0]?.message?.id;
-        const fork =
-          role === "auditor" && anchor != null ? auditorForks.get(anchor) : undefined;
-        return (
-          <ModelEventRow
-            key={turn.ev.uuid}
-            turn={turn}
-            turnIndex={i}
-            auditor={role === "auditor"}
-            siblingPos={fork && { idx: fork.idx, total: fork.siblings.length }}
-            onSwitchSibling={
-              fork && anchor != null ? (d) => switchAuditorSibling(anchor, d) : undefined
-            }
-            rowRef={(el) => {
-              if (el) rowEls.current.set(turn.ev.uuid!, el);
-              else rowEls.current.delete(turn.ev.uuid!);
-            }}
-          />
-        );
-      })}
+      {turns.map((turn, i) => (
+        <ModelEventRow
+          key={turn.ev.uuid}
+          turn={turn}
+          turnIndex={i}
+          auditor={role === "auditor"}
+          rowRef={(el) => {
+            if (el) rowEls.current.set(turn.ev.uuid!, el);
+            else rowEls.current.delete(turn.ev.uuid!);
+          }}
+        />
+      ))}
       {role === "target" && staged.map((m, i) => (
         <Bubble key={m.id ?? `s${i}`} msg={m} ghost byline={`staged · ${m.role}`} />
       ))}

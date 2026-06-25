@@ -20,6 +20,8 @@ import { renderTool } from "./tool-renderers";
 export type RewriteDraft = {
   status: "pending" | "ready" | "error";
   args?: Record<string, unknown>;
+  /** Target-side: the rewritten message text (staging-call content arg). */
+  content?: string;
   raw?: string;
   error?: string;
 };
@@ -42,8 +44,10 @@ export type ToolPairProps = {
   onRewrite?: (instruction: string, selectedText?: string) => void;
   /** Current LLM rewrite draft for this call (pending/ready/error). */
   rewriteDraft?: RewriteDraft;
-  /** Apply a ready rewrite draft (caller wires this to `editAuditorCall`). */
-  onApplyRewrite?: (args: Record<string, unknown>) => void;
+  /** Apply a ready rewrite draft. Auditor column wires this to
+   *  `editAuditorCall(draft.args)`; target column to
+   *  `editTargetMessage(draft.content)`. */
+  onApplyRewrite?: (draft: RewriteDraft) => void;
   /** Discard the current rewrite draft. */
   onDiscardRewrite?: () => void;
 };
@@ -107,7 +111,7 @@ function resultText(result: unknown): string {
 }
 
 /** Capture the current `window.getSelection()` if it lives inside `root`. */
-function getSelectionWithin(
+export function getSelectionWithin(
   root: HTMLElement | null
 ): { text: string; x: number; y: number } | null {
   if (!root) return null;
@@ -222,13 +226,13 @@ export function ToolPair({
       ) : rewriteDraft?.status === "ready" ? (
         <>
           <pre className="tp-rewrite-preview">
-            {JSON.stringify(rewriteDraft.args, null, 2)}
+            {rewriteDraft.content ?? JSON.stringify(rewriteDraft.args, null, 2)}
           </pre>
           <div className="tp-edit-actions">
             <button
               type="button"
               onClick={() => {
-                if (rewriteDraft.args) onApplyRewrite?.(rewriteDraft.args);
+                onApplyRewrite?.(rewriteDraft);
                 discardRewrite();
               }}
             >
@@ -275,14 +279,58 @@ export function ToolPair({
     </div>
   );
 
+  // Head edit shortcut: pencil opens whichever editor is wired (args on the
+  // auditor column, result on the target column).
+  const headEditMode: "args" | "result" | null =
+    onEdit ? "args" : onEditResult ? "result" : null;
+
   return (
     <div className={`tool-pair${open ? " open" : ""}`} data-fn={fn}>
-      <button className="tp-head" onClick={() => setOpen((o) => !o)} type="button">
+      <div
+        className="tp-head"
+        role="button"
+        tabIndex={0}
+        onClick={(e) => {
+          // Skip the toggle on the second click of a double-click so the
+          // dblclick handler (which forces open) doesn't visibly flicker.
+          if (e.detail > 1) return;
+          setOpen((o) => !o);
+        }}
+        onDoubleClick={onEdit ? () => openEdit("args") : undefined}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen((o) => !o);
+          }
+        }}
+      >
         <Chevron open={open} className="tp-chev" />
         <span className="tp-fn">{fn}</span>
         <span className="tp-sig">{inputStr?.split("\n")[0] ?? signature(args)}</span>
+        {(headEditMode || onRewrite) && (
+          <span className="tp-head-actions" onClick={(e) => e.stopPropagation()}>
+            {headEditMode && (
+              <button
+                type="button"
+                title={headEditMode === "args" ? "edit args" : "edit result"}
+                onClick={() => openEdit(headEditMode)}
+              >
+                <i className="bi bi-pencil" />
+              </button>
+            )}
+            {onRewrite && (
+              <button
+                type="button"
+                title="rewrite with auditor model"
+                onClick={() => openRewrite()}
+              >
+                <i className="bi bi-stars" />
+              </button>
+            )}
+          </span>
+        )}
         <StatusDot state={status} />
-      </button>
+      </div>
       {open && (
         <div className="tp-body" ref={bodyRef} onMouseUp={handleBodyMouseUp}>
           {editing != null ? (

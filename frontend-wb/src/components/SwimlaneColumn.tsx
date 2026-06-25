@@ -1,13 +1,14 @@
 /**
- * Target column rendered from petri's server-built `Timeline` via inspect-view's
- * swimlane layout — the same data path inspect-view uses for petri transcripts
+ * A column rendered from a server-built `Timeline` via inspect-view's swimlane
+ * layout — the same data path inspect-view uses for petri transcripts
  * (`convertServerTimeline` → `computeFlatSwimlaneRows({showBranches:true})`).
  *
- * Layout: a thin lane rail (one row per trajectory, branch rows indented and
- * marked with their fork point) above the conversation. Selecting a lane shows
- * that trajectory's full lineage via `splice(root, span)` — i.e. the parent
- * prefix up to the fork + the branch's own turns, exactly what an unbranched
- * run of that lineage would have produced.
+ * For `role === "target"` the timeline is petri's per-branch trajectory tree
+ * (rollback forks); for `role === "auditor"` it's the session-wide workbench
+ * branch tree (`build_auditor_timeline`). In both cases selecting a lane shows
+ * that span's full lineage via `splice(root, span)` — the parent prefix up to
+ * the fork + the span's own turns, exactly what an unbranched run of that
+ * lineage would have produced.
  *
  * Falls back to the linear `Column` when no server timeline is available yet
  * (first turns of a fresh branch, before the first `{t:"timeline"}` op lands).
@@ -24,49 +25,74 @@ import {
 } from "react";
 import {
   getAgents,
+  type SwimlaneRow,
   type TimelineSpan,
 } from "@tsmono/inspect-components/transcript/timeline";
 import { TimelineSwimLanes } from "@tsmono/inspect-components/transcript/timeline/swimlanes";
 
 import { bisectTurns, eventsToTurns, isModelEvent } from "../lib/events";
 import {
-  computeTargetForks,
+  computeForks,
   useQueued,
   useStagedForTarget,
   useSwimlanes,
 } from "../lib/selectors";
-import type { BranchId } from "../lib/wire";
+import type { BranchId, Role } from "../lib/wire";
 import { useSession } from "../store/session";
 import { Bubble } from "./Bubble";
-import { Column, type ColumnHandle } from "./Column";
+import { LinearColumn, type ColumnHandle } from "./Column";
 import { ModelEventRow } from "./ModelEventRow";
 import { ShimmerBubble } from "./ShimmerBubble";
 
-type Props = { branch: BranchId; linked?: boolean; onSync?: (ts: string) => void };
+type Props = {
+  branch: BranchId;
+  role?: Role;
+  linked?: boolean;
+  onSync?: (ts: string) => void;
+};
+
+/** The `TimelineSpan` a row wraps (one row = one branch span here). */
+function rowSpan(r: SwimlaneRow): TimelineSpan {
+  return getAgents(r.spans[0])[0];
+}
 
 export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneColumn(
-  { branch, linked, onSync },
+  { branch, role = "target", linked, onSync },
   ref
 ): JSX.Element {
-  const { timeline, rows, layouts, lineage } = useSwimlanes(branch, "target");
-  const queued = useQueued(branch, "target");
+  const { timeline, rows, layouts, lineage } = useSwimlanes(branch, role);
+  const queued = useQueued(branch, role);
   const staged = useStagedForTarget(branch);
   const status = useSession((s) => s.status);
+  const send = useSession((s) => s.send);
+  const isAuditor = role === "auditor";
 
-  // Selected lane key. Default to the deepest (latest) branch row, falling
-  // back to root — that's "what the target is currently seeing".
-  const defaultKey = useMemo(
-    () => rows.length > 0 ? rows[rows.length - 1].key : null,
-    [rows]
-  );
+  // Selected lane key. For the target column, default to the deepest (latest)
+  // branch row — "what the target is currently seeing". For the auditor
+  // column, the swimlane is the workbench-branch tree and the selected lane
+  // *is* the current branch — find the row whose span id is `branch`.
+  const defaultKey = useMemo(() => {
+    if (rows.length === 0) return null;
+    if (isAuditor) {
+      const r = rows.find((r) => rowSpan(r).id === branch);
+      if (r) return r.key;
+    }
+    return rows[rows.length - 1].key;
+  }, [rows, isAuditor, branch]);
   const [selectedKey, setSelectedKey] = useState<string | null>(defaultKey);
   useEffect(() => {
     // Follow the live tip when new branch rows appear (rollback) and the user
     // hasn't picked a lane explicitly, or their selection no longer exists.
-    if (selectedKey == null || !rows.some((r) => r.key === selectedKey)) {
+    // The auditor lane is *derived* from `branch`, so it always tracks
+    // `defaultKey`.
+    if (
+      isAuditor ||
+      selectedKey == null ||
+      !rows.some((r) => r.key === selectedKey)
+    ) {
       setSelectedKey(defaultKey);
     }
-  }, [defaultKey, rows, selectedKey]);
+  }, [defaultKey, rows, selectedKey, isAuditor]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -78,27 +104,44 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
 
   // Resolve the selected row's TimelineSpan and its full event lineage.
   const selected = rows.find((r) => r.key === selectedKey) ?? rows[0];
-  const span: TimelineSpan | undefined = selected
-    ? getAgents(selected.spans[0])[0]
-    : undefined;
+  const span: TimelineSpan | undefined = selected ? rowSpan(selected) : undefined;
   const laneEvents = useMemo(
     () => (span && timeline ? lineage(span) : []),
     [span, timeline, lineage]
   );
-  const laneTurns = useMemo(() => eventsToTurns(laneEvents, false), [laneEvents]);
+  const laneTurns = useMemo(
+    () => eventsToTurns(laneEvents, isAuditor),
+    [laneEvents, isAuditor]
+  );
   const rowEls = useRef(new Map<string, HTMLElement>());
 
   // Fork points keyed by assistant message id → sibling row keys + our idx.
   const forks = useMemo(
-    () => computeTargetForks(rows, selected?.key ?? null),
+    () => computeForks(rows, selected?.key ?? null),
     [rows, selected?.key]
   );
+  const selectLane = (key: string | null): void => {
+    if (isAuditor) {
+      // Auditor lanes are workbench branches — switching one switches the
+      // whole desk. Dispatch `switch`; the resulting `state` broadcast
+      // updates `current`, DeskView re-renders with the new `branch` prop,
+      // and `defaultKey` follows.
+      const r = key != null ? rows.find((r) => r.key === key) : undefined;
+      const id = r ? rowSpan(r).id : null;
+      if (id != null && id !== branch) {
+        send({ t: "switch", branch: id });
+        useSession.setState({ current: id, pendingNewAudit: false });
+      }
+    } else {
+      setSelectedKey(key ?? defaultKey);
+    }
+  };
   const switchSibling = (anchor: string, dir: 1 | -1): void => {
     const g = forks.get(anchor);
     if (!g) return;
     const next = g.idx + dir;
     if (next < 0 || next >= g.siblings.length) return;
-    setSelectedKey(g.siblings[next]);
+    selectLane(g.siblings[next]);
   };
 
   const centeredTimestamp = (): string | null => {
@@ -150,9 +193,11 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   });
 
-  // No timeline yet → linear column (first target turn hasn't completed).
+  // No timeline yet → linear column (first turn hasn't completed).
   if (!timeline || rows.length === 0) {
-    return <Column ref={ref} branch={branch} role="target" linked={linked} onSync={onSync} />;
+    return (
+      <LinearColumn ref={ref} branch={branch} role={role} linked={linked} onSync={onSync} />
+    );
   }
 
   const lastEvent = laneEvents[laneEvents.length - 1];
@@ -163,9 +208,11 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   return (
     <div className="column swimlane-column" ref={scrollRef} onScroll={onScrollLinked}>
       <div className="column-head">
-        target
+        {role}
         {rows.length > 1 && (
-          <span className="sl-count">{rows.length} trajectories</span>
+          <span className="sl-count">
+            {rows.length} {isAuditor ? "branches" : "trajectories"}
+          </span>
         )}
       </div>
 
@@ -175,8 +222,8 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
             layouts={layouts}
             timeline={{
               selected: selected?.key ?? null,
-              select: (k) => setSelectedKey(k ?? defaultKey),
-              clearSelection: () => setSelectedKey(defaultKey),
+              select: (k) => selectLane(k),
+              clearSelection: () => selectLane(defaultKey),
             }}
             defaultCollapsed={false}
           />
@@ -191,6 +238,7 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
             key={turn.ev.uuid}
             turn={turn}
             turnIndex={i}
+            auditor={isAuditor}
             siblingPos={fork && { idx: fork.idx, total: fork.siblings.length }}
             onSwitchSibling={
               fork && anchor != null ? (d) => switchSibling(anchor, d) : undefined
@@ -202,7 +250,7 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
           />
         );
       })}
-      {staged.map((m, i) => (
+      {!isAuditor && staged.map((m, i) => (
         <Bubble key={m.id ?? `s${i}`} msg={m} ghost byline={`staged · ${m.role}`} />
       ))}
       {queued.map((m, i) => (
@@ -212,4 +260,3 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
     </div>
   );
 });
-

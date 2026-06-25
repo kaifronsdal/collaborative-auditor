@@ -5,10 +5,12 @@ target-model turn and creates a second branch from that prefix. Asserts:
 
 (a) The new branch's `audit_tape.pending` has the right length (matching the
     prefix's value-bearing steps).
-(b) Prefix synthesis emitted N settled ModelEvents on the new branch before
-    its first live turn (synthesised events have `input==[]` / `input_refs==None`).
-(c) The new branch goes live and produces ≥1 fresh ModelEvent (i.e. turns after
-    the prefix do not come from `pending`).
+(b) Splice model: the new branch's *target* column gets the prefix's target
+    turns as real `ModelEvent`s (emitted by `EmittingTape` with full `input`);
+    its *auditor* column carries only the post-prefix live turns —
+    shared-prefix auditor events are dropped while `_replaying_shared` (the
+    parent supplies them via `splice()`).
+(c) The new branch goes live and produces ≥1 fresh auditor ModelEvent.
 (d) `slice_at` raises `ValueError` for an unknown anchor_id.
 (e) The session `view()` includes a `branches` key with parent/branched_at metadata.
 
@@ -147,27 +149,36 @@ async def _amain() -> None:
     await b2.run()
     await session.close()
 
-    # (b) prefix synthesis: settled events (input==[], input_refs==None) on b2's
-    # auditor and target spans appear before the first live turn.
+    # (b) splice model. Target: per-branch column, no cross-branch splice —
+    # `EmittingTape` emits a real settled ModelEvent (with full `input`, so
+    # `input_refs` is populated) for each replayed target generate. b2's
+    # target column must carry at least the prefix's target steps.
     auditor_evts = model_events_for(conn2, session, b2.auditor_span_id)
     target_evts = model_events_for(conn2, session, b2.target_span_id)
 
-    synth_auditor = [
-        ev for ev in auditor_evts if ev["input"] == [] and ev["input_refs"] is None
-    ]
-    synth_target = [
-        ev for ev in target_evts if ev["input"] == [] and ev["input_refs"] is None
-    ]
-    assert len({ev["uuid"] for ev in synth_auditor}) >= expected_auditor, (
-        f"expected ≥{expected_auditor} synthesised auditor events, got {len(synth_auditor)}"
+    target_uuids = {ev["uuid"] for ev in target_evts}
+    assert len(target_uuids) >= expected_target, (
+        f"expected ≥{expected_target} replayed target events on b2, "
+        f"got {len(target_uuids)}"
     )
-    assert len({ev["uuid"] for ev in synth_target}) >= expected_target, (
-        f"expected ≥{expected_target} synthesised target events, got {len(synth_target)}"
+    assert all(ev["input_refs"] for ev in target_evts), (
+        "replayed target event missing input_refs — EmittingTape should emit "
+        "full `input`, not the old `input==[]` synth marker"
+    )
+
+    # Auditor: while `_replaying_shared`, `_on_event` drops every auditor-role
+    # event (the parent's `TimelineSpan` supplies the shared prefix via
+    # `splice()`). So b2's *own* auditor column is live-only — the
+    # `expected_auditor` shared turns must NOT appear here.
+    auditor_uuids = {ev["uuid"] for ev in auditor_evts}
+    assert len(auditor_uuids) <= b2.meta.max_turns - expected_auditor, (
+        f"b2 auditor column has {len(auditor_uuids)} events; shared-prefix "
+        f"({expected_auditor}) should have been dropped, leaving "
+        f"≤{b2.meta.max_turns - expected_auditor} live"
     )
 
     # (c) at least one fresh (live) auditor turn after the prefix.
-    live_auditor = [ev for ev in auditor_evts if ev["input_refs"] is not None]
-    assert len(live_auditor) >= 1, "branch 2 produced no live auditor turn after prefix"
+    assert auditor_uuids, "branch 2 produced no live auditor turn after prefix"
 
     # (e) session view() includes branches metadata.
     view = session.view()
@@ -198,9 +209,9 @@ async def _amain() -> None:
 
     print(
         f"branch: prefix_len={len(prefix)} value_steps={expected_value_steps} "
-        f"synth_auditor={len(synth_auditor)} synth_target={len(synth_target)} "
-        f"live_turns={len(live_auditor)}; "
-        f"parent=b1 branched_at={anchor[:8]}…"
+        f"b2_target={len(target_uuids)} (≥{expected_target} replayed) "
+        f"b2_auditor_own={len(auditor_uuids)} (live-only; {expected_auditor} "
+        f"shared dropped); parent=b1 branched_at={anchor[:8]}…"
     )
     print("✓ branch smoke passed")
 

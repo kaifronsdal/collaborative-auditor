@@ -132,10 +132,13 @@ async def _amain() -> None:
             errs: list[str] = []
             page.on("pageerror", lambda e: errs.append(str(e)))
             await page.goto(f"http://127.0.0.1:{ui_port}/?session={sid}")
-            await page.wait_for_selector(".swimlane-column .model-event-row", timeout=15_000)
 
-            tgt = page.locator(".swimlane-column")
-            aud = page.locator(".columns .column").first
+            # Both columns render via `SwimlaneColumn`; select by layout slot.
+            aud = page.locator(".columns .col-wrap").first
+            tgt = page.locator(".columns .col-wrap").last
+            await expect(tgt.locator(".model-event-row").first).to_be_visible(
+                timeout=15_000
+            )
 
             # ── target tool-call + result render as a .tool-pair card ──
             tgt_pairs = tgt.locator(".tool-pair")

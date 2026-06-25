@@ -53,10 +53,13 @@ export type BranchConfig = {
   target_config?: Partial<GenerateConfigDict>;
 };
 
-/** LLM-assisted rewrite draft for one auditor tool_call (keyed by call_id). */
+/** LLM-assisted rewrite draft. Keyed by `call_id` (auditor-side tool_call
+ *  rewrite) or `message_id` (target-side message rewrite). */
 export type RewriteDraft = {
   status: "pending" | "ready" | "error";
   args?: Record<string, unknown>;
+  /** Target-side: the rewritten message text (staging-call content arg). */
+  content?: string;
   raw?: string;
   error?: string;
 };
@@ -232,8 +235,20 @@ export type SessionState = {
     selectedText?: string
   ) => void;
 
+  /** Ask the auditor model to rewrite a *target-side* message (user/system/
+   *  tool). Backend resolves the staging tool_call via `locate_staging_call`
+   *  then runs the same `generate_rewrite`. Draft lands in
+   *  `rewriteDrafts[messageId]`; apply via `editTargetMessage`. */
+  rewriteTargetMessage: (
+    messageId: string,
+    role: "user" | "system" | "tool",
+    instruction: string,
+    selectedText?: string,
+    toolCallId?: string
+  ) => void;
+
   /** Drop a rewrite draft (discard or post-apply cleanup). */
-  clearRewriteDraft: (callId: string) => void;
+  clearRewriteDraft: (key: string) => void;
 
   /**
    * Flip `status` locally before the round-trip: play→running, pause→paused,
@@ -481,11 +496,13 @@ export const useSession = create<SessionState>((set, get) => ({
         }
 
         case "rewrite_draft": {
+          const key = msg.call_id ?? msg.message_id;
+          if (key == null) return { version: msg.v };
           const draft: RewriteDraft = msg.error
             ? { status: "error", error: msg.error }
-            : { status: "ready", args: msg.args ?? {}, raw: msg.raw };
+            : { status: "ready", args: msg.args ?? {}, content: msg.content, raw: msg.raw };
           return {
-            rewriteDrafts: { ...state.rewriteDrafts, [msg.call_id]: draft },
+            rewriteDrafts: { ...state.rewriteDrafts, [key]: draft },
             version: msg.v,
           };
         }
@@ -592,6 +609,7 @@ export const useSession = create<SessionState>((set, get) => ({
         [PENDING_ID]: {
           parent: null,
           branched_at: null,
+          branched_at_turn: null,
           status: "paused" as const,
           seed: params.seed,
         },
@@ -703,9 +721,26 @@ export const useSession = create<SessionState>((set, get) => ({
     });
   },
 
-  clearRewriteDraft: (callId) => {
+  rewriteTargetMessage: (messageId, role, instruction, selectedText, toolCallId) => {
+    const current = get().current;
+    if (current == null) return;
+    set((state) => ({
+      rewriteDrafts: { ...state.rewriteDrafts, [messageId]: { status: "pending" } },
+    }));
+    get().send({
+      t: "rewrite_target_message",
+      branch: current,
+      message_id: messageId,
+      role,
+      instruction,
+      ...(selectedText ? { selected_text: selectedText } : {}),
+      ...(toolCallId != null ? { tool_call_id: toolCallId } : {}),
+    });
+  },
+
+  clearRewriteDraft: (key) => {
     set((state) => {
-      const { [callId]: _dropped, ...rest } = state.rewriteDrafts;
+      const { [key]: _dropped, ...rest } = state.rewriteDrafts;
       return { rewriteDrafts: rest };
     });
   },
@@ -760,6 +795,7 @@ function _pendingChild(
       [PENDING_BRANCH]: {
         parent: current,
         branched_at: anchorId,
+        branched_at_turn: null,
         status: "paused",
         seed: state.branches[current]?.seed ?? "",
       },

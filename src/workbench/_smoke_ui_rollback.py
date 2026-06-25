@@ -200,19 +200,24 @@ async def _amain() -> None:
             page.on("pageerror", lambda e: errors.append(str(e)))
             await page.goto(f"http://127.0.0.1:{ui_port}/?session={sid}")
 
+            # Both columns now render via `SwimlaneColumn`; select by layout
+            # slot (first/last `.col-wrap`) so the assertions are role-stable.
+            auditor_col = page.locator(".columns .col-wrap").first
+            target_col = page.locator(".columns .col-wrap").last
+
             # The frontend should connect to /ws/{sid}, receive the completed
             # branch's full state (incl. timelines), and render inspect-view's
             # gantt swimlane (TimelineSwimLanes — CSS-module classes, so we
             # select via role/host instead of class names).
-            gantt = page.locator(".lane-gantt-host")
+            gantt = target_col.locator(".lane-gantt-host")
             await expect(gantt).to_be_visible(timeout=15_000)
             lanes = gantt.locator('[role="row"]')
             await expect(lanes).to_have_count(2)
-            print("UI ✓ .lane-gantt-host visible with 2 swimlane rows")
+            print("UI ✓ target .lane-gantt-host visible with 2 swimlane rows")
 
             # Default selection = latest (branch 2); shows spliced lineage:
             # r1 (prefix) then r4, r5.
-            target_bubbles = page.locator(".swimlane-column .bubble.assistant")
+            target_bubbles = target_col.locator(".bubble.assistant")
             texts = [t.strip() for t in await target_bubbles.all_text_contents()]
             assert "r1" in texts and "r4" in texts and "r5" in texts, (
                 f"branch-2 lineage missing expected replies; got {texts}"
@@ -226,7 +231,7 @@ async def _amain() -> None:
             await lanes.first.locator("> div").first.click()
             texts1 = [
                 t.strip()
-                for t in await page.locator(".swimlane-column .bubble.assistant").all_text_contents()
+                for t in await target_col.locator(".bubble.assistant").all_text_contents()
             ]
             assert texts1[:3] == ["r1", "r2", "r3"], (
                 f"branch-1 should show r1/r2/r3, got {texts1}"
@@ -238,7 +243,6 @@ async def _amain() -> None:
 
             # Auditor column renders tool calls as .tool-pair cards (Proposal 2),
             # one per call, nested under their model turn — including the rollback.
-            auditor_col = page.locator(".columns .column").first
             tool_fns = await auditor_col.locator(".tool-pair .tp-fn").all_text_contents()
             assert "rollback_conversation" in tool_fns, (
                 f"auditor .tool-pair cards missing rollback_conversation; got {tool_fns}"
@@ -259,7 +263,7 @@ async def _amain() -> None:
             # ── inline branch-point chip (‹ idx/total ›) ────────────────────
             # Currently viewing branch-1 (clicked above). r1 is the fork point
             # → exactly one .branch-nav in the target column, reading "1/2".
-            chips = page.locator(".swimlane-column .branch-nav")
+            chips = target_col.locator(".branch-nav")
             await expect(chips).to_have_count(1)
             pos = chips.first.locator(".branch-nav-pos")
             await expect(pos).to_have_text("1/2")
@@ -272,15 +276,13 @@ async def _amain() -> None:
             await chips.first.get_by_role("button", name="Next branch").click()
             texts2 = [
                 t.strip()
-                for t in await page.locator(
-                    ".swimlane-column .bubble.assistant"
-                ).all_text_contents()
+                for t in await target_col.locator(".bubble.assistant").all_text_contents()
             ]
             assert "r4" in texts2 and "r5" in texts2 and "r2" not in texts2, (
                 f"after › expected branch-2 lineage (r1/r4/r5), got {texts2}"
             )
             await expect(
-                page.locator(".swimlane-column .branch-nav .branch-nav-pos")
+                target_col.locator(".branch-nav .branch-nav-pos")
             ).to_have_text("2/2")
             print(f"UI ✓ › switched to branch-2: {texts2}; chip now 2/2")
 

@@ -24,6 +24,8 @@ export type QueuedMap = Record<BranchId, Record<Role, ChatMessage[]>>;
 export type BranchMeta = {
   parent: string | null;
   branched_at: string | null;
+  /** Auditor turn index at the slice — stable sibling key (anchor ids re-mint on edit). */
+  branched_at_turn: number | null;
   status: Status;
   seed: string;
 };
@@ -57,8 +59,14 @@ export type Down =
       t: "rewrite_draft";
       v: number;
       branch: BranchId;
-      call_id: string;
+      /** Auditor-side rewrite key (tool_call id). */
+      call_id?: string;
+      /** Target-side rewrite key (the edited target message's id). */
+      message_id?: string;
       args?: Record<string, unknown>;
+      /** Target-side only: the staging-arg text that becomes the visible
+       *  message — what `edit_target_message` would be applied with. */
+      content?: string;
       raw?: string;
       error?: string;
     }
@@ -105,6 +113,15 @@ export type Up =
       message_id: string;
       role: "user" | "system" | "tool";
       content: string;
+      tool_call_id?: string;
+    }
+  | {
+      t: "rewrite_target_message";
+      branch: BranchId;
+      message_id: string;
+      role: "user" | "system" | "tool";
+      instruction: string;
+      selected_text?: string;
       tool_call_id?: string;
     }
   | { t: "switch"; branch: BranchId };

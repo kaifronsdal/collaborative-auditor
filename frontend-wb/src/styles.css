@@ -550,6 +550,22 @@ body {
   color: var(--ink-dim); font-size: 11.5px; flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Hover-reveal edit/rewrite icon strip on the collapsed header. Hidden once
+   the card is open (the labelled body buttons take over — no duplication). */
+.tp-head-actions {
+  display: inline-flex; gap: 2px; flex-shrink: 0;
+  opacity: 0; transition: opacity .12s;
+}
+.tool-pair:hover .tp-head-actions { opacity: 1; }
+.tool-pair.open .tp-head-actions { display: none; }
+.tp-head-actions button {
+  width: 20px; height: 20px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: var(--r-sm);
+  background: none; cursor: pointer;
+  color: var(--ink-faint); font-size: 12px; line-height: 1;
+}
+.tp-head-actions button:hover { background: var(--bg-200); color: var(--accent-text); }
 .tp-body { border-top: 1px solid var(--border-soft); }
 .tp-slot { padding: var(--sp-2); }
 .tp-slot + .tp-slot { border-top: 1px dashed var(--border-soft); }
@@ -617,6 +633,20 @@ body {
   padding: 1px 4px; border-radius: 3px;
 }
 .tp-rewrite .tp-edit-actions { border-top: none; }
+
+/* Target-column lead-bubble rewrite panel — same internals as `.tp-rewrite`
+   (reuses `.tp-rewrite-*` / `.tp-edit-*` children) but card-shaped to sit
+   under a free-standing bubble rather than inside a tool-pair. */
+.lead-rewrite {
+  margin: var(--sp-1) 0 var(--sp-2);
+  padding: var(--sp-2);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  background: var(--accent-dim);
+}
+.lead-rewrite .tp-lbl { color: var(--accent-text); }
+.lead-rewrite .tp-lbl i { margin-right: 4px; }
+.lead-rewrite .tp-edit-actions { border-top: none; }
+.lead-rewrite .tp-edit-actions button:disabled { opacity: .4; cursor: default; text-decoration: none; }
 .tp-rewrite .tp-edit-actions button:disabled { opacity: .4; cursor: default; text-decoration: none; }
 /* Floating selection pill — `position: fixed` because coords come from
    `Range.getBoundingClientRect()` (viewport space). */

@@ -174,7 +174,10 @@ async def scenario_a(dump_path: Path | None) -> None:
             )
             seen_in[u] = bid
 
-    # A5: every branch has both columns populated
+    # A5: every branch has both columns populated. For child branches the
+    # auditor column is *own* events only (shared-prefix auditor events are
+    # dropped while `_replaying_shared`; the parent supplies them via
+    # `splice()`), so this asserts each child produced ≥1 live auditor turn.
     for bid in ("b1", "b2", "b3"):
         for role in ("auditor", "target"):
             uuids = by_branch_role.get((bid, role), set())
@@ -188,31 +191,47 @@ async def scenario_a(dump_path: Path | None) -> None:
     ), "A6: branch stores are not pairwise distinct"
 
     # ── A7: b3's prefix is consistent with slicing b2's log ──────────────────
-    # _synthesize_prefix_events emits one ModelEvent per ModelOutput step only;
-    # other value-bearing steps (channel receives, tool acks) are replayed
-    # silently by the tape. Count just the ModelOutput steps.
-    expected_b3_model_steps = sum(
-        1 for s in prefix3 if isinstance(s.value, ModelOutput)
+    # Splice model: `EmittingTape` emits a real settled ModelEvent (with full
+    # `input`) per replayed *target* generate; replayed *auditor* generates
+    # are dropped while `_replaying_shared` (b2 supplies them via `splice()`).
+    # So b3's target column covers the prefix's target ModelOutput steps, and
+    # b3's auditor column is strictly its own live turns.
+    expected_b3_target_steps = sum(
+        1
+        for s in prefix3
+        if s.source == "Model.generate" and isinstance(s.value, ModelOutput)
+    )
+    expected_b3_auditor_steps = sum(
+        1
+        for s in prefix3
+        if s.source == "auditor:Model.generate" and isinstance(s.value, ModelOutput)
     )
     assert len(b3.resume or []) == len(prefix3), "A7: b3.resume length mismatch"
-    synth_b3 = [
-        ev
-        for ev in _events(conn)
-        if ev["event"] == "model"
-        and _resolve_branch_role(ev.get("span_id"), session)
-        in {("b3", "auditor"), ("b3", "target")}
+    b3_target = by_branch_role.get(("b3", "target"), set())
+    assert len(b3_target) >= expected_b3_target_steps, (
+        f"A7: b3 target column has {len(b3_target)} events, expected "
+        f"≥{expected_b3_target_steps} replayed prefix target steps"
+    )
+    b3_auditor = by_branch_role.get(("b3", "auditor"), set())
+    assert len(b3_auditor) <= b3.meta.max_turns - expected_b3_auditor_steps, (
+        f"A7: b3 auditor column has {len(b3_auditor)} own events; the "
+        f"{expected_b3_auditor_steps} shared-prefix turns should have been "
+        f"dropped, leaving ≤{b3.meta.max_turns - expected_b3_auditor_steps} live"
+    )
+    # No event anywhere still carries the old `input==[]` synth marker —
+    # EmittingTape supplies the caller's real `input`.
+    assert not any(
+        ev["event"] == "model"
         and ev["input"] == []
         and ev.get("input_refs") is None
-    ]
-    assert len({e["uuid"] for e in synth_b3}) == expected_b3_model_steps, (
-        f"A7: b3 synthesised {len({e['uuid'] for e in synth_b3})} != "
-        f"expected {expected_b3_model_steps} ModelOutput prefix steps"
-    )
+        for ev in _events(conn)
+    ), "A7: found a ModelEvent with empty input — EmittingTape should fill it"
 
     print(
         f"A: branches=3 events={len(new_uuids)} "
         f"model_events={sum(len(v) for v in by_branch_role.values())} "
-        f"b3_prefix_model_steps={expected_b3_model_steps}"
+        f"b3_target={len(b3_target)} (≥{expected_b3_target_steps} replayed) "
+        f"b3_auditor_own={len(b3_auditor)}"
     )
     print("✓ scenario A (level-2 branch chain) passed")
 

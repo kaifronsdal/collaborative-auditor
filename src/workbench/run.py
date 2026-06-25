@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import functools
 import json
 import logging
 import re
@@ -35,7 +36,7 @@ from inspect_ai.model import (
     ModelOutput,
     get_model,
 )
-from inspect_ai.log._transcript import init_transcript  # noqa: PLC2701
+from inspect_ai.log._transcript import init_transcript, transcript  # noqa: PLC2701
 from inspect_ai.util import Store
 from inspect_petri._auditor import audit_context, run_audit
 from inspect_petri.target import (
@@ -65,6 +66,9 @@ class BranchMeta:
 
     parent: str | None  # branch_id this was branched from
     branched_at: str | None  # anchor_id where the slice happened
+    branched_at_turn: int | None
+    """Auditor turn index at the slice — count of `GEN_SOURCE` steps in `resume`.
+    Stable across edits (anchor ids re-mint, the index doesn't)."""
     seed: str
     auditor_model: str
     target_model: str
@@ -125,6 +129,72 @@ def slice_at(steps: list[Step], anchor_id: str) -> list[Step]:
 
 
 TARGET_GEN_SOURCE = "Model.generate"
+
+#: `workbench_auditor` emits an `AnchorEvent` with this `source` at the *end*
+#: of each turn (after `execute_tools`). `build_auditor_timeline` keeps only
+#: these — petri's own `Tape.replayable` `AnchorEvent` (source = `GEN_SOURCE`)
+#: lands *before* the turn's `ToolEvent`s, so splicing on it would drop them.
+TURN_END_SOURCE = "workbench:turn"
+
+# Tape sources that correspond to a model.generate() — those are the steps
+# whose serve path should emit a settled ModelEvent so a forked branch's
+# replayed prefix is wire-indistinguishable from a live run.
+_GEN_ROLES: dict[str, Role] = {
+    GEN_SOURCE: "auditor",
+    TARGET_GEN_SOURCE: "target",
+}
+
+
+class EmittingTape(Tape):
+    """Level-2 audit `Tape` whose serve path emits a real settled `ModelEvent`.
+
+    petri's `Tape.replayable` returns the cached `ModelOutput` without calling
+    `Model.generate`, so a forked branch's replayed turn produces no event for
+    that generate. This subclass detects the serve path for the two generate
+    sources and emits the event itself, with the caller's actual `input` (the
+    loop's `state.messages` at that point), inside the live span (so
+    `transcript()._event()` auto-fills `span_id` and the session's subscriber
+    routes it to this branch's column).
+
+    The session then drops auditor-role events emitted while the branch is
+    `_replaying_shared` (the prefix shared verbatim with the parent — those
+    come from the parent via `splice()`), and keeps the rest: the divergent
+    suffix (e.g. an `edit_*` op's edited turn) and every target-role serve
+    (the target column is per-branch, no cross-branch splice).
+    """
+
+    def replayable(self, fn, *, boundary=None, source=None):  # type: ignore[override]
+        src = source if source is not None else fn.__qualname__
+        base = super().replayable(fn, boundary=boundary, source=src)
+        role = _GEN_ROLES.get(src)
+        if role is None:
+            return base
+
+        @functools.wraps(fn)
+        async def w(*a: Any, **kw: Any) -> Any:
+            # Mirror `Tape._pop`'s guard so `served` is true iff `base` will
+            # take the serve path (and only then). Peek before; emit after.
+            head = self.pending[0] if self.pending else None
+            served = head is not None and head.source == src and head.boundary == boundary
+            out = await base(*a, **kw)
+            if served and isinstance(out, ModelOutput):
+                model = get_model(role=role)
+                transcript()._event(  # noqa: SLF001
+                    ModelEvent(
+                        model=model.name,
+                        role=role,
+                        input=list(kw.get("input") or (a[0] if a else [])),
+                        tools=[],
+                        tool_choice="auto",
+                        config=GenerateConfig(),
+                        output=out,
+                        pending=False,
+                    )
+                )
+            return out
+
+        return w
+
 
 # Auditor tool → the argument that becomes the target-side message body.
 # Used by `locate_staging_call` to map a target user/system/tool message back
@@ -189,10 +259,12 @@ def locate_staging_call(
     Finds the marked `boundary=="in"` step with `anchor_id == message_id` (the
     `Stage` command receipt), walks back to the preceding auditor generate, and
     picks the tool_call whose function matches `role` (disambiguated by
-    `tool_call_id` for tool results). Returns `(aud_idx, aud_step, call_id,
-    arg_key)`. Raises `ValueError` if the message can't be located or the
-    matching tool_call is ambiguous — caller surfaces that as a
-    "use the auditor column's tool-call edit" hint.
+    `tool_call_id` for tool results, or positionally by counting earlier
+    `boundary=="in"` marks — each auditor tool_call yields exactly one, in
+    order). Returns `(aud_idx, aud_step, call_id, arg_key)`. Raises
+    `ValueError` if the message can't be located or the matching tool_call is
+    ambiguous — caller surfaces that as a "use the auditor column's tool-call
+    edit" hint.
     """
     mark_idx = next(
         (
@@ -228,12 +300,19 @@ def locate_staging_call(
         candidates = [
             tc for tc in candidates if tc.arguments.get("tool_call_id") == tool_call_id
         ]
-    if len(candidates) != 1:
-        raise ValueError(
-            f"cannot uniquely map {role} message to an auditor {fn} call "
-            f"({len(candidates)} candidates) — edit the auditor's tool call directly"
-        )
-    return aud_idx, aud_step, candidates[0].id, STAGING_ARG[fn]
+    if len(candidates) == 1:
+        return aud_idx, aud_step, candidates[0].id, STAGING_ARG[fn]
+    # Positional disambiguation: each tool_call's channel send produces one
+    # `boundary=="in"` mark on the tape, in call order. The mark at `mark_idx`
+    # is the `pos`-th such mark after the auditor step, so it came from
+    # `calls[pos]`.
+    pos = sum(1 for i in range(aud_idx + 1, mark_idx) if steps[i].boundary == "in")
+    if pos < len(calls) and calls[pos].function == fn:
+        return aud_idx, aud_step, calls[pos].id, STAGING_ARG[fn]
+    raise ValueError(
+        f"cannot uniquely map {role} message to an auditor {fn} call "
+        f"({len(candidates)} candidates) — edit the auditor's tool call directly"
+    )
 
 
 # -- LLM-assisted tool-call rewrite (stateless draft) -------------------------
@@ -341,8 +420,10 @@ class Branch:
         auditor_model_args: dict | None = None,
         target_model_args: dict | None = None,
         resume: list[Step] | None = None,
+        shared_prefix_len: int | None = None,
         parent_id: str | None = None,
         branched_at: str | None = None,
+        branched_at_turn: int | None = None,
     ) -> None:
         self.session = session
         self.branch_id = branch_id
@@ -350,6 +431,7 @@ class Branch:
         self.meta = BranchMeta(
             parent=parent_id,
             branched_at=branched_at,
+            branched_at_turn=branched_at_turn,
             seed=seed,
             auditor_model=auditor_model,
             target_model=target_model,
@@ -374,11 +456,25 @@ class Branch:
         self.channel = Channel(seed_instructions=seed)
         self.controller = Controller(self.channel)
         self.history = History()
-        self.audit_tape = (
-            Tape(pending=deque(s for s in resume if s.value is not None))
+        self.audit_tape: Tape = (
+            EmittingTape(pending=deque(s for s in resume if s.value is not None))
             if resume is not None
             else Tape()
         )
+
+        # Splice-model bookkeeping. `shared_prefix_len` is how many `resume`
+        # steps are *identical* to the parent's tape (= `len(resume)` for
+        # `branch`/`resample`; `len(resume) - 1` for `edit_*` whose last step
+        # is the edited one). While `len(audit_tape.log) < shared_prefix_len`
+        # the auditor loop holds `_replaying_shared = True`; the session drops
+        # auditor-role events emitted under that flag (the parent supplies
+        # them via `splice()`). The divergent suffix (the edited step, if
+        # any) is past the shared prefix, so its `EmittingTape` `ModelEvent`
+        # is kept.
+        self.shared_prefix_len: int = (
+            len(resume) if shared_prefix_len is None else shared_prefix_len
+        ) if resume is not None else 0
+        self._replaying_shared: bool = resume is not None and self.shared_prefix_len > 0
 
         # step gate — `workbench_auditor` awaits `_gate.wait()` each turn then
         # replaces it (one-shot Event). `play()` sets `_free_running`; the loop
@@ -387,6 +483,13 @@ class Branch:
         # the next turn boundary.
         self._gate = anyio.Event()
         self._free_running = False
+        # Set by `workbench_auditor` once `tape.pending` is drained — i.e. the
+        # deterministic prefix has finished replaying (and emitting its real
+        # events via `EmittingTape`). `_register_and_spawn` awaits this so the
+        # dispatch handler doesn't return until the child's columns are hot.
+        self._replayed = anyio.Event()
+        if resume is None:
+            self._replayed.set()
 
         # user-injected messages awaiting the next turn boundary (STREAMING.md §B).
         self.queued: dict[Role, list[ChatMessage]] = {"auditor": [], "target": []}
@@ -457,9 +560,6 @@ class Branch:
                 active_model=target_model,
                 model_roles={"auditor": auditor_model, "target": target_model},
             ):
-                if self.resume is not None:
-                    self._synthesize_prefix_events(auditor_model, target_model)
-
                 await run_audit(
                     auditor=auditor,
                     target=target_agent(),
@@ -486,6 +586,9 @@ class Branch:
             self.status = "ended"
             self.generating = None
             self._free_running = False
+            self._replaying_shared = False
+            if not self._replayed.is_set():
+                self._replayed.set()
             await self.session.broadcast_status()
             if self.error:
                 await self.session.broadcast(
@@ -500,9 +603,18 @@ class Branch:
         *,
         resume: list[Step],
         branched_at: str,
+        shared_prefix_len: int | None = None,
     ) -> "Branch":
-        """A child branch inheriting `parent`'s config (seed, models, turns)."""
+        """A child branch inheriting `parent`'s config (seed, models, turns).
+
+        `shared_prefix_len` is how many leading `resume` steps are byte-
+        identical to `parent.audit_tape.log` (defaults to `len(resume)` —
+        callers that append an edited step pass `len(resume) - 1`).
+        """
         m = parent.meta
+        turn = sum(
+            1 for s in resume if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
+        )
         return cls(
             session,
             uuid(),
@@ -515,9 +627,28 @@ class Branch:
             auditor_model_args=m.auditor_model_args,
             target_model_args=m.target_model_args,
             resume=resume,
+            shared_prefix_len=shared_prefix_len,
             parent_id=parent.branch_id,
             branched_at=branched_at,
+            branched_at_turn=turn,
         )
+
+    def auditor_branched_from(self) -> str | None:
+        """Anchor id of the last auditor generate in the *shared* prefix.
+
+        This is the splice anchor for the auditor timeline: the parent's
+        auditor span has a `TURN_END_SOURCE` `AnchorEvent` with this id at the
+        end of that turn (after its `ToolEvent`s), so `splice()` on it yields
+        the parent's full turns up to and including that one. `None` when the
+        shared prefix has no auditor turn (e.g. an edit at turn 0) — `splice()`
+        treats a falsy `branchedFrom` as "discard ancestor prefix".
+        """
+        if self.resume is None:
+            return None
+        for s in reversed(self.resume[: self.shared_prefix_len]):
+            if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput):
+                return s.anchor_id
+        return None
 
     def _build_models(self) -> tuple[Model, Model]:
         # force streaming so provider partial-output flushes fire (default
@@ -537,40 +668,3 @@ class Branch:
                 **(m.target_model_args or {}),
             ),
         )
-
-    def _synthesize_prefix_events(
-        self, auditor_model: Model, target_model: Model
-    ) -> None:
-        """Replay the resume prefix onto the wire as settled `ModelEvent`s.
-
-        STREAMING.md §"Replay" — record/replay serves replayed calls from
-        `pending` without emitting events, so without this the resumed branch's
-        columns would be blank until the first live turn. Walks the resume
-        steps and feeds one settled `ModelEvent` per recorded `ModelOutput`
-        through the session, routed to this branch's column by `span_id`.
-
-        Synthesised events carry `input=[]` — they are the *replayed* prefix
-        the user already saw on the parent branch.
-        """
-        assert self.resume is not None
-        for step in self.resume:
-            if not isinstance(step.value, ModelOutput):
-                continue
-            if step.source == "auditor:Model.generate":
-                span_id, role, model = self.auditor_span_id, "auditor", auditor_model
-            elif step.source == "Model.generate":
-                span_id, role, model = self.target_span_id, "target", target_model
-            else:
-                continue
-            ev = ModelEvent(
-                model=model.name,
-                role=role,
-                input=[],
-                tools=[],
-                tool_choice="auto",
-                config=GenerateConfig(),
-                output=step.value,
-                pending=False,
-                span_id=span_id,
-            )
-            self.session._on_event(ev)  # noqa: SLF001

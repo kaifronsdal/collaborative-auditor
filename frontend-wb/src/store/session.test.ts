@@ -191,8 +191,8 @@ describe("byRole isolation across two branches", () => {
       current: "b0",
       status: "idle",
       branches: {
-        b0: { parent: null, branched_at: null, status: "idle", seed: "s" },
-        b1: { parent: "b0", branched_at: "anc", status: "idle", seed: "s" },
+        b0: { parent: null, branched_at: null, branched_at_turn: null, status: "idle", seed: "s" },
+        b1: { parent: "b0", branched_at: "anc", branched_at_turn: 1, status: "idle", seed: "s" },
       },
     };
     apply(stateMsg);
@@ -276,7 +276,7 @@ describe("queued reconciliation", () => {
       queued: {},
       current: "bq",
       status: "idle",
-      branches: { bq: { parent: null, branched_at: null, status: "idle", seed: "s" } },
+      branches: { bq: { parent: null, branched_at: null, branched_at_turn: null, status: "idle", seed: "s" } },
     };
     apply(stateMsg);
 
@@ -354,8 +354,8 @@ describe("state message populates branch tree", () => {
       current: "b0",
       status: "idle",
       branches: {
-        b0: { parent: null, branched_at: null, status: "paused", seed: "x" },
-        b1: { parent: "b0", branched_at: "anc1", status: "idle", seed: "x" },
+        b0: { parent: null, branched_at: null, branched_at_turn: null, status: "paused", seed: "x" },
+        b1: { parent: "b0", branched_at: "anc1", branched_at_turn: 1, status: "idle", seed: "x" },
       },
     };
     apply(stateMsg);
@@ -520,7 +520,7 @@ describe("start does not add phantom Recents for child branch", () => {
       current: "branch-id-root",
       status: "idle",
       branches: {
-        "branch-id-root": { parent: null, branched_at: null, status: "idle", seed: "test" },
+        "branch-id-root": { parent: null, branched_at: null, branched_at_turn: null, status: "idle", seed: "test" },
       },
     };
     apply(stateRoot);
@@ -536,8 +536,8 @@ describe("start does not add phantom Recents for child branch", () => {
       current: "branch-id-child",
       status: "idle",
       branches: {
-        "branch-id-root": { parent: null, branched_at: null, status: "idle", seed: "test" },
-        "branch-id-child": { parent: "branch-id-root", branched_at: "anc", status: "idle", seed: "test" },
+        "branch-id-root": { parent: null, branched_at: null, branched_at_turn: null, status: "idle", seed: "test" },
+        "branch-id-child": { parent: "branch-id-root", branched_at: "anc", branched_at_turn: 1, status: "idle", seed: "test" },
       },
     };
     apply(stateChild);

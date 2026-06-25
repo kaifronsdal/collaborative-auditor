@@ -1,13 +1,15 @@
-"""Resume smoke test for the audit-workbench — level-2 branch prefix synthesis.
+"""Resume smoke test for the audit-workbench — level-2 branch prefix replay.
 
 Runs one branch to completion in a session, then creates a second `Branch` in
 the *same* session seeded with a prefix of the first branch's `audit_tape.log`
 and runs it under `play()`. Asserts the three things the resume path must get
 right (STREAMING.md §"Replay"; petri footguns #5 and #12):
 
-(a) the second branch's auditor column gets the prefix's recorded turns as
-    synthesised `ModelEvent`s *before* its first live turn — the column is not
-    blank on a resumed branch;
+(a) the second branch's *target* column gets the prefix's recorded turns as
+    real `ModelEvent`s (emitted by `EmittingTape` with full `input`) before
+    its first live turn; its *auditor* column carries only the live suffix —
+    shared-prefix auditor events are dropped in `_on_event` while
+    `_replaying_shared` (the parent supplies them via `splice()`);
 (b) the second branch's `AuditTape()` does not see the first branch's
     `config_digest` — per-branch `Store` isolation holds (footgun #5);
 (c) the session's single `drain` task is the one started by `Session.start()` —
@@ -83,42 +85,29 @@ async def _amain() -> None:
     await b2.run()
     await session.close()
 
-    # (a) prefix synthesised: branch 2's auditor column carries the K recorded
-    # auditor turns as settled events before its first live turn. We assert the
-    # first `expected_auditor` auditor model events on b2's span are synthesised
-    # (input==[], the prefix marker), then ≥1 live event follows.
-    # synthesised prefix events carry `input=[]`; with no input there is nothing
-    # to intern, so `condense` leaves `input_refs` at its `None` default. Live
-    # turns always have a populated `input_refs` list. That is the discriminator.
+    # (a) splice model. Auditor: while `_replaying_shared`, `_on_event` drops
+    # every auditor-role event — the shared prefix is spliced from the parent's
+    # `TimelineSpan`, not re-emitted per branch. So b2's *own* auditor column
+    # carries only its post-prefix live turns. Replayed events (EmittingTape)
+    # carry full `input` and are condensed to `input_refs` like live ones, so
+    # the old `input==[]` synth marker no longer exists.
     auditor_evts = model_events_for(conn2, session, b2.auditor_span_id)
-    synth = [
-        ev for ev in auditor_evts if ev["input"] == [] and ev["input_refs"] is None
-    ]
-    synth_uuids = []
-    for ev in synth:
-        if ev["uuid"] not in synth_uuids:
-            synth_uuids.append(ev["uuid"])
-    assert len(synth_uuids) >= expected_auditor, (
-        f"expected ≥{expected_auditor} synthesised auditor events, "
-        f"got {len(synth_uuids)}"
+    auditor_uuids = {ev["uuid"] for ev in auditor_evts}
+    assert auditor_uuids, "branch 2 produced no live auditor turn after resume"
+    assert all(ev["input_refs"] for ev in auditor_evts), (
+        "b2 auditor event without input_refs — EmittingTape leaked a shared-"
+        "prefix event past the `_replaying_shared` drop"
     )
-    # the synthesised prefix events come before the first live (input-bearing) one.
-    first_live = next(
-        (i for i, ev in enumerate(auditor_evts) if ev["input_refs"]), None
-    )
-    assert first_live is not None, "branch 2 produced no live auditor turn after resume"
-    live_uuid = auditor_evts[first_live]["uuid"]
-    assert live_uuid not in synth_uuids, "live turn was misclassified as synthesised"
 
-    target_synth = [
-        ev
-        for ev in model_events_for(conn2, session, b2.target_span_id)
-        if ev["input"] == [] and ev["input_refs"] is None
-    ]
-    target_synth_uuids = {ev["uuid"] for ev in target_synth}
-    assert len(target_synth_uuids) >= expected_target, (
-        f"expected ≥{expected_target} synthesised target events, "
-        f"got {len(target_synth_uuids)}"
+    # Target: per-branch column, no cross-branch splice, so replayed target
+    # turns ARE emitted (via EmittingTape) on b2's span. Distinct target
+    # ModelEvents must cover at least the prefix's target steps.
+    target_uuids = {
+        ev["uuid"] for ev in model_events_for(conn2, session, b2.target_span_id)
+    }
+    assert len(target_uuids) >= expected_target, (
+        f"expected ≥{expected_target} replayed target events on b2, "
+        f"got {len(target_uuids)}"
     )
 
     # (b) per-branch Store isolation: branch 2's store must not carry branch 1's
@@ -142,9 +131,9 @@ async def _amain() -> None:
 
     print(
         f"resume: prefix_cut={cut} "
-        f"synth_auditor={len(synth_uuids)} (expected {expected_auditor}) "
-        f"synth_target={len(target_synth_uuids)} (expected {expected_target}); "
-        f"b1.digest={digests['b1']} b2.digest={digests['b2']} "
+        f"b2_auditor_own={len(auditor_uuids)} (live-only; {expected_auditor} "
+        f"shared dropped) b2_target={len(target_uuids)} (≥{expected_target} "
+        f"replayed); b1.digest={digests['b1']} b2.digest={digests['b2']} "
         f"(separate stores); single drain task"
     )
     print("✓ resume smoke passed")

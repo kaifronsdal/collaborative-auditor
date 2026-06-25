@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import anyio
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from inspect_ai.model import ChatMessageUser, ModelOutput
@@ -94,16 +95,22 @@ async def _register_and_spawn(
     session: Session, branch: Branch, *, autoplay: bool
 ) -> None:
     """Common tail for start/branch/resample/edit: stop the previous branch,
-    register `branch`, broadcast `state`, spawn `branch.run()`."""
+    register `branch`, broadcast `state`, spawn `branch.run()`, wait for the
+    replay prefix to drain (so the columns are hot before we return), then
+    optionally release the gate."""
     await _stop_running_branches(session)
     session.branches[branch.branch_id] = branch
     session.current = branch.branch_id
     await session.broadcast({"t": "state", "v": session.version, **session.view()})
     task = asyncio.create_task(branch.run())
     session.branch_tasks.append(task)
+    # Replay is I/O-free (cached generates, in-process channel rendezvous) so
+    # this is <50ms for realistic prefixes; the timeout guards desync hangs.
+    with anyio.move_on_after(5.0):
+        await branch._replayed.wait()  # noqa: SLF001
     if autoplay:
         branch.play()
-        await session.broadcast_status()
+    await session.broadcast_status()
 
 
 async def _stop_running_branches(session: Session) -> None:
@@ -243,7 +250,7 @@ async def _dispatch(session: Session, data: dict) -> None:
                     resume=parent.audit_tape.log[:idx],
                     branched_at=anchor,
                 )
-                await _register_and_spawn(session, child, autoplay=False)
+                await _register_and_spawn(session, child, autoplay=True)
 
         case "branch_auditor" | "resample_auditor":
             # Regenerate the auditor's `turn_index`-th response: slice
@@ -268,7 +275,9 @@ async def _dispatch(session: Session, data: dict) -> None:
                     resume=parent.audit_tape.log[:idx],
                     branched_at=step.anchor_id or "",
                 )
-                await _register_and_spawn(session, child, autoplay=False)
+                await _register_and_spawn(
+                    session, child, autoplay=data["t"] == "resample_auditor"
+                )
 
         case "edit_auditor_call":
             # WISHLIST 3a: edit an auditor tool_call's args, replay the turn.
@@ -306,13 +315,15 @@ async def _dispatch(session: Session, data: dict) -> None:
                 except ValueError as exc:
                     await _fork_error(session, exc)
                     return
+                resume = parent.audit_tape.log[:idx] + [edited]
                 child = Branch.fork(
                     session,
                     parent,
-                    resume=parent.audit_tape.log[:idx] + [edited],
+                    resume=resume,
+                    shared_prefix_len=len(resume) - 1,
                     branched_at=orig.anchor_id or "",
                 )
-                await _register_and_spawn(session, child, autoplay=False)
+                await _register_and_spawn(session, child, autoplay=True)
 
         case "edit_target_message":
             # WISHLIST 3c (target-column convenience over 3a): a user/system/
@@ -348,13 +359,15 @@ async def _dispatch(session: Session, data: dict) -> None:
                     raise ValueError(f"call_id {call_id!r} vanished")
 
                 edited = edited_auditor_step(orig, mutate)
+                resume = parent.audit_tape.log[:aud_idx] + [edited]
                 child = Branch.fork(
                     session,
                     parent,
-                    resume=parent.audit_tape.log[:aud_idx] + [edited],
+                    resume=resume,
+                    shared_prefix_len=len(resume) - 1,
                     branched_at=data["message_id"],
                 )
-                await _register_and_spawn(session, child, autoplay=False)
+                await _register_and_spawn(session, child, autoplay=True)
 
         case "edit":
             async with session._dispatch_lock:  # noqa: SLF001
@@ -413,13 +426,15 @@ async def _dispatch(session: Session, data: dict) -> None:
                     # Invariant: orig_step came from `prefix`; if it's no longer
                     # there something mutated `prefix` underneath us.
                     raise RuntimeError("edit: orig_step vanished from prefix")
+                resume = prefix[:idx] + [edited_step]
                 child = Branch.fork(
                     session,
                     parent,
-                    resume=prefix[:idx] + [edited_step],
+                    resume=resume,
+                    shared_prefix_len=len(resume) - 1,
                     branched_at=anchor,
                 )
-                await _register_and_spawn(session, child, autoplay=False)
+                await _register_and_spawn(session, child, autoplay=True)
 
         case "rewrite_tool_call":
             # Stateless draft: ask the auditor model to rewrite one tool_call's
@@ -469,6 +484,73 @@ async def _dispatch(session: Session, data: dict) -> None:
                     "call_id": call_id,
                     "args": args,
                     "raw": raw,
+                }
+            )
+
+        case "rewrite_target_message":
+            # Target-column counterpart to `rewrite_tool_call`: a target-side
+            # user/system/tool message maps to an auditor staging call via
+            # `locate_staging_call`; rewrite that call's args with the auditor
+            # model, then return the staging-arg content (the field that
+            # becomes the visible message text) so the client can preview it
+            # and apply via `edit_target_message`. Stateless draft — no fork,
+            # no `_dispatch_lock`.
+            branch_id = data["branch"]
+            message_id = data["message_id"]
+            branch = session.branches.get(branch_id)
+            if branch is None:
+                await session.broadcast(
+                    {
+                        "t": "rewrite_draft",
+                        "v": session.version,
+                        "branch": branch_id,
+                        "message_id": message_id,
+                        "error": f"unknown branch {branch_id!r}",
+                    }
+                )
+                return
+            try:
+                aud_idx, _orig, call_id, arg_key = locate_staging_call(
+                    branch.audit_tape.log,
+                    message_id=message_id,
+                    role=data["role"],
+                    tool_call_id=data.get("tool_call_id"),
+                )
+                turn_index = sum(
+                    1
+                    for s in branch.audit_tape.log[:aud_idx]
+                    if isinstance(s.value, ModelOutput)
+                    and s.source == "auditor:Model.generate"
+                )
+                args, raw = await generate_rewrite(
+                    branch,
+                    turn_index,
+                    call_id,
+                    data["instruction"],
+                    selected_text=data.get("selected_text"),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("rewrite_target_message failed: %s", exc, exc_info=True)
+                await session.broadcast(
+                    {
+                        "t": "rewrite_draft",
+                        "v": session.version,
+                        "branch": branch_id,
+                        "message_id": message_id,
+                        "error": str(exc),
+                    }
+                )
+                return
+            content = args.get(arg_key)
+            await session.broadcast(
+                {
+                    "t": "rewrite_draft",
+                    "v": session.version,
+                    "branch": branch_id,
+                    "message_id": message_id,
+                    "args": args,
+                    "raw": raw,
+                    "content": content if isinstance(content, str) else raw,
                 }
             )
 

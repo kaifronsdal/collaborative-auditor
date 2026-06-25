@@ -161,9 +161,12 @@ export function eventsToTurns(
   }
   if (models.length === 0) return [];
 
+  // The last event's `input` is the full conversation so far. Replayed
+  // ModelEvents (forked-branch prefix) carry the loop's real `state.messages`
+  // via `EmittingTape`, so there is no empty-input case to special-case.
   const last = models[models.length - 1];
-  const out = last.output?.choices?.[0]?.message;
-  let convo: ChatMessage[] = out ? [...last.input, out] : [...last.input];
+  const lastOut = last.output?.choices?.[0]?.message;
+  let convo: ChatMessage[] = lastOut ? [...last.input, lastOut] : [...last.input];
   if (hasToolEvents) convo = convo.filter((m) => m.role !== "tool");
   const resolved = resolveMessages(convo);
 

@@ -1,13 +1,14 @@
 import type { ChatMessage } from "@tsmono/inspect-common";
 
-import { useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 
 import { pairToolCalls, type Turn } from "../lib/events";
 import { useSession } from "../store/session";
 import { BranchNav } from "./BranchNav";
 import { Bubble, renderContent } from "./Bubble";
+import { StatusDot } from "./icons";
 import { RawModal } from "./RawModal";
-import { ToolPair, fromCall, fromToolEvent } from "./ToolPair";
+import { ToolPair, fromCall, fromToolEvent, getSelectionWithin } from "./ToolPair";
 
 type Props = {
   turn: Turn;
@@ -34,16 +35,38 @@ function contentText(content: ChatMessage["content"]): string {
 
 type EditableRole = "user" | "system" | "tool";
 
-/** A non-assistant lead bubble in the *target* column with a hover `edit`
- *  action. On save, sends `edit_target_message` (WISHLIST 3c). */
+/** A non-assistant lead bubble in the *target* column with hover `edit` /
+ *  `rewrite` actions, double-click-to-edit, and a selection-pill. On save
+ *  (or rewrite-apply), sends `edit_target_message` (WISHLIST 3c). */
 function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
   const editTargetMessage = useSession((s) => s.editTargetMessage);
+  const rewriteTargetMessage = useSession((s) => s.rewriteTargetMessage);
+  const clearRewriteDraft = useSession((s) => s.clearRewriteDraft);
+  const draft = useSession((s) => (msg.id != null ? s.rewriteDrafts[msg.id] : undefined));
+
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
+  const [rewriteOpen, setRewriteOpen] = useState(false);
+  const [rewritePrompt, setRewritePrompt] = useState("");
+  const [rewriteSel, setRewriteSel] = useState<string | undefined>(undefined);
+  const [selPill, setSelPill] = useState<{ text: string; x: number; y: number } | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
 
   const role = msg.role as EditableRole;
+  const tcid = msg.role === "tool" ? (msg.tool_call_id ?? undefined) : undefined;
   const editable =
     msg.id != null && (role === "user" || role === "system" || role === "tool");
+
+  useEffect(() => {
+    if (!selPill) return;
+    const clear = () => setSelPill(null);
+    window.addEventListener("mousedown", clear, true);
+    window.addEventListener("scroll", clear, true);
+    return () => {
+      window.removeEventListener("mousedown", clear, true);
+      window.removeEventListener("scroll", clear, true);
+    };
+  }, [selPill]);
 
   function open() {
     setText(contentText(msg.content));
@@ -51,9 +74,35 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
   }
   function save() {
     if (msg.id == null) return;
-    const tcid = msg.role === "tool" ? (msg.tool_call_id ?? undefined) : undefined;
     editTargetMessage(msg.id, role, text, tcid);
     setEditing(false);
+  }
+  function openRewrite(selected?: string) {
+    setRewriteSel(selected);
+    setRewriteOpen(true);
+    setSelPill(null);
+  }
+  function sendRewrite() {
+    if (msg.id == null || !rewritePrompt.trim()) return;
+    rewriteTargetMessage(msg.id, role, rewritePrompt.trim(), rewriteSel, tcid);
+  }
+  function discardRewrite() {
+    if (msg.id != null) clearRewriteDraft(msg.id);
+    setRewriteOpen(false);
+    setRewritePrompt("");
+    setRewriteSel(undefined);
+  }
+  function applyRewrite() {
+    if (msg.id == null || draft?.content == null) return;
+    editTargetMessage(msg.id, role, draft.content, tcid);
+    discardRewrite();
+  }
+  function handleMouseUp(e: React.MouseEvent) {
+    if (!editable || editing || rewriteOpen) return;
+    if (e.target instanceof HTMLElement && e.target.closest("button, textarea, input")) {
+      return;
+    }
+    setSelPill(getSelectionWithin(wrapRef.current));
   }
 
   if (editing) {
@@ -77,13 +126,91 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
     );
   }
 
+  const rewritePanel = (rewriteOpen || draft) && (
+    <div className="lead-rewrite">
+      <div className="tp-lbl">
+        <i className="bi bi-stars" /> rewrite with auditor model
+      </div>
+      {draft?.status === "pending" ? (
+        <div className="tp-rewrite-spinner">
+          <StatusDot state="pending" /> rewriting…
+        </div>
+      ) : draft?.status === "ready" ? (
+        <>
+          <pre className="tp-rewrite-preview">{draft.content ?? draft.raw}</pre>
+          <div className="tp-edit-actions">
+            <button type="button" onClick={applyRewrite} disabled={draft.content == null}>
+              apply & replay
+            </button>
+            <button type="button" onClick={sendRewrite} disabled={!rewritePrompt.trim()}>
+              regenerate
+            </button>
+            <button type="button" onClick={discardRewrite}>discard</button>
+          </div>
+        </>
+      ) : (
+        <>
+          <textarea
+            className="tp-rewrite-input"
+            value={rewritePrompt}
+            onChange={(e) => setRewritePrompt(e.target.value)}
+            placeholder="Tell me how to rewrite this…"
+            rows={2}
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                sendRewrite();
+              }
+            }}
+          />
+          {rewriteSel && (
+            <div className="tp-rewrite-sel">
+              selection: <code>{rewriteSel.slice(0, 120)}{rewriteSel.length > 120 ? "…" : ""}</code>
+            </div>
+          )}
+          {draft?.status === "error" && (
+            <div className="tp-edit-err">{draft.error}</div>
+          )}
+          <div className="tp-edit-actions">
+            <button type="button" onClick={sendRewrite} disabled={!rewritePrompt.trim()}>
+              rewrite
+            </button>
+            <button type="button" onClick={discardRewrite}>cancel</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
   return (
-    <div className="lead-wrap">
+    <div
+      className="lead-wrap"
+      ref={wrapRef}
+      onDoubleClick={editable ? open : undefined}
+      onMouseUp={handleMouseUp}
+    >
       <Bubble msg={msg} byline={role} />
       {editable && (
         <div className="msg-actions">
           <button onClick={open} title="edit this message and replay">edit</button>
+          <button onClick={() => openRewrite()} title="rewrite with auditor model">
+            <i className="bi bi-stars" /> rewrite
+          </button>
         </div>
+      )}
+      {rewritePanel}
+      {selPill && editable && (
+        <button
+          type="button"
+          className="tp-sel-pill"
+          style={{ left: selPill.x, top: selPill.y }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={() => openRewrite(selPill.text)}
+          title="rewrite this selection"
+        >
+          <i className="bi bi-stars" />
+        </button>
       )}
     </div>
   );
@@ -100,6 +227,7 @@ export function ModelEventRow({
   const editAuditorCall = useSession((s) => s.editAuditorCall);
   const editTargetMessage = useSession((s) => s.editTargetMessage);
   const rewriteToolCall = useSession((s) => s.rewriteToolCall);
+  const rewriteTargetMessage = useSession((s) => s.rewriteTargetMessage);
   const clearRewriteDraft = useSession((s) => s.clearRewriteDraft);
   const rewriteDrafts = useSession((s) => s.rewriteDrafts);
 
@@ -112,9 +240,10 @@ export function ModelEventRow({
   const content = assistant?.message.content;
   const anchorId = ev.output?.choices?.[0]?.message?.id;
   // Target column: tool_calls + paired ChatMessageTool results from inspect's
-  // resolution. Auditor column renders real ToolEvents instead (richer —
-  // pending state, timing, structured errors), so suppress message-level
-  // pairing there to avoid doubling.
+  // resolution. Auditor column renders real `ToolEvent`s instead (richer —
+  // pending state, timing, structured errors); the splice model supplies the
+  // parent's real `ToolEvent`s for replayed prefix turns, so there is no
+  // no-tools fallback.
   const callPairs = !auditor && assistant ? pairToolCalls(assistant) : [];
 
   const [showRaw, setShowRaw] = useState(false);
@@ -184,9 +313,9 @@ export function ModelEventRow({
               rewriteDraft={auditor && t.id ? rewriteDrafts[t.id] : undefined}
               onApplyRewrite={
                 auditor && t.id && !disabled
-                  ? (args) => {
+                  ? (draft) => {
                       clearRewriteDraft(t.id);
-                      handleToolEdit(t.id, args);
+                      if (draft.args) handleToolEdit(t.id, draft.args);
                     }
                   : undefined
               }
@@ -195,23 +324,39 @@ export function ModelEventRow({
               }
             />
           ))}
-          {callPairs.map((p) => (
-            <ToolPair
-              key={p.call.id}
-              {...fromCall(p.call, p.result)}
-              onEditResult={
-                p.result?.id != null
-                  ? (text) =>
-                      editTargetMessage(
-                        p.result!.id!,
-                        "tool",
-                        text,
-                        p.result!.tool_call_id ?? undefined
-                      )
-                  : undefined
-              }
-            />
-          ))}
+          {callPairs.map((p) => {
+            const rid = p.result?.id ?? undefined;
+            const tcid = p.result?.tool_call_id ?? undefined;
+            return (
+              <ToolPair
+                key={p.call.id}
+                {...fromCall(p.call, p.result)}
+                onEditResult={
+                  rid != null
+                    ? (text) => editTargetMessage(rid, "tool", text, tcid)
+                    : undefined
+                }
+                onRewrite={
+                  rid != null
+                    ? (inst, sel) =>
+                        rewriteTargetMessage(rid, "tool", inst, sel, tcid)
+                    : undefined
+                }
+                rewriteDraft={rid != null ? rewriteDrafts[rid] : undefined}
+                onApplyRewrite={
+                  rid != null
+                    ? (draft) => {
+                        clearRewriteDraft(rid);
+                        if (draft.content != null) {
+                          editTargetMessage(rid, "tool", draft.content, tcid);
+                        }
+                      }
+                    : undefined
+                }
+                onDiscardRewrite={rid != null ? () => clearRewriteDraft(rid) : undefined}
+              />
+            );
+          })}
         </div>
       )}
 
