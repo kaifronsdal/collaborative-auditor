@@ -60,7 +60,9 @@ if TYPE_CHECKING:
 def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
     """An auditor `Agent` for `run_audit(auditor=…)` with the workbench's
     step-gate and queued-feedback drain inline in the turn loop."""
-    tools = auditor_tools()
+    # prefill=True so `resume(prefill=…)` validates — both real auditors and
+    # user `edit_auditor_call` on `resume` args use it (combo C8).
+    tools = auditor_tools(prefill=True)
 
     @agent
     def _factory() -> Agent:
