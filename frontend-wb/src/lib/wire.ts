@@ -28,6 +28,19 @@ export type BranchMeta = {
   branched_at_turn: number | null;
   status: Status;
   seed: string;
+  /** Resample-N batch this branch belongs to, or null for a normal fork. */
+  batch?: string | null;
+  /** Per-rubric scores (M2's `grade()` worker; unset until then). */
+  grades?: Record<string, number>;
+};
+
+/** One Resample-N request: N background sibling forks at one anchor. */
+export type CandidateBatch = {
+  parent: BranchId;
+  anchor: string;
+  kind: Role;
+  children: BranchId[];
+  picked: BranchId | null;
 };
 
 export type Down =
@@ -41,6 +54,7 @@ export type Down =
       current: string | null;
       status: Status | null;
       branches: Record<BranchId, BranchMeta>;
+      candidate_batches?: Record<string, CandidateBatch>;
       timelines?: TimelineMap;
     }
   | { t: "pool"; v: number; from: number; entries: ChatMessage[] }
@@ -124,6 +138,10 @@ export type Up =
       tool_call_id?: string;
     }
   | { t: "switch"; branch: BranchId }
+  | { t: "candidates"; branch: BranchId; at: string; n: number }
+  | { t: "candidates_auditor"; branch: BranchId; turn_index: number; n: number }
+  | { t: "pick_candidate"; batch: string; branch: BranchId }
+  | { t: "dismiss_candidates"; batch: string }
   | { t: "export"; branch: BranchId; path: string }
   | { t: "import"; path: string; sample_id?: string };
 

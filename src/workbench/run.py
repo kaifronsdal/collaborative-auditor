@@ -81,6 +81,9 @@ class BranchMeta:
     # Provider kwargs (e.g. mockllm `custom_outputs` for deterministic tests).
     auditor_model_args: dict | None = None
     target_model_args: dict | None = None
+    #: Resample-N batch this branch belongs to (RESAMPLE-N.md), or ``None``
+    #: for a normal fork. Not inherited on `Branch.fork()`.
+    batch: str | None = None
 
 
 # Auditor tool → the argument that becomes the target-side message body.
@@ -312,6 +315,7 @@ class Branch:
         target_config: dict | None = None,
         auditor_model_args: dict | None = None,
         target_model_args: dict | None = None,
+        batch: str | None = None,
         trajectory: Trajectory | None = None,
     ) -> None:
         self.session = session
@@ -324,6 +328,7 @@ class Branch:
             target_config=target_config,
             auditor_model_args=auditor_model_args,
             target_model_args=target_model_args,
+            batch=batch,
         )
 
         # Level-2 trajectory. A root branch (`start`, `make_base`) gets a
@@ -541,6 +546,7 @@ class Branch:
         inclusive: bool = True,
         edited: Step | None = None,
         branch_id: str | None = None,
+        batch: str | None = None,
     ) -> "Branch":
         """A child branch inheriting `parent`'s config, branched at `anchor`
         on the session's `audit_history`.
@@ -575,6 +581,7 @@ class Branch:
             target_config=m.target_config,
             auditor_model_args=m.auditor_model_args,
             target_model_args=m.target_model_args,
+            batch=batch,
             trajectory=traj,
         )
 

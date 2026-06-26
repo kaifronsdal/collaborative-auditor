@@ -22,7 +22,8 @@ import {
   type EventsByRole,
 } from "../lib/events";
 import type {
-  BranchId, BranchMeta, Down, QueuedMap, Role, SavedSession, Status, TimelineMap, Up,
+  BranchId, BranchMeta, CandidateBatch, Down, QueuedMap, Role, SavedSession,
+  Status, TimelineMap, Up,
 } from "../lib/wire";
 import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
 import type { GenerateConfigDict } from "../components/ModelPicker";
@@ -137,6 +138,8 @@ export type SessionState = {
   sessionId: string | null;
   /** Branch tree metadata — keyed by branch id, populated from `state` broadcasts. */
   branches: Record<BranchId, BranchMeta>;
+  /** Resample-N batches keyed by `batch_id` (RESAMPLE-N.md). */
+  candidateBatches: Record<string, CandidateBatch>;
   /**
    * Recents list (STUB, M0). Most-recent first. Populated on `start`; the
    * pending entry's `id` is reconciled to the real branch id when the next
@@ -255,6 +258,20 @@ export type SessionState = {
   /** Drop a rewrite draft (discard or post-apply cleanup). */
   clearRewriteDraft: (key: string) => void;
 
+  /** Resample-N: spawn `n` background target resamples at `anchor`.
+   *  `current` is unchanged; cards fill as events stream. */
+  requestCandidates: (branchId: BranchId, anchor: string, n: number) => void;
+
+  /** Resample-N auditor variant: `n` background forks at auditor turn
+   *  `turnIndex`, each stepped once for the divergent auditor turn. */
+  requestCandidatesAuditor: (branchId: BranchId, turnIndex: number, n: number) => void;
+
+  /** Adopt one candidate: cancel its siblings, switch `current` to it. */
+  pickCandidate: (batchId: string, branchId: BranchId) => void;
+
+  /** Cancel all candidates in `batchId`; the parent (original) wins. */
+  dismissCandidates: (batchId: string) => void;
+
   /**
    * Flip `status` locally before the round-trip: play→running, pause→paused,
    * step→running, end→ended. Then send the wire command.
@@ -339,6 +356,7 @@ export const useSession = create<SessionState>((set, get) => ({
   savedSessions: [],
   branchConfig: {},
   branches: {},
+  candidateBatches: {},
   nextConfig: {
     auditor_model: DEFAULT_AUDITOR,
     target_model: DEFAULT_TARGET,
@@ -426,6 +444,7 @@ export const useSession = create<SessionState>((set, get) => ({
             sessionsList,
             branchConfig,
             branches: msg.branches ?? {},
+            candidateBatches: msg.candidate_batches ?? {},
             prevCurrent: null,
           };
         }
@@ -778,6 +797,27 @@ export const useSession = create<SessionState>((set, get) => ({
       const { [key]: _dropped, ...rest } = state.rewriteDrafts;
       return { rewriteDrafts: rest };
     });
+  },
+
+  requestCandidates: (branchId, anchor, n) => {
+    get().send({ t: "candidates", branch: branchId, at: anchor, n });
+  },
+
+  requestCandidatesAuditor: (branchId, turnIndex, n) => {
+    get().send({ t: "candidates_auditor", branch: branchId, turn_index: turnIndex, n });
+  },
+
+  pickCandidate: (batchId, branchId) => {
+    // Optimistic: flip `current` immediately so the desk follows the pick;
+    // the backend `state` confirms (and ships the cancelled siblings'
+    // `status: "ended"`). `pendingNewAudit` cleared so the broadcast isn't
+    // suppressed by an in-flight new-audit click.
+    set({ current: branchId, pendingNewAudit: false });
+    get().send({ t: "pick_candidate", batch: batchId, branch: branchId });
+  },
+
+  dismissCandidates: (batchId) => {
+    get().send({ t: "dismiss_candidates", batch: batchId });
   },
 
   transport: (cmd) => {

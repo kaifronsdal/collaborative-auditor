@@ -269,7 +269,9 @@ async def _amain() -> None:
                 row1.locator('.tool-pair[data-fn="send_message"] .tp-sig')
             ).to_contain_text(orig_probe)
             await row1.hover()
-            await row1.locator('.actions button[title*="resample" i]').click()
+            await row1.locator(
+                '.actions button[title^="resample —" i]'
+            ).click()
 
             fork2 = await _wait_fork(session, prev=2)
             await _play_to_end(session, fork2)

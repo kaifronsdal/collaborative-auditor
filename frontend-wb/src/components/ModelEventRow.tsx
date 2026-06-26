@@ -6,6 +6,7 @@ import { pairToolCalls, type Turn } from "../lib/events";
 import { useSession } from "../store/session";
 import { BranchNav } from "./BranchNav";
 import { Bubble, renderContent } from "./Bubble";
+import { CandidateCell, useOpenBatchId } from "./CandidateCell";
 import { StatusDot } from "./icons";
 import { RawModal } from "./RawModal";
 import { ToolPair, fromCall, fromToolEvent, getSelectionWithin } from "./ToolPair";
@@ -228,6 +229,9 @@ export function ModelEventRow({
   const resampleAt = useSession((s) => s.resampleAt);
   const branchAuditor = useSession((s) => s.branchAuditor);
   const resampleAuditor = useSession((s) => s.resampleAuditor);
+  const requestCandidates = useSession((s) => s.requestCandidates);
+  const requestCandidatesAuditor = useSession((s) => s.requestCandidatesAuditor);
+  const current = useSession((s) => s.current);
   const editAuditorCall = useSession((s) => s.editAuditorCall);
   const editTargetMessage = useSession((s) => s.editTargetMessage);
   const rewriteToolCall = useSession((s) => s.rewriteToolCall);
@@ -251,8 +255,13 @@ export function ModelEventRow({
   const callPairs = !auditor && assistant ? pairToolCalls(assistant) : [];
 
   const [showRaw, setShowRaw] = useState(false);
+  const [showNPicker, setShowNPicker] = useState(false);
 
   const disabled = anchorId == null || !!ev.pending;
+  const kind = auditor ? "auditor" : "target";
+  // Open Resample-N batch at this row (parent = the branch being viewed).
+  const openBatch =
+    useOpenBatchId(current ?? "", anchorId ?? "", kind) != null && current != null;
 
   function handleBranch() {
     if (anchorId == null) return;
@@ -264,6 +273,13 @@ export function ModelEventRow({
     if (anchorId == null) return;
     if (auditor) resampleAuditor(turnIndex, anchorId);
     else resampleAt(anchorId);
+  }
+
+  function handleCandidates(n: number) {
+    if (anchorId == null || current == null) return;
+    if (auditor) requestCandidatesAuditor(current, turnIndex, n);
+    else requestCandidates(current, anchorId, n);
+    setShowNPicker(false);
   }
 
   function handleToolEdit(callId: string, args: Record<string, unknown>) {
@@ -394,6 +410,26 @@ export function ModelEventRow({
         >
           <i className="bi bi-arrow-clockwise" />
         </button>
+        {showNPicker ? (
+          <span className="n-picker">
+            {[3, 5, 8].map((n) => (
+              <button key={n} type="button" onClick={() => handleCandidates(n)}>
+                {n}
+              </button>
+            ))}
+            <button type="button" onClick={() => setShowNPicker(false)} title="cancel">
+              <i className="bi bi-x" />
+            </button>
+          </span>
+        ) : (
+          <button
+            onClick={() => setShowNPicker(true)}
+            disabled={disabled || openBatch}
+            title="resample N — generate several alternatives and pick one"
+          >
+            <i className="bi bi-collection" />
+          </button>
+        )}
         <button
           onClick={handleBranch}
           disabled={disabled}
@@ -405,6 +441,10 @@ export function ModelEventRow({
           <i className="bi bi-braces" />
         </button>
       </div>
+
+      {anchorId != null && current != null && (
+        <CandidateCell branch={current} anchor={anchorId} kind={kind} />
+      )}
 
       {showRaw && (
         <RawModal

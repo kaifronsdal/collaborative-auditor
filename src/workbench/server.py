@@ -40,7 +40,7 @@ from workbench.run import (
     generate_rewrite,
     locate_staging_call,
 )
-from workbench.session import Session
+from workbench.session import CandidateBatch, Session
 
 logger = logging.getLogger(__name__)
 
@@ -173,19 +173,20 @@ async def _register_and_spawn(
 async def _stop_running_branches(
     session: Session, only: set[str] | None = None
 ) -> None:
-    """Enforce one-running-branch-per-session before a fresh `start`.
+    """Cancel running branch tasks (all, or a subset).
 
-    Branches within a session share one transcript / sync `_on_event` /
-    pool — concurrent runs race on those (footgun #2). Parallel work uses
-    separate sessions (separate tabs), each with its own `Session`. So
-    `start` cancels any still-running branch task in *this* session; the
-    previous `Branch` (its `audit_tape`, settled events, store) stays in
-    `session.branches` for later viewing/resume — only the live coroutine
-    stops. `run_audit`'s `finally` persists the tape on cancellation.
+    The single-fork commands (`start`/`branch`/`resample`/`edit_*`) call
+    this with ``only=None`` to stop everything before installing a new
+    `current` — there's one status pill / step / play / pause target, so
+    those keep one-running-branch as a *semantic* invariant. Resample-N's
+    `pick_candidate` / `dismiss_candidates` pass ``only=`` to cancel just
+    the unpicked candidates (RESAMPLE-N.md — concurrent branches are safe
+    since #5/#12: per-branch `Store`, session-owned drain, sync
+    `_on_event`, `(branch_id, role)`-keyed `_by_role`).
 
-    Args:
-        only: if given, cancel only these `branch_id`s (Resample-N stops a
-            subset). When ``None``, every running branch is stopped.
+    The cancelled `Branch` (its `audit_tape`, settled events, store)
+    stays in `session.branches` — only the live coroutine stops.
+    `run_audit`'s `finally` persists the tape on cancellation.
     """
     running = {
         bid: t
@@ -235,6 +236,53 @@ async def _fork(
         await _fork_error(session, exc)
         return
     await _register_and_spawn(session, child, autoplay=autoplay)
+
+
+async def _step_after_replay(branch: Branch) -> None:
+    """Release one auditor turn once `branch`'s prefix replay drains.
+
+    Used by `candidates_auditor`: each candidate's auditor turn at the
+    branch point is excluded, so replay parks at the gate; one `step()`
+    yields exactly the divergent auditor turn (RESAMPLE-N.md §Mechanics).
+    """
+    await branch._replayed.wait()  # noqa: SLF001
+    branch.step()
+
+
+async def _candidates(
+    session: Session, data: dict, *, locate: Locate, kind: str, step: bool
+) -> None:
+    """Resample-N: spawn `n` background sibling forks at one anchor.
+
+    Unlike `_fork`, candidates do NOT stop other branches and do NOT
+    repoint `session.current` — they run concurrently with the parent
+    until `pick_candidate` / `dismiss_candidates`. The handler returns
+    after a single `state` broadcast (no `await _replayed`; model
+    latency × N would trip the 5s cap — picker cards fill as events
+    stream).
+    """
+    parent = _parent(session, data)
+    if parent is None:
+        logger.warning("%r before start — dropping", data.get("t"))
+        return
+    try:
+        anchor, inclusive, _ = locate(parent, data)
+    except ValueError as exc:
+        await _fork_error(session, exc)
+        return
+    n = int(data["n"])
+    batch_id = uuid()
+    batch = CandidateBatch(parent=parent.branch_id, anchor=anchor, kind=kind)
+    for _ in range(n):
+        child = Branch.fork(
+            session, parent, anchor=anchor, inclusive=inclusive, batch=batch_id
+        )
+        _spawn(session, child)
+        batch.children.append(child.branch_id)
+        if step:
+            asyncio.create_task(_step_after_replay(child))  # noqa: RUF006
+    session.candidate_batches[batch_id] = batch
+    await session.broadcast({"t": "state", "v": session.version, **session.view()})
 
 
 def _auditor_anchor(parent: Branch, turn_index: int) -> str:
@@ -468,6 +516,44 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
                 data,
                 locate=_locate_auditor,
                 autoplay=data["t"] == "resample_auditor",
+            )
+
+        case "candidates":
+            # Resample-N target: N background forks at `at`, each
+            # regenerates the clicked target response during ungated
+            # replay then parks at the gate. `current` is unchanged.
+            await _candidates(
+                session, data, locate=_locate_resample, kind="target", step=False
+            )
+
+        case "candidates_auditor":
+            # Resample-N auditor: N background forks exclusive of auditor
+            # turn `turn_index`; one `step()` per child after replay
+            # yields exactly the divergent auditor turn.
+            await _candidates(
+                session, data, locate=_locate_auditor, kind="auditor", step=True
+            )
+
+        case "pick_candidate":
+            batch = session.candidate_batches[data["batch"]]
+            picked = data["branch"]
+            await _stop_running_branches(
+                session, only={c for c in batch.children if c != picked}
+            )
+            session.current = picked
+            batch.picked = picked
+            await session.broadcast(
+                {"t": "state", "v": session.version, **session.view()}
+            )
+            await session.broadcast_status()
+
+        case "dismiss_candidates":
+            # Original = implicit candidate #0: pick the parent.
+            batch = session.candidate_batches[data["batch"]]
+            await _stop_running_branches(session, only=set(batch.children))
+            batch.picked = batch.parent
+            await session.broadcast(
+                {"t": "state", "v": session.version, **session.view()}
             )
 
         case "edit_auditor_call":

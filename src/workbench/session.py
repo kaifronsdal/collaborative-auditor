@@ -22,10 +22,10 @@ import asyncio
 import itertools
 import json
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
@@ -55,6 +55,23 @@ class Connection(Protocol):
     async def send_json(self, data: dict[str, Any]) -> None: ...
 
 
+@dataclass
+class CandidateBatch:
+    """One Resample-N request: N background sibling forks at one anchor.
+
+    `picked` is ``None`` while the picker is open; set to the chosen child
+    on `pick_candidate` or to `parent` on `dismiss_candidates` (the original
+    is the implicit candidate #0). Unpicked children's `Trajectory` nodes
+    stay in `audit_history` — only their tasks are cancelled.
+    """
+
+    parent: str
+    anchor: str
+    kind: Literal["target", "auditor"]
+    children: list[str] = field(default_factory=list)
+    picked: str | None = None
+
+
 class Session:
     def __init__(
         self, session_id: str | None = None, store_dir: Path | None = None
@@ -79,6 +96,9 @@ class Session:
         self.audit_history = History()
         self.branches: dict[str, Branch] = {}
         self.current: str | None = None
+        #: Resample-N batches keyed by `batch_id` (RESAMPLE-N.md). Candidates
+        #: are background `Branch`es that run without repointing `current`.
+        self.candidate_batches: dict[str, CandidateBatch] = {}
 
         # message pool (STREAMING.md §B): content-hash-deduped, append-only.
         # ModelEvent.input is interned here and replaced by input_refs ranges.
@@ -360,6 +380,7 @@ class Session:
                 "branched_at_turn": b.branched_at_turn,
                 "status": b.status,
                 "seed": b.meta.seed[:80],
+                "batch": b.meta.batch,
             }
             for bid, b in self.branches.items()
         }
@@ -371,6 +392,9 @@ class Session:
             "current": self.current,
             "status": self.current_status(),
             "branches": branches_meta,
+            "candidate_batches": {
+                bid: asdict(b) for bid, b in self.candidate_batches.items()
+            },
             "timelines": timelines,
         }
 
