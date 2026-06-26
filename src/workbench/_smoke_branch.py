@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import anyio
 from inspect_petri._auditor import AuditTape, audit_context
-from inspect_petri.target import Channel, Controller, Step, Tape
+from inspect_petri.target import Channel, Step, Trajectory
 
 from workbench._smoke_fixtures import normalize
 from workbench.run import Branch
@@ -138,8 +138,8 @@ async def _amain() -> None:
     digests: dict[str, str] = {}
     for name, br in (("b1", b1), ("b2", b2)):
         with audit_context(
-            controller=Controller(Channel(seed_instructions=SEED)),
-            audit_tape=Tape(),
+            channel=Channel(seed_instructions=SEED),
+            audit_trajectory=Trajectory(),
             store=br.store,
         ):
             digests[name] = AuditTape().config_digest

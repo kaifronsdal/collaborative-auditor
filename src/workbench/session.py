@@ -192,11 +192,19 @@ class Session:
         # splices the parent's events in instead. Target-role events are
         # kept: `_anchor_lookup` dedups `AnchorEvent`s (parent's wins) and no
         # target `ModelEvent` is emitted on a serve, so they're harmless.
+        #
+        # Gate: drop until the *first auditor `ModelEvent`* for this branch
+        # lands — that's either `workbench_auditor`'s inline divergent emit
+        # (the edited step) or the first live generate. Once it lands,
+        # `_by_role[(branch, "auditor")]` exists and every subsequent event
+        # passes.
         if (
             resolved is not None
             and resolved[1] == "auditor"
             and (b := self.branches.get(resolved[0])) is not None
-            and b._replaying_shared  # noqa: SLF001
+            and b.shared_prefix_len > 0
+            and resolved not in self._by_role
+            and not isinstance(ev, ModelEvent)
         ):
             return
 
@@ -255,7 +263,7 @@ class Session:
 
     def _target_timeline(self, branch: "Branch") -> dict[str, Any]:
         return build_history_timeline(
-            branch.history, branch.target_span_id, f"{branch.branch_id}:target"
+            branch.history, f"{branch.branch_id}:target"
         ).model_dump(mode="json")
 
     def _auditor_timeline(self) -> dict[str, Any]:
