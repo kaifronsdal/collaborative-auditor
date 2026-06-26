@@ -22,7 +22,6 @@ import asyncio
 import itertools
 import json
 import logging
-from collections import deque
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -41,6 +40,7 @@ from inspect_ai.model import ChatMessage
 from inspect_petri._auditor import build_history_timeline
 from inspect_petri.target import History, Trajectory
 
+from workbench.sources import GEN_SOURCE
 from workbench.view import Role
 
 if TYPE_CHECKING:
@@ -59,7 +59,7 @@ class Session:
     def __init__(
         self, session_id: str | None = None, store_dir: Path | None = None
     ) -> None:
-        #: Persistence identity. `save()`/`save_branch()` write under
+        #: Persistence identity. `save()` writes under
         #: ``{store_dir}/{session_id}/`` when both are set; otherwise no-op.
         self.session_id = session_id
         self.store_dir = store_dir
@@ -97,7 +97,9 @@ class Session:
 
         self.version: int = 0
         self.connections: list[Connection] = []
-        self.branch_tasks: list[asyncio.Task[None]] = []  # detached branch.run() tasks
+        #: detached `branch.run()` tasks, keyed by `branch_id` so
+        #: `_stop_running_branches(only=…)` can cancel selectively.
+        self.branch_tasks: dict[str, asyncio.Task[None]] = {}
         self._dispatch_lock = asyncio.Lock()
 
         # sync handler → drain task hand-off. Bounded buffer: the handler runs
@@ -147,10 +149,10 @@ class Session:
         Branch tasks are cancelled first so they don't try to enqueue onto a
         closed `_send` stream (which would raise `ClosedResourceError`).
         """
-        for t in self.branch_tasks:
+        for t in self.branch_tasks.values():
             if not t.done():
                 t.cancel()
-        for t in self.branch_tasks:
+        for t in self.branch_tasks.values():
             try:
                 await t
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
@@ -398,22 +400,19 @@ class Session:
                 return b.meta.seed
         return ""
 
-    def _dir(self, store_dir: Path | None) -> Path | None:
-        sd = store_dir if store_dir is not None else self.store_dir
-        if sd is None or self.session_id is None:
-            return None
-        return sd / self.session_id
-
-    def save(self, store_dir: Path | None = None) -> None:
-        """Persist the full session under ``{store_dir}/{session_id}/``.
+    def save(self, branch: "Branch | None" = None) -> None:
+        """Persist the session under ``{store_dir}/{session_id}/``.
 
         Writes ``index.json`` (current/created_at/seed), ``history.json``
-        (`audit_history.dump()`), and one ``{branch_id}.json`` per branch.
-        No-op if `session_id` or the store dir is unset (e.g. smoke tests).
+        (`audit_history.dump()`), and ``{branch_id}.json`` — for every branch
+        when `branch` is ``None``, or just the given one (called from
+        `Branch.run()`'s ``finally`` so every settled branch lands on disk
+        without a full save from the dispatch path). No-op if `session_id`
+        or `store_dir` is unset (e.g. smoke tests).
         """
-        d = self._dir(store_dir)
-        if d is None:
+        if self.store_dir is None or self.session_id is None:
             return
+        d = self.store_dir / self.session_id
         d.mkdir(parents=True, exist_ok=True)
         (d / "index.json").write_text(
             json.dumps(
@@ -424,47 +423,9 @@ class Session:
                 }
             )
         )
-        (d / "history.json").write_text(json.dumps(self._dump_history()))
-        for b in self.branches.values():
+        (d / "history.json").write_text(json.dumps(self.audit_history.dump()))
+        for b in [branch] if branch else self.branches.values():
             self._write_branch(d, b)
-
-    def save_branch(self, branch: "Branch") -> None:
-        """Persist one branch (and refresh ``index.json``/``history.json``).
-
-        Called from `Branch.run()`'s ``finally`` so every settled branch
-        lands on disk without an explicit `save()` from the dispatch path.
-        """
-        d = self._dir(None)
-        if d is None:
-            return
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "index.json").write_text(
-            json.dumps(
-                {
-                    "current": self.current,
-                    "created_at": self.created_at,
-                    "seed": self.seed,
-                }
-            )
-        )
-        (d / "history.json").write_text(json.dumps(self._dump_history()))
-        self._write_branch(d, branch)
-
-    def _dump_history(self) -> list[dict[str, Any]]:
-        """`audit_history.dump()` with workbench root-branch fixup.
-
-        `Branch.__init__` clears `branched_from` to ``None`` for root
-        branches (children of the synthetic `audit_history.root`) so the
-        timeline shows no splice anchor. `History.load` rejects
-        ``(branched_from=None, parent=<id>)``; map ``None`` → ``""``
-        (petri's "restart" sentinel) for those nodes — `_collect_replay_steps`
-        treats it identically (empty prefix, ``prefix_len=0``).
-        """
-        out = self.audit_history.dump()
-        for node in out:
-            if node["parent"] is not None and node["branched_from"] is None:
-                node["branched_from"] = ""
-        return out
 
     @staticmethod
     def _write_branch(d: Path, branch: "Branch") -> None:
@@ -499,11 +460,6 @@ class Session:
         sess = cls(session_id, store_dir)
         sess.created_at = index["created_at"]
         sess.audit_history = History.load(json.loads((d / "history.json").read_text()))
-        # Undo the `_dump_history` ``None → ""`` fixup so `branched_at`
-        # reads ``None`` for root branches as it did pre-save.
-        for t in sess.audit_history.root.children:
-            if t.branched_from == "":
-                t.branched_from = None
         await sess.start()
 
         # Spawn in pre-order (parent before children) so a child's shared-
@@ -527,15 +483,13 @@ class Session:
             # they did in the original run; steps past `prefix_len` are
             # served on the divergent path (workbench_auditor emits their
             # `ModelEvent`s inline).
-            traj.tape.pending = deque(traj.tape.log)
-            traj.tape.log = []
+            traj.tape.rewind()
             branch = Branch(sess, trajectory=traj, **asdict(meta))
             branch.status = data["status"]
             sess.branches[branch.branch_id] = branch
             if data["status"] == "ended":
                 branch.play()
-            task = asyncio.create_task(branch.run())
-            sess.branch_tasks.append(task)
+            sess.branch_tasks[branch.branch_id] = asyncio.create_task(branch.run())
             with anyio.move_on_after(5.0):
                 await branch._replayed.wait()  # noqa: SLF001
 
@@ -566,7 +520,6 @@ def build_auditor_timeline(session: Session) -> dict[str, Any]:
     because `session.events` already holds dumped events — reconstructing
     `Event` objects just to re-serialise their uuids would be wasted work.
     """
-    from workbench.run import GEN_SOURCE  # noqa: PLC0415
 
     def content_for(bid: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
@@ -588,9 +541,9 @@ def build_auditor_timeline(session: Session) -> dict[str, Any]:
         # `TURN_END_SOURCE` `AnchorEvent`s keyed on auditor message ids, so
         # `splice()` must cut there (`t.branched_from` may be a target or
         # `Stage` anchor, which the auditor column never carries).
-        prefix = (list(t.tape.log) + list(t.tape.pending))[: t.tape.prefix_len]
         return next(
-            (s.anchor_id for s in reversed(prefix) if s.source == GEN_SOURCE), None
+            (s.anchor_id for s in reversed(t.tape.prefix()) if s.source == GEN_SOURCE),
+            None,
         )
 
     counter = itertools.count(1)

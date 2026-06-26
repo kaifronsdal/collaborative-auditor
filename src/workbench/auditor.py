@@ -48,11 +48,12 @@ from inspect_petri._auditor.agent import (  # noqa: PLC2701
     AUDITOR_CONTINUE_PROMPT,
     AUDITOR_SYSTEM_MESSAGE,
     AUDITOR_USER_MESSAGE,
-    GEN_SOURCE,
     _eager_resume_inject,
     _eager_resume_strip_on_error,
 )
 from inspect_petri.target import controller
+
+from workbench.sources import GEN_SOURCE, TURN_END_SOURCE
 
 if TYPE_CHECKING:
     from workbench.run import Branch
@@ -112,8 +113,6 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
                 ),
                 ChatMessageUser(content=AUDITOR_USER_MESSAGE.format_map(template_vars)),
             ]
-
-            from workbench.run import TURN_END_SOURCE  # noqa: PLC0415
 
             for turn in range(max_turns):
                 # ── step-gate + queued-feedback drain, inline ─────────────────

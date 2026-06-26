@@ -295,7 +295,7 @@ async def w2_step() -> None:
         )
         assert session.current is not None and session.current != "base"
         child_id = session.current
-        task = session.branch_tasks[-1]
+        task = session.branch_tasks[child_id]
 
         # One step → T1 + r2 land; gate re-blocks before T2.
         await _dispatch(session, {"t": "step"})
@@ -341,7 +341,7 @@ async def w4_end() -> None:
         )
         assert session.current is not None and session.current != "base"
         child_id = session.current
-        task = session.branch_tasks[-1]
+        task = session.branch_tasks[child_id]
         assert not task.done()
 
         await _dispatch(session, {"t": "end"})
@@ -662,7 +662,7 @@ async def w16_fork_running_parent() -> None:
         a_id = session.current
         assert a_id is not None and a_id != "base"
         a = session.branches[a_id]
-        task_a = session.branch_tasks[-1]
+        task_a = session.branch_tasks[a_id]
         assert not task_a.done(), "parent A should be alive (paused at gate)"
 
         # Fork B from A at A's first target anchor (in A's replayed prefix).

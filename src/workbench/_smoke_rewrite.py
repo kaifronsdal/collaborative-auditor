@@ -25,13 +25,13 @@ import anyio
 from inspect_ai.model import ModelOutput
 from inspect_ai.tool import ToolCall
 
-from inspect_petri._auditor.agent import GEN_SOURCE  # noqa: PLC2701
 from inspect_petri.target import Step
 
 from workbench._smoke_util import FakeConn
 from workbench.run import Branch, _extract_json_object
 from workbench.server import _dispatch
 from workbench.session import Session
+from workbench.sources import GEN_SOURCE
 
 
 def _auditor_step(call_id: str, fn: str, **arguments) -> Step:

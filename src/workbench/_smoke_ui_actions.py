@@ -194,7 +194,7 @@ async def _amain() -> None:
         session.current = "rb"
         b.play()
         task = asyncio.create_task(b.run())
-        session.branch_tasks.append(task)
+        session.branch_tasks["rb"] = task
         await task
         assert b.error is None, f"root branch failed: {b.error}"
         assert _aud_live == 3, f"expected 3 live auditor calls, got {_aud_live}"

@@ -40,9 +40,10 @@ from workbench._smoke_fixtures import (
     target_by_last_user,
     target_counted,
 )
-from workbench.run import TARGET_GEN_SOURCE, Branch, find_auditor_step
+from workbench.run import Branch, find_auditor_step
 from workbench.server import _dispatch  # noqa: PLC2701
 from workbench.session import Session, build_auditor_timeline
+from workbench.sources import TARGET_GEN_SOURCE
 
 
 def _send_call_id(branch: Branch, turn_index: int) -> str:
@@ -452,7 +453,7 @@ async def e7_fork_while_running() -> None:
         session.branches["base"] = base
         session.current = "base"
         task = asyncio.create_task(base.run())
-        session.branch_tasks.append(task)
+        session.branch_tasks["base"] = task
 
         # Release T0 + T1; T2 stays gated (parent task alive, blocked).
         # Poll on the *target* step landing — that's the last L2 append of

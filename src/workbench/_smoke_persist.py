@@ -55,7 +55,7 @@ async def _build_session(store_dir: Path) -> tuple[Session, str, str]:
     child.meta = child.meta.__class__(**{**child.meta.__dict__, "max_turns": 3})
     sess.branches[child.branch_id] = child
     sess.current = child.branch_id
-    sess.branch_tasks.append(asyncio.create_task(child.run()))
+    sess.branch_tasks[child.branch_id] = asyncio.create_task(child.run())
     _, child = await run_child(sess)
     return sess, base.branch_id, child.branch_id
 
@@ -71,7 +71,7 @@ async def test_save_load_roundtrip() -> None:
         # ── fresh "process": new Session, empty transcript/pool/events ───────
         loaded = await Session.load("persist-test", store)
         # let any branch whose run() ends naturally settle
-        for t in loaded.branch_tasks:
+        for t in loaded.branch_tasks.values():
             with anyio.move_on_after(5.0):
                 await t
 

@@ -35,7 +35,7 @@ import socket
 import subprocess
 import traceback
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from typing import Any
@@ -49,9 +49,10 @@ from inspect_ai.model import (
 )
 from inspect_ai.tool import ToolCall, ToolChoice, ToolInfo
 
-from workbench.run import GEN_SOURCE, TARGET_GEN_SOURCE, Branch
+from workbench.run import Branch
 from workbench.server import _dispatch, app  # noqa: PLC2701
 from workbench.session import Session
+from workbench.sources import GEN_SOURCE, TARGET_GEN_SOURCE
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -309,7 +310,7 @@ async def make_base(
     session.current = branch_id
     b.play()
     task = asyncio.create_task(b.run())
-    session.branch_tasks.append(task)
+    session.branch_tasks[branch_id] = task
     await task
     assert b.error is None, f"base branch failed: {b.error}"
     assert b.status == "ended", f"base branch status={b.status}"
@@ -317,20 +318,21 @@ async def make_base(
 
 
 async def run_child(session: Session) -> tuple[str, Branch]:
-    """Release the most-recently-spawned child branch and await it.
+    """Release the `session.current` child branch and await it.
 
-    `_register_and_spawn` set `session.current` to the child and appended its
-    `run()` task to `session.branch_tasks`. `{"t":"play"}` is idempotent if
-    autoplay already fired; `await` returns immediately if the child already
-    ended.
+    `_register_and_spawn` set `session.current` to the child and registered
+    its `run()` task in `session.branch_tasks`. `{"t":"play"}` is idempotent
+    if autoplay already fired; `await` returns immediately if the child
+    already ended.
     """
     await _dispatch(session, {"t": "play"})
-    assert session.branch_tasks, "no child task spawned"
-    await session.branch_tasks[-1]
-    assert session.current is not None
-    child = session.branches[session.current]
+    child_id = session.current
+    assert child_id is not None
+    assert child_id in session.branch_tasks, "no child task spawned"
+    await session.branch_tasks[child_id]
+    child = session.branches[child_id]
     assert child.error is None, f"child branch failed: {child.error}"
-    return session.current, child
+    return child_id, child
 
 
 # ── shared 3-turn base scenario ─────────────────────────────────────────────
@@ -421,7 +423,9 @@ def _count_trajectories(history) -> int:
 # ── runner ──────────────────────────────────────────────────────────────────
 
 
-async def run_suite(tests: list[tuple[str, Callable[[], Awaitable[None]]]]) -> int:
+async def run_suite(
+    tests: Sequence[tuple[str, Callable[[], Coroutine[Any, Any, None]]]],
+) -> int:
     """Run each `(name, async fn)` pair; print PASS/FAIL/ERROR; return exit code."""
     failed = 0
     for name, fn in tests:

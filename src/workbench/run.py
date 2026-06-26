@@ -46,7 +46,6 @@ from inspect_ai.model import (
 from inspect_ai.log._transcript import init_transcript  # noqa: PLC2701
 from inspect_ai.util import Store
 from inspect_petri._auditor import audit_context, run_audit
-from inspect_petri._auditor.agent import GEN_SOURCE  # noqa: PLC2701
 from inspect_petri.target import (
     Channel,
     History,
@@ -58,6 +57,7 @@ from inspect_petri.target import (
 from shortuuid import uuid
 
 from workbench.auditor import workbench_auditor
+from workbench.sources import GEN_SOURCE, TARGET_GEN_SOURCE
 from workbench.view import Role, Status
 
 if TYPE_CHECKING:
@@ -81,15 +81,6 @@ class BranchMeta:
     # Provider kwargs (e.g. mockllm `custom_outputs` for deterministic tests).
     auditor_model_args: dict | None = None
     target_model_args: dict | None = None
-
-
-TARGET_GEN_SOURCE = "Model.generate"
-
-#: `workbench_auditor` emits an `AnchorEvent` with this `source` at the *end*
-#: of each turn (after `execute_tools`). The auditor timeline keeps only
-#: these — petri's own `Tape.replayable` `AnchorEvent` (source = `GEN_SOURCE`)
-#: lands *before* the turn's `ToolEvent`s, so splicing on it would drop them.
-TURN_END_SOURCE = "workbench:turn"
 
 
 # Auditor tool → the argument that becomes the target-side message body.
@@ -157,10 +148,11 @@ def locate_staging_call(
     picks the tool_call whose function matches `role` (disambiguated by
     `tool_call_id` for tool results, or positionally by counting earlier
     `boundary=="in"` marks — each auditor tool_call yields exactly one, in
-    order). Returns `(aud_idx, aud_step, call_id, arg_key)`. Raises
-    `ValueError` if the message can't be located or the matching tool_call is
-    ambiguous — caller surfaces that as a "use the auditor column's tool-call
-    edit" hint.
+    order). Returns `(turn_index, aud_step, call_id, arg_key)` where
+    `turn_index` is the 0-based auditor turn (input to `find_auditor_step`).
+    Raises `ValueError` if the message can't be located or the matching
+    tool_call is ambiguous — caller surfaces that as a "use the auditor
+    column's tool-call edit" hint.
     """
     mark_idx = next(
         (
@@ -187,6 +179,11 @@ def locate_staging_call(
         )
     aud_step = steps[aud_idx]
     assert isinstance(aud_step.value, ModelOutput)
+    turn_index = sum(
+        1
+        for s in steps[:aud_idx]
+        if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
+    )
     fn = ROLE_TO_STAGING_FN.get(role)
     if fn is None:
         raise ValueError(f"role {role!r} is not editable via edit_target_message")
@@ -197,14 +194,14 @@ def locate_staging_call(
             tc for tc in candidates if tc.arguments.get("tool_call_id") == tool_call_id
         ]
     if len(candidates) == 1:
-        return aud_idx, aud_step, candidates[0].id, STAGING_ARG[fn]
+        return turn_index, aud_step, candidates[0].id, STAGING_ARG[fn]
     # Positional disambiguation: each tool_call's channel send produces one
     # `boundary=="in"` mark on the tape, in call order. The mark at `mark_idx`
     # is the `pos`-th such mark after the auditor step, so it came from
     # `calls[pos]`.
     pos = sum(1 for i in range(aud_idx + 1, mark_idx) if steps[i].boundary == "in")
     if pos < len(calls) and calls[pos].function == fn:
-        return aud_idx, aud_step, calls[pos].id, STAGING_ARG[fn]
+        return turn_index, aud_step, calls[pos].id, STAGING_ARG[fn]
     raise ValueError(
         f"cannot uniquely map {role} message to an auditor {fn} call "
         f"({len(candidates)} candidates) — edit the auditor's tool call directly"
@@ -335,23 +332,7 @@ class Branch:
         if trajectory is None:
             trajectory = session.audit_history.branch("")
             trajectory.span_id = branch_id or uuid()
-            trajectory.branched_from = None
         self.trajectory = trajectory
-
-        #: Auditor turn index at the branch point — count of `GEN_SOURCE`
-        #: steps in the *shared* replayed prefix (`pending[:prefix_len]` —
-        #: an `edit_*` op appends the edited step past `prefix_len`, and
-        #: that step is divergent, not shared). Stable across edits.
-        tape = self.trajectory.tape
-        self.branched_at_turn: int | None = (
-            sum(
-                1
-                for s in list(tape.pending)[: tape.prefix_len]
-                if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
-            )
-            if tape.prefix_len > 0
-            else None
-        )
 
         # per-branch Store: `AuditTape` is a StoreModel, so without a branch-
         # private store every branch in this process would read/write the
@@ -429,8 +410,32 @@ class Branch:
 
     @property
     def branched_at(self) -> str | None:
-        """The L2 splice anchor — last anchored step in the replayed prefix."""
-        return self.trajectory.branched_from
+        """The L2 splice anchor — last anchored step in the replayed prefix.
+
+        Derived from `tape.prefix()` (not `trajectory.branched_from`
+        directly) so a root branch (petri's `""` restart sentinel) and a
+        turn-0 edit (prefix has no anchored step; petri falls back to the
+        excluded construction anchor) both map to ``None`` for the wire.
+        """
+        return next(
+            (s.anchor_id for s in reversed(self.audit_tape.prefix()) if s.anchor_id),
+            None,
+        )
+
+    @property
+    def branched_at_turn(self) -> int | None:
+        """Auditor turn index at the branch point — count of `GEN_SOURCE`
+        steps in the *shared* replayed prefix (`tape.prefix()` — an `edit_*`
+        op appends the edited step past `prefix_len`, and that step is
+        divergent, not shared). ``None`` for a root branch."""
+        tape = self.audit_tape
+        if tape.prefix_len == 0:
+            return None
+        return sum(
+            1
+            for s in tape.prefix()
+            if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
+        )
 
     # -- step gate ------------------------------------------------------------
 
@@ -519,7 +524,7 @@ class Branch:
             self._free_running = False
             if not self._replayed.is_set():
                 self._replayed.set()
-            self.session.save_branch(self)
+            self.session.save(self)
             await self.session.broadcast_status()
             if self.error:
                 await self.session.broadcast(
@@ -557,15 +562,6 @@ class Branch:
         )
         if branch_id is not None:
             traj.span_id = branch_id
-        # `splice()` cuts the parent's content at the `AnchorEvent` matching
-        # `branched_from`, *inclusive*. For `inclusive=False` the matched step
-        # is not in the prefix, so point `branched_from` at the last anchored
-        # step that *is* — recovered from `pending` exactly as
-        # `Tape.replayable` does for `BranchEvent`. (No-op for
-        # `inclusive=True`: the matched step is the last anchored.)
-        traj.branched_from = next(
-            (s.anchor_id for s in reversed(traj.tape.pending) if s.anchor_id), None
-        )
         if edited is not None:
             traj.tape.pending.append(edited)
         m = parent.meta

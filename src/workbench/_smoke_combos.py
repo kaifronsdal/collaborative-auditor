@@ -47,9 +47,10 @@ from workbench._smoke_fixtures import (
     target_counted,
 )
 from workbench._smoke_util import FakeConn
-from workbench.run import TARGET_GEN_SOURCE, Branch, find_auditor_step
+from workbench.run import Branch, find_auditor_step
 from workbench.server import _dispatch  # noqa: PLC2701
 from workbench.session import Session, build_auditor_timeline
+from workbench.sources import TARGET_GEN_SOURCE
 
 # ── shared shapes ───────────────────────────────────────────────────────────
 
@@ -337,7 +338,7 @@ async def c4_inject_during_paused_replay() -> None:
         )
 
         await _dispatch(session, {"t": "play"})
-        await session.branch_tasks[-1]
+        await session.branch_tasks[child_id]
         assert child.error is None, f"child failed: {child.error}"
 
         # Feedback drained at the first live turn (T1) → never re-drained at T2.
@@ -785,7 +786,7 @@ async def c10_fork_frozen_unreached_turn() -> None:
         session.branches["base"] = base
         session.current = "base"
         task = asyncio.create_task(base.run())
-        session.branch_tasks.append(task)
+        session.branch_tasks["base"] = task
 
         async def _step_until(n_target: int) -> None:
             base.step()

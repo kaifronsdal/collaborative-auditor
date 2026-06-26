@@ -46,6 +46,7 @@ from workbench._smoke_util import (
 )
 from workbench.run import Branch
 from workbench.session import Session
+from workbench.sources import GEN_SOURCE, TARGET_GEN_SOURCE
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
 SEED_A = "test seed"
@@ -59,8 +60,6 @@ SEED_B = (
 
 def _prefix_n(branch: Branch) -> int:
     """Count of `normalize()`-visible entries in `branch`'s shared prefix."""
-    from workbench.run import GEN_SOURCE, TARGET_GEN_SOURCE  # noqa: PLC0415
-
     return sum(
         1
         for s in branch.audit_tape.log[: branch.audit_tape.prefix_len]
