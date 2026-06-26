@@ -27,7 +27,7 @@ from inspect_ai.log import (
 from inspect_ai.util import Store
 from inspect_petri._auditor import AuditTape
 from inspect_petri._task.resample import load_tape
-from inspect_petri.target import History, Trajectory
+from inspect_petri.target import History
 
 from workbench.run import BranchMeta
 
@@ -35,47 +35,19 @@ if TYPE_CHECKING:
     from workbench.run import Branch
 
 
-def _dump_subtree(root: Trajectory) -> list[dict[str, Any]]:
-    """`History.dump()` restricted to the subtree at `root`.
-
-    The exported root carries its *full* `tape.log` (replayed prefix +
-    fresh) — same contract as `History.dump()`'s root — so the importer
-    can replay the branch's complete lineage without the original parent.
-    Descendants carry only their fresh steps; their prefix is recovered
-    from the in-tree parent on `History.load`.
-    """
-    out: list[dict[str, Any]] = []
-
-    def walk(t: Trajectory, *, is_root: bool) -> None:
-        start = 0 if is_root else t.tape.prefix_len
-        out.append(
-            {
-                "span_id": t.span_id,
-                "branched_from": None if is_root else t.branched_from,
-                "parent": None if is_root else (t.parent.span_id if t.parent else None),
-                "steps": [s.dump() for s in t.tape.log[start:]],
-            }
-        )
-        for c in t.children:
-            walk(c, is_root=False)
-
-    walk(root, is_root=True)
-    return out
-
-
 def export_branch(branch: "Branch", path: str | Path) -> None:
     """Write `branch` (and its descendants) as a one-sample `.eval` log.
 
     The sample's store holds an `AuditTape` (`trajectories` =
-    `_dump_subtree(branch.trajectory)`, `seed_instructions` =
-    `branch.meta.seed`) so petri's `load_tape` / `resample` accept it
-    verbatim. Sample metadata carries the model names so `import_eval`
-    can rebuild a `BranchMeta`.
+    `History.dump(root=branch.trajectory)` — self-contained subtree,
+    `seed_instructions` = `branch.meta.seed`) so petri's `load_tape` /
+    `resample` accept it verbatim. Sample metadata carries the model
+    names so `import_eval` can rebuild a `BranchMeta`.
     """
     m = branch.meta
     store = Store()
     tape = AuditTape(store=store)
-    tape.trajectories = _dump_subtree(branch.trajectory)
+    tape.trajectories = branch.session.audit_history.dump(root=branch.trajectory)
     tape.seed_instructions = m.seed
     sample = EvalSample(
         id=branch.branch_id,
