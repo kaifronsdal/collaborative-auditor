@@ -15,8 +15,14 @@ import os
 # extra event churn vs. inspect's batch-eval default (0.1s) is negligible.
 os.environ.setdefault("INSPECT_STREAM_FLUSH_INTERVAL", "0.025")
 
+import argparse
 import asyncio
+import json
 import logging
+from collections import deque
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any
 
 import anyio
 import uvicorn
@@ -24,8 +30,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from inspect_ai.model import ChatMessageUser, ModelOutput
 from shortuuid import uuid
 
-from inspect_petri.target import Step
-
+from workbench.export import export_branch, import_eval
 from workbench.run import (
     Branch,
     edited_auditor_step,
@@ -42,17 +47,54 @@ app = FastAPI(title="Audit Workbench", version="0.1.0")
 
 sessions: dict[str, Session] = {}
 
+#: Persistence root — set from ``--store-dir`` in `main()`. Sessions are
+#: written under ``{STORE_DIR}/{session_id}/`` by `Branch.run()`'s finally
+#: (via `Session.save_branch`) and reloaded on first connect.
+STORE_DIR: Path = Path("~/.workbench/sessions").expanduser()
+
 
 async def _get_or_create(session_id: str) -> Session:
     sess = sessions.get(session_id)
     if sess is None:
-        sess = Session()
-        # start the session-owned drain task once, on first connect, so the
-        # single broadcast loop is live before any branch runs (STREAMING.md
-        # §B; petri footgun #12 — never one drain per branch).
-        await sess.start()
+        if (STORE_DIR / session_id / "index.json").exists():
+            # `Session.load` starts the drain task and replays every
+            # persisted branch before returning, so the first
+            # `push_full_state` ships a fully-reconstructed view.
+            sess = await Session.load(session_id, STORE_DIR)
+        else:
+            sess = Session(session_id, STORE_DIR)
+            # start the session-owned drain task once, on first connect, so
+            # the single broadcast loop is live before any branch runs
+            # (STREAMING.md §B; petri footgun #12 — never one drain per branch).
+            await sess.start()
         sessions[session_id] = sess
     return sess
+
+
+@app.get("/sessions")
+def list_sessions() -> list[dict[str, Any]]:
+    """Sidebar "Recents": one entry per persisted session under `STORE_DIR`."""
+    out: list[dict[str, Any]] = []
+    if not STORE_DIR.exists():
+        return out
+    for d in STORE_DIR.iterdir():
+        idx = d / "index.json"
+        if not idx.is_file():
+            continue
+        index = json.loads(idx.read_text())
+        n_branches = sum(
+            1 for f in d.glob("*.json") if f.name not in ("index.json", "history.json")
+        )
+        out.append(
+            {
+                "session_id": d.name,
+                "seed": index.get("seed", ""),
+                "created_at": index.get("created_at", ""),
+                "n_branches": n_branches,
+            }
+        )
+    out.sort(key=lambda e: e["created_at"], reverse=True)
+    return out
 
 
 @app.websocket("/ws/{session_id}")
@@ -269,7 +311,7 @@ async def _dispatch(session: Session, data: dict) -> None:
                     logger.warning("%r before start — dropping", data.get("t"))
                     return
                 try:
-                    _, step = find_auditor_step(
+                    step = find_auditor_step(
                         parent.audit_tape.log, int(data["turn_index"])
                     )
                     assert step.anchor_id is not None
@@ -308,7 +350,7 @@ async def _dispatch(session: Session, data: dict) -> None:
                     )
 
                 try:
-                    _, orig = find_auditor_step(
+                    orig = find_auditor_step(
                         parent.audit_tape.log, int(data["turn_index"])
                     )
                     assert orig.anchor_id is not None
@@ -367,45 +409,6 @@ async def _dispatch(session: Session, data: dict) -> None:
                         anchor=orig.anchor_id,
                         inclusive=False,
                         edited=edited,
-                    )
-                except ValueError as exc:
-                    await _fork_error(session, exc)
-                    return
-                await _register_and_spawn(session, child, autoplay=True)
-
-        case "edit":
-            # Edit a *target* assistant response in place: branch exclusive
-            # of that target step, append the edited `ModelOutput` past
-            # `prefix_len`. The auditor turn that produced it replays from
-            # `pending`; the edited output is served (`_DivergentTape` emits
-            # its `ModelEvent`); the *next* auditor turn goes live.
-            async with session._dispatch_lock:  # noqa: SLF001
-                anchor = data["at"]
-                parent = session.branches.get(session.current)  # type: ignore[arg-type]
-                if parent is None:
-                    logger.warning("edit before start — dropping")
-                    return
-                try:
-                    _, orig = find_target_step(parent.audit_tape.log, anchor)
-                except ValueError as exc:
-                    await _fork_error(session, exc)
-                    return
-                edited_output = ModelOutput.model_validate(data["output"])
-                # Fresh message id so downstream code never sees a stale
-                # anchor ref (footgun #3); the new step's anchor is the new id.
-                new_msg_id = uuid()
-                if edited_output.choices:
-                    edited_output.choices[0].message.id = new_msg_id
-                edited_step = Step(
-                    value=edited_output, source=orig.source, anchor_id=new_msg_id
-                )
-                try:
-                    child = Branch.fork(
-                        session,
-                        parent,
-                        anchor=anchor,
-                        inclusive=False,
-                        edited=edited_step,
                     )
                 except ValueError as exc:
                     await _fork_error(session, exc)
@@ -530,6 +533,42 @@ async def _dispatch(session: Session, data: dict) -> None:
                 }
             )
 
+        case "export":
+            # Write one branch (and its descendants) as a one-sample
+            # `.eval`. Stateless — no fork, no lock; runs in the WS task.
+            branch_id = data["branch"]
+            path = data["path"]
+            branch = session.branches.get(branch_id)
+            if branch is None:
+                await session.broadcast(
+                    {
+                        "t": "error",
+                        "v": session.version,
+                        "message": f"unknown branch {branch_id!r}",
+                    }
+                )
+                return
+            export_branch(branch, path)
+            logger.info("exported branch %s → %s", branch_id, path)
+
+        case "import":
+            # Load one sample's `AuditTape` from a `.eval`, install it as a
+            # fresh root branch, and replay it. The imported `History`'s
+            # root carries the full recorded log (`History.load` contract);
+            # graft it under `session.audit_history.root` and reset the
+            # tape for replay exactly as `Session.load` does.
+            async with session._dispatch_lock:  # noqa: SLF001
+                history, meta = import_eval(data["path"], data.get("sample_id"))
+                imported = history.root
+                imported.span_id = uuid()
+                imported.parent = session.audit_history.root
+                imported.branched_from = None
+                session.audit_history.root.children.append(imported)
+                imported.tape.pending = deque(imported.tape.log)
+                imported.tape.log = []
+                branch = Branch(session, trajectory=imported, **asdict(meta))
+                await _register_and_spawn(session, branch, autoplay=False)
+
         case "switch":
             async with session._dispatch_lock:  # noqa: SLF001
                 branch_id = data["branch"]
@@ -546,9 +585,21 @@ async def _dispatch(session: Session, data: dict) -> None:
 
 
 def main() -> None:
-    import os
-
-    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("WB_PORT", "8765")))
+    global STORE_DIR
+    parser = argparse.ArgumentParser(prog="workbench")
+    parser.add_argument(
+        "--store-dir",
+        type=Path,
+        default=Path("~/.workbench/sessions").expanduser(),
+        help="session persistence root (default: ~/.workbench/sessions)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("WB_PORT", "8765"))
+    )
+    args = parser.parse_args()
+    STORE_DIR = args.store_dir.expanduser()
+    STORE_DIR.mkdir(parents=True, exist_ok=True)
+    uvicorn.run(app, host="0.0.0.0", port=args.port)
 
 
 if __name__ == "__main__":

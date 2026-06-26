@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import functools
 import json
 import logging
 import re
@@ -36,7 +35,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import anyio
-from inspect_ai.event import AnchorEvent, ModelEvent
 from inspect_ai.model import (
     ChatMessage,
     ChatMessageUser,
@@ -45,7 +43,7 @@ from inspect_ai.model import (
     ModelOutput,
     get_model,
 )
-from inspect_ai.log._transcript import init_transcript, transcript  # noqa: PLC2701
+from inspect_ai.log._transcript import init_transcript  # noqa: PLC2701
 from inspect_ai.util import Store
 from inspect_petri._auditor import audit_context, run_audit
 from inspect_petri._auditor.agent import GEN_SOURCE  # noqa: PLC2701
@@ -93,68 +91,6 @@ TARGET_GEN_SOURCE = "Model.generate"
 #: lands *before* the turn's `ToolEvent`s, so splicing on it would drop them.
 TURN_END_SOURCE = "workbench:turn"
 
-# Tape sources that correspond to a model.generate() — those are the steps
-# whose divergent serve must emit a settled `ModelEvent` so an `edit_*` op's
-# edited turn (the one served step past `prefix_len`) is wire-visible.
-_GEN_ROLES: dict[str, Role] = {
-    GEN_SOURCE: "auditor",
-    TARGET_GEN_SOURCE: "target",
-}
-
-
-class _DivergentTape(Tape):
-    """Level-2 `Tape` whose serve path emits a `ModelEvent` for *divergent*
-    served steps only — those at ``log[prefix_len:]``.
-
-    `History.branch(inclusive=False)` seeds `pending` with the shared prefix
-    (length `prefix_len`); the caller appends one edited step. That step is
-    served past `prefix_len`, has a fresh anchor, and is the only `Step`
-    no other branch's transcript carries — so it needs an explicit
-    `ModelEvent` + `AnchorEvent` here for `build_history_timeline`'s anchor
-    lookup to resolve it. Shared-prefix serves emit nothing (anchors stable;
-    the timeline references the parent's events — PETRI-L2-HISTORY §3).
-    """
-
-    def replayable(self, fn, *, boundary=None, source=None):  # type: ignore[override]
-        src = source if source is not None else fn.__qualname__
-        base = super().replayable(fn, boundary=boundary, source=src)
-        role = _GEN_ROLES.get(src)
-        if role is None:
-            return base
-
-        @functools.wraps(fn)
-        async def w(*a: Any, **kw: Any) -> Any:
-            # Mirror `Tape._pop`'s guard so `served` is true iff `base` will
-            # take the serve path. `past_prefix` is checked *before* the call
-            # (the append happens inside `base`).
-            head = self.pending[0] if self.pending else None
-            served = (
-                head is not None and head.source == src and head.boundary == boundary
-            )
-            past_prefix = len(self.log) >= self.prefix_len
-            out = await base(*a, **kw)
-            if served and past_prefix and isinstance(out, ModelOutput):
-                model = get_model(role=role)
-                transcript()._event(  # noqa: SLF001
-                    ModelEvent(
-                        model=model.name,
-                        role=role,
-                        input=list(kw.get("input") or (a[0] if a else [])),
-                        tools=[],
-                        tool_choice="auto",
-                        config=GenerateConfig(),
-                        output=out,
-                        pending=False,
-                    )
-                )
-                if (anchor := out.message.id) is not None:
-                    transcript()._event(  # noqa: SLF001
-                        AnchorEvent(anchor_id=anchor, source=src)
-                    )
-            return out
-
-        return w
-
 
 # Auditor tool → the argument that becomes the target-side message body.
 # Used by `locate_staging_call` to map a target user/system/tool message back
@@ -171,30 +107,30 @@ ROLE_TO_STAGING_FN: dict[str, str] = {
 }
 
 
-def find_auditor_step(steps: list[Step], turn_index: int) -> tuple[int, Step]:
-    """Index and `Step` of the `turn_index`-th (0-based) auditor generate on the
-    level-2 tape. Raises `ValueError` if out of range."""
+def find_auditor_step(steps: list[Step], turn_index: int) -> Step:
+    """The `turn_index`-th (0-based) auditor generate on the level-2 tape.
+    Raises `ValueError` if out of range."""
     n = -1
-    for i, s in enumerate(steps):
+    for s in steps:
         if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput):
             n += 1
             if n == turn_index:
-                return i, s
+                return s
     raise ValueError(
         f"auditor turn_index {turn_index} out of range (tape has {n + 1} auditor turns)"
     )
 
 
-def find_target_step(steps: list[Step], anchor_id: str) -> tuple[int, Step]:
-    """Index and `Step` of the target generate with `anchor_id` on the tape.
-    Raises `ValueError` if not found."""
-    for i, s in enumerate(steps):
+def find_target_step(steps: list[Step], anchor_id: str) -> Step:
+    """The target generate with `anchor_id` on the tape. Raises `ValueError`
+    if not found."""
+    for s in steps:
         if (
             s.source == TARGET_GEN_SOURCE
             and s.anchor_id == anchor_id
             and isinstance(s.value, ModelOutput)
         ):
-            return i, s
+            return s
     raise ValueError(f"target anchor_id {anchor_id!r} not found in audit tape")
 
 
@@ -329,7 +265,7 @@ async def generate_rewrite(
     if not instruction or not instruction.strip():
         raise ValueError("rewrite instruction cannot be empty")
 
-    _, step = find_auditor_step(branch.audit_tape.log, turn_index)
+    step = find_auditor_step(branch.audit_tape.log, turn_index)
     assert isinstance(step.value, ModelOutput)
     tc = next(
         (c for c in step.value.message.tool_calls or [] if c.id == call_id), None
@@ -431,17 +367,6 @@ class Branch:
         # level-1 anchors match the parent's exactly (PETRI-L2-HISTORY §2).
         self.channel = Channel(seed_instructions=seed)
         self.history = History()
-
-        # Splice-model bookkeeping. While the auditor loop is replaying the
-        # *shared* prefix (`tape.log[:prefix_len]`, identical to the parent's
-        # tape), the session drops every auditor-role event — those are
-        # duplicates of what the parent already emitted, and the auditor
-        # column splices them in from the parent's `TimelineSpan` instead.
-        # The flag is flipped at the turn boundary by `workbench_auditor`
-        # (not derived from `len(tape.log) < prefix_len` directly, because
-        # the last shared turn's trailing `ToolEvent`s are emitted *after*
-        # the target side has already advanced `len(log)` to `prefix_len`).
-        self._replaying_shared: bool = self.trajectory.tape.prefix_len > 0
 
         # step gate — `workbench_auditor` awaits `_gate.wait()` each turn then
         # replaces it (one-shot Event). `play()` sets `_free_running`; the loop
@@ -592,9 +517,9 @@ class Branch:
             self.status = "ended"
             self.generating = None
             self._free_running = False
-            self._replaying_shared = False
             if not self._replayed.is_set():
                 self._replayed.set()
+            self.session.save_branch(self)
             await self.session.broadcast_status()
             if self.error:
                 await self.session.broadcast(
@@ -624,8 +549,8 @@ class Branch:
                 excluded so the child regenerates it live.
             edited: Optional divergent step appended past `prefix_len`
                 (`edit_*` ops). Served on the first post-prefix turn;
-                `_DivergentTape` emits its `ModelEvent`/`AnchorEvent` so
-                `build_history_timeline` resolves it.
+                `workbench_auditor` emits its `ModelEvent`/`AnchorEvent`
+                inline so `build_history_timeline` resolves it.
         """
         traj = session.audit_history.branch(
             anchor, from_trajectory=parent.trajectory, inclusive=inclusive
@@ -643,10 +568,6 @@ class Branch:
         )
         if edited is not None:
             traj.tape.pending.append(edited)
-            new = _DivergentTape(pending=traj.tape.pending)
-            new.prefix_len = traj.tape.prefix_len
-            new._errors = traj.tape._errors  # noqa: SLF001
-            traj.tape = new
         m = parent.meta
         return cls(
             session,

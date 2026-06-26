@@ -17,8 +17,6 @@ from __future__ import annotations
 import asyncio
 import copy
 import sys
-import traceback
-from collections import deque
 
 import anyio
 from inspect_ai.model import (
@@ -29,13 +27,22 @@ from inspect_ai.model import (
 from inspect_ai.tool import ToolChoice, ToolInfo
 
 from workbench._smoke_fixtures import (
+    SCRIPT3,
+    T0,
+    T2_END,
     _auditor_turn,
+    _count_trajectories,
+    _diff,
+    _nth_target_anchor,
+    _pool_user_id,
+    _send,
     _tc,
     auditor_by_turn,
     auditor_counted,
     make_base,
     normalize,
     run_child,
+    run_suite,
     target_by_last_user,
     target_counted,
 )
@@ -46,17 +53,6 @@ from workbench.session import Session, build_auditor_timeline
 
 # ── shared shapes ───────────────────────────────────────────────────────────
 
-T0 = (
-    ("set_system_message", frozenset({("system_message", "sys")})),
-    ("send_message", frozenset({("message", "u1")})),
-    ("resume", frozenset()),
-)
-T_END = (("end_conversation", frozenset()),)
-
-
-def _send(msg: str) -> tuple:
-    return (("send_message", frozenset({("message", msg)})), ("resume", frozenset()))
-
 
 def _rb_send(mid: str, msg: str) -> tuple:
     return (
@@ -66,55 +62,10 @@ def _rb_send(mid: str, msg: str) -> tuple:
     )
 
 
-def _fmt(seq: list[tuple]) -> str:
-    lines: list[str] = []
-    for role, text, calls in seq:
-        cs = ", ".join(f"{fn}({dict(sorted(args))})" for fn, args in calls)
-        lines.append(f"    ({role!r}, {text!r}, [{cs}])")
-    return "\n".join(lines) if lines else "    <empty>"
-
-
-def _diff(actual: list[tuple], expected: list[tuple]) -> str:
-    return (
-        f"\nactual   ({len(actual)}):\n{_fmt(actual)}"
-        f"\nexpected ({len(expected)}):\n{_fmt(expected)}"
-    )
-
-
-def _nth_target_anchor(branch: Branch, n: int) -> str:
-    hits = [
-        s.anchor_id
-        for s in branch.audit_tape.log
-        if s.source == TARGET_GEN_SOURCE
-        and isinstance(s.value, ModelOutput)
-        and s.anchor_id is not None
-    ]
-    assert len(hits) > n, f"need ≥{n + 1} target steps, got {len(hits)}"
-    return hits[n]
-
-
 def _call_id(branch: Branch, turn_index: int, fn: str) -> str:
-    _, step = find_auditor_step(branch.audit_tape.log, turn_index)
+    step = find_auditor_step(branch.audit_tape.log, turn_index)
     assert isinstance(step.value, ModelOutput)
     return next(tc.id for tc in (step.value.message.tool_calls or []) if tc.function == fn)
-
-
-def _pool_user_id(session: Session, text: str) -> str:
-    for m in session.pool:
-        if m.role == "user" and m.text == text:
-            assert m.id is not None
-            return m.id
-    raise AssertionError(f"no pool user message with text {text!r}")
-
-
-def _count_trajectories(history) -> int:
-    n = 0
-    q = deque([history.root])
-    while q:
-        t = q.popleft()
-        n += 1
-        q.extend(t.children)
-    return n
 
 
 # ── C1: rollback in shared prefix → user edits the turn after it ───────────
@@ -175,7 +126,7 @@ async def c1_rollback_then_edit_after() -> None:
             ("target", "r3", ()),
             ("auditor", "", _send("u4-EDIT")),
             ("target", "r4-EDIT", ()),
-            ("auditor", "", T_END),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
         # Replay re-ran the rollback on a fresh L1 → child mirrors base's
@@ -248,7 +199,7 @@ async def c2_edit_then_rollback_in_regen() -> None:
             ("target", "r2-EDIT", ()),
             ("auditor", "", _rb_send("M3", "u3")),
             ("target", "r3", ()),
-            ("auditor", "", T_END),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
         # The rollback fired LIVE in the child → fresh L1 trajectory.
@@ -264,16 +215,6 @@ async def c2_edit_then_rollback_in_regen() -> None:
 # Two children of P at *different* anchors. `build_auditor_timeline` must
 # show both as children of P; switching between P/C/D leaves each branch's
 # `normalize()` unchanged (switch is view-only).
-
-SCRIPT3: list[ModelOutput] = [
-    _auditor_turn(
-        _tc("set_system_message", system_message="sys"),
-        _tc("send_message", message="u1"),
-        _tc("resume"),
-    ),
-    _auditor_turn(_tc("send_message", message="u2"), _tc("resume")),
-    _auditor_turn(_tc("end_conversation")),
-]
 
 
 async def c3_branch_chain_switches() -> None:
@@ -291,7 +232,7 @@ async def c3_branch_chain_switches() -> None:
         # C: branch (inclusive) at r1.
         await _dispatch(
             session,
-            {"t": "branch", "branch": "base", "at": _nth_target_anchor(base, 0)},
+            {"t": "branch", "branch": "base", "at": _nth_target_anchor(base.audit_tape.log, 0)},
         )
         c_id, _ = await run_child(session)
         snap_c = normalize(session, c_id)
@@ -301,7 +242,7 @@ async def c3_branch_chain_switches() -> None:
         assert session.current == "base"
         await _dispatch(
             session,
-            {"t": "branch", "branch": "base", "at": _nth_target_anchor(base, 1)},
+            {"t": "branch", "branch": "base", "at": _nth_target_anchor(base.audit_tape.log, 1)},
         )
         d_id, d = await run_child(session)
         snap_d = normalize(session, d_id)
@@ -474,7 +415,7 @@ async def c5_edit_rolled_back_message() -> None:
             ("target", "r3", ()),
             ("auditor", "", _send("u4")),
             ("target", "r4", ()),
-            ("auditor", "", T_END),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
         assert _count_trajectories(child.history) == 2, (
@@ -536,7 +477,7 @@ async def c6_resample_edit_resample_chain() -> None:
                 ("target", "r1", ()),
                 ("auditor", "", _send(msg)),
                 ("target", f"r{msg[1:]}", ()),
-                ("auditor", "", T_END),
+                ("auditor", "", T2_END),
             ]
             assert actual == expected, f"[{bid}]" + _diff(actual, expected)
 
@@ -620,7 +561,7 @@ async def c7_edit_create_tool_parameters() -> None:
         expected_base = [
             ("auditor", "", _tool_t0_calls(json.dumps(PARAMS_ORIG, sort_keys=True))),
             ("target", "r1", ()),
-            ("auditor", "", T_END),
+            ("auditor", "", T2_END),
         ]
         assert actual_base == expected_base, _diff(actual_base, expected_base)
 
@@ -645,7 +586,7 @@ async def c7_edit_create_tool_parameters() -> None:
         expected = [
             ("auditor", "", _tool_t0_calls(json.dumps(PARAMS_EDIT, sort_keys=True))),
             ("target", "r1", ()),
-            ("auditor", "", T_END),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
 
@@ -724,7 +665,7 @@ async def c8_edit_resume_prefill() -> None:
             ("target", "r1", ()),
             ("auditor", "", t1_edit),
             ("target", "r2", ()),
-            ("auditor", "", T_END),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
     finally:
@@ -807,7 +748,7 @@ async def c9_two_rollbacks_then_edit() -> None:
             ("target", "r5", ()),
             ("auditor", "", _send("u6-EDIT")),
             ("target", "r6-EDIT", ()),
-            ("auditor", "", T_END),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
         assert _count_trajectories(child.history) == 3, (
@@ -867,7 +808,7 @@ async def c10_fork_frozen_unreached_turn() -> None:
         # Fork once (cancels base) — child C runs fine.
         await _dispatch(
             session,
-            {"t": "resample", "branch": "base", "at": _nth_target_anchor(base, 0)},
+            {"t": "resample", "branch": "base", "at": _nth_target_anchor(base.audit_tape.log, 0)},
         )
         assert task.done() and base.status == "ended"
         c_id, _ = await run_child(session)
@@ -912,26 +853,5 @@ TESTS = [
 ]
 
 
-async def _amain() -> int:
-    failed = 0
-    for name, fn in TESTS:
-        try:
-            await fn()
-            print(f"PASS  {name}")
-        except AssertionError as exc:
-            failed += 1
-            print(f"FAIL  {name}{exc}")
-        except Exception:
-            failed += 1
-            print(f"ERROR {name}")
-            traceback.print_exc()
-    print(f"\n{len(TESTS) - failed}/{len(TESTS)} passed")
-    return 1 if failed else 0
-
-
-def main() -> None:
-    sys.exit(anyio.run(_amain))
-
-
 if __name__ == "__main__":
-    main()
+    sys.exit(anyio.run(run_suite, TESTS))

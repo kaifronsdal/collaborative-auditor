@@ -29,11 +29,12 @@ from typing import TYPE_CHECKING
 
 import anyio
 from inspect_ai.agent import Agent, AgentState, agent
-from inspect_ai.event import AnchorEvent
+from inspect_ai.event import AnchorEvent, ModelEvent
 from inspect_ai.log._transcript import transcript  # noqa: PLC2701
 from inspect_ai.model import (
     ChatMessageSystem,
     ChatMessageUser,
+    GenerateConfig,
     execute_tools,
     get_model,
 )
@@ -115,22 +116,6 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
             from workbench.run import TURN_END_SOURCE  # noqa: PLC0415
 
             for turn in range(max_turns):
-                # ── shared-prefix replay flag (splice model) ──────────────────
-                # While the tape's log is still inside `[:prefix_len]` (the
-                # part shared verbatim with the parent), the session drops
-                # every auditor-role event (the parent supplies them via
-                # splice). Past it — the divergent suffix (an `edit_*` op's
-                # appended step at `log[prefix_len]`) and live turns — events
-                # flow normally. Flipped at the turn boundary, *not* derived
-                # live from `len(log) < prefix_len`: the last shared turn's
-                # trailing `ToolEvent`s are emitted after the target side has
-                # already advanced `len(log)` to `prefix_len`.
-                if (
-                    branch._replaying_shared  # noqa: SLF001
-                    and len(tape.log) >= tape.prefix_len
-                ):
-                    branch._replaying_shared = False  # noqa: SLF001
-
                 # ── step-gate + queued-feedback drain, inline ─────────────────
                 # Replay turns (served from `pending`) are deterministic and
                 # I/O-free — burn through them ungated so the prefix events
@@ -147,7 +132,31 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
                     branch.generating = "auditor"
                 # ──────────────────────────────────────────────────────────────
 
+                # Divergent serve: an `edit_*` op appended one edited auditor
+                # step to `pending` past `prefix_len`. `Tape.replayable` serves
+                # it without a `ModelEvent`, so emit one here (with its fresh
+                # `AnchorEvent`) — it's the only `Step` no other branch's
+                # transcript carries, and `build_auditor_timeline` /
+                # `_on_event`'s splice gate need it to resolve the edited turn.
+                divergent = bool(tape.pending) and len(tape.log) >= tape.prefix_len
                 state.output = await generate(input=state.messages, tools=tools)
+                if divergent:
+                    transcript()._event(  # noqa: SLF001
+                        ModelEvent(
+                            model=agent_model.name,
+                            role="auditor",
+                            input=list(state.messages),
+                            tools=[],
+                            tool_choice="auto",
+                            config=GenerateConfig(),
+                            output=state.output,
+                            pending=False,
+                        )
+                    )
+                    if (a := state.output.message.id) is not None:
+                        transcript()._event(  # noqa: SLF001
+                            AnchorEvent(anchor_id=a, source=GEN_SOURCE)
+                        )
                 state.messages.append(state.output.message)
                 branch.generating = None
                 if branch._free_running:  # noqa: SLF001

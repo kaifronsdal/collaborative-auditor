@@ -15,20 +15,28 @@ from __future__ import annotations
 
 import asyncio
 import sys
-import traceback
-from collections import deque
 
 import anyio
 from inspect_ai.model import ModelOutput
 
 from workbench._smoke_fixtures import (
+    SCRIPT3,
+    T0,
+    T1,
+    T2_END,
     _auditor_turn,
+    _count_trajectories,
+    _diff,
+    _nth_target_anchor,
+    _pool_user_id,
+    _send,
     _tc,
     auditor_by_turn,
     auditor_counted,
     make_base,
     normalize,
     run_child,
+    run_suite,
     target_by_last_user,
     target_counted,
 )
@@ -36,61 +44,9 @@ from workbench.run import TARGET_GEN_SOURCE, Branch, find_auditor_step
 from workbench.server import _dispatch  # noqa: PLC2701
 from workbench.session import Session, build_auditor_timeline
 
-# ── shared 3-turn base scenario (matches W6–W10) ────────────────────────────
-
-SCRIPT3: list[ModelOutput] = [
-    _auditor_turn(
-        _tc("set_system_message", system_message="sys"),
-        _tc("send_message", message="u1"),
-        _tc("resume"),
-    ),
-    _auditor_turn(_tc("send_message", message="u2"), _tc("resume")),
-    _auditor_turn(_tc("end_conversation")),
-]
-
-T0 = (
-    ("set_system_message", frozenset({("system_message", "sys")})),
-    ("send_message", frozenset({("message", "u1")})),
-    ("resume", frozenset()),
-)
-T1 = (("send_message", frozenset({("message", "u2")})), ("resume", frozenset()))
-T2_END = (("end_conversation", frozenset()),)
-
-
-def _send(msg: str) -> tuple:
-    return (("send_message", frozenset({("message", msg)})), ("resume", frozenset()))
-
-
-def _fmt(seq: list[tuple]) -> str:
-    lines: list[str] = []
-    for role, text, calls in seq:
-        cs = ", ".join(f"{fn}({dict(sorted(args))})" for fn, args in calls)
-        lines.append(f"    ({role!r}, {text!r}, [{cs}])")
-    return "\n".join(lines) if lines else "    <empty>"
-
-
-def _diff(actual: list[tuple], expected: list[tuple]) -> str:
-    return (
-        f"\nactual   ({len(actual)}):\n{_fmt(actual)}"
-        f"\nexpected ({len(expected)}):\n{_fmt(expected)}"
-    )
-
-
-def _nth_target_anchor(branch: Branch, n: int) -> str:
-    """anchor_id of the n-th (0-based) target generate on the L2 tape."""
-    hits = [
-        s.anchor_id
-        for s in branch.audit_tape.log
-        if s.source == TARGET_GEN_SOURCE
-        and isinstance(s.value, ModelOutput)
-        and s.anchor_id is not None
-    ]
-    assert len(hits) > n, f"need ≥{n + 1} target steps, got {len(hits)}"
-    return hits[n]
-
 
 def _send_call_id(branch: Branch, turn_index: int) -> str:
-    _, step = find_auditor_step(branch.audit_tape.log, turn_index)
+    step = find_auditor_step(branch.audit_tape.log, turn_index)
     assert isinstance(step.value, ModelOutput)
     return next(
         tc.id
@@ -99,27 +55,9 @@ def _send_call_id(branch: Branch, turn_index: int) -> str:
     )
 
 
-def _pool_user_id(session: Session, text: str) -> str:
-    for m in session.pool:
-        if m.role == "user" and m.text == text:
-            assert m.id is not None
-            return m.id
-    raise AssertionError(f"no pool user message with text {text!r}")
-
-
-def _count_trajectories(history) -> int:
-    n = 0
-    q = deque([history.root])
-    while q:
-        t = q.popleft()
-        n += 1
-        q.extend(t.children)
-    return n
-
-
 # ── E1: edit_auditor_call at turn 0 ─────────────────────────────────────────
-# No shared auditor turn in the prefix; `_DivergentTape` must emit the edited
-# T0 and `_replaying_shared` must already be False when it does.
+# No shared auditor turn in the prefix; the inline divergent emit must carry
+# the edited T0 and the splice gate must already be open when it does.
 
 
 async def e1_edit_turn0() -> None:
@@ -135,7 +73,7 @@ async def e1_edit_turn0() -> None:
             max_turns=3,
         )
         # edit T0's send_message arg
-        _, step = find_auditor_step(base.audit_tape.log, 0)
+        step = find_auditor_step(base.audit_tape.log, 0)
         assert isinstance(step.value, ModelOutput)
         call_id = next(
             tc.id
@@ -467,7 +405,7 @@ async def e6_anchor_stability() -> None:
             target_outputs=target_by_last_user({"u1": "r1", "u2": "r2"}),
             max_turns=3,
         )
-        anchor = _nth_target_anchor(base, 1)  # r2
+        anchor = _nth_target_anchor(base.audit_tape.log, 1)  # r2
 
         await _dispatch(session, {"t": "branch", "branch": "base", "at": anchor})
         c_id, c = await run_child(session)
@@ -538,7 +476,7 @@ async def e7_fork_while_running() -> None:
         await _step_until(2)
         assert not task.done(), "parent task ended early"
 
-        anchor = _nth_target_anchor(base, 0)  # r1
+        anchor = _nth_target_anchor(base.audit_tape.log, 0)  # r1
         await _dispatch(session, {"t": "resample", "branch": "base", "at": anchor})
         # `_register_and_spawn` cancelled the parent before spawning the child.
         assert task.done(), "parent task should be cancelled by _stop_running_branches"
@@ -648,26 +586,5 @@ TESTS = [
 ]
 
 
-async def _amain() -> int:
-    failed = 0
-    for name, fn in TESTS:
-        try:
-            await fn()
-            print(f"PASS  {name}")
-        except AssertionError as exc:
-            failed += 1
-            print(f"FAIL  {name}{exc}")
-        except Exception:
-            failed += 1
-            print(f"ERROR {name}")
-            traceback.print_exc()
-    print(f"\n{len(TESTS) - failed}/{len(TESTS)} passed")
-    return 1 if failed else 0
-
-
-def main() -> None:
-    sys.exit(anyio.run(_amain))
-
-
 if __name__ == "__main__":
-    main()
+    sys.exit(anyio.run(run_suite, TESTS))

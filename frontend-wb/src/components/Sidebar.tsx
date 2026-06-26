@@ -2,7 +2,7 @@ import type { JSX } from "react";
 
 import type { BranchId, BranchMeta } from "../lib/wire";
 import { useSession } from "../store/session";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Chevron } from "./icons";
 
 const COLLAPSED_KEY = "workbench.sidebarCollapsed";
@@ -27,6 +27,7 @@ function BranchNode({
   allBranches,
   depth,
   onSwitch,
+  onExport,
   visited,
 }: {
   id: BranchId;
@@ -35,6 +36,7 @@ function BranchNode({
   allBranches: Record<BranchId, BranchMeta>;
   depth: number;
   onSwitch: (id: BranchId) => void;
+  onExport: (id: BranchId) => void;
   visited: Set<string>;
 }): JSX.Element {
   if (visited.has(id)) return <></>;
@@ -49,7 +51,7 @@ function BranchNode({
 
   return (
     <div>
-      <button
+      <div
         className={`side-row${isActive ? " active" : ""}`}
         style={{ paddingLeft: 10 + depth * 14 }}
         title={label}
@@ -57,7 +59,15 @@ function BranchNode({
       >
         <span className={`status-dot dot-${meta.status}`} title={meta.status} />
         <span className="side-row-title">{label}</span>
-      </button>
+        <button
+          className="side-icon-btn"
+          title="Export branch as .eval"
+          aria-label="Export branch"
+          onClick={(e) => { e.stopPropagation(); onExport(id); }}
+        >
+          <i className="bi bi-download" style={{ fontSize: 11 }} />
+        </button>
+      </div>
       {children.map(([cid, cmeta]) => (
         <BranchNode
           key={cid}
@@ -67,6 +77,7 @@ function BranchNode({
           allBranches={allBranches}
           depth={depth + 1}
           onSwitch={onSwitch}
+          onExport={onExport}
           visited={nextVisited}
         />
       ))}
@@ -83,10 +94,35 @@ function BranchNode({
 export function Sidebar(): JSX.Element {
   const newAudit = useSession((s) => s.newAudit);
   const sessionsList = useSession((s) => s.sessionsList);
+  const savedSessions = useSession((s) => s.savedSessions);
+  const sessionId = useSession((s) => s.sessionId);
+  const fetchSessions = useSession((s) => s.fetchSessions);
+  const exportBranch = useSession((s) => s.exportBranch);
+  const importEval = useSession((s) => s.importEval);
   const current = useSession((s) => s.current);
   const status = useSession((s) => s.status);
   const branches = useSession((s) => s.branches);
   const send = useSession((s) => s.send);
+
+  useEffect(() => {
+    void fetchSessions();
+  }, [fetchSessions]);
+
+  function handleExport(id: BranchId): void {
+    const path = window.prompt("Export branch to .eval path:", `${id}.eval`);
+    if (path) exportBranch(id, path);
+  }
+
+  function handleImport(): void {
+    const path = window.prompt("Import .eval from path:");
+    if (path) importEval(path);
+  }
+
+  function openSession(sid: string): void {
+    const url = new URL(location.href);
+    url.searchParams.set("session", sid);
+    location.assign(url.toString());
+  }
 
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
@@ -160,9 +196,27 @@ export function Sidebar(): JSX.Element {
 
       <div className="side-section">Recents</div>
       <div className="side-recents">
-        {sessionsList.length === 0 ? (
+        {savedSessions.length === 0 && sessionsList.length === 0 ? (
           <div className="side-empty">No audits yet</div>
-        ) : (
+        ) : null}
+        {savedSessions.map((s) => {
+          const isActive = s.session_id === sessionId;
+          const title = s.seed.trim() || s.session_id;
+          return (
+            <button
+              key={s.session_id}
+              className={`side-row${isActive ? " active" : ""}`}
+              title={title}
+              onClick={() => openSession(s.session_id)}
+            >
+              <span className="side-row-title">{title}</span>
+              <span className="side-row-time">
+                {s.n_branches} · {relTime(Date.parse(s.created_at))}
+              </span>
+            </button>
+          );
+        })}
+        {sessionsList.length > 0 &&
           sessionsList.map((s) => {
             const isActive = s.id === current;
             return (
@@ -188,15 +242,25 @@ export function Sidebar(): JSX.Element {
                 <span className="side-row-time">{relTime(s.updatedAt)}</span>
               </button>
             );
-          })
-        )}
+          })}
       </div>
 
       {current && (
         <>
           {roots.length > 0 && (
             <>
-              <div className="side-section">Branches</div>
+              <div className="side-section">
+                Branches
+                <button
+                  className="side-icon-btn"
+                  style={{ float: "right" }}
+                  title="Import .eval as new branch"
+                  aria-label="Import .eval"
+                  onClick={handleImport}
+                >
+                  <i className="bi bi-upload" style={{ fontSize: 11 }} />
+                </button>
+              </div>
               <div className="side-branches">
                 {roots.map(([id, meta]) => (
                   <BranchNode
@@ -207,6 +271,7 @@ export function Sidebar(): JSX.Element {
                     allBranches={branches}
                     depth={0}
                     onSwitch={handleSwitch}
+                    onExport={handleExport}
                     visited={new Set()}
                   />
                 ))}

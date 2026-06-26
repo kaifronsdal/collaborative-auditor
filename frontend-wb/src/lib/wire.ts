@@ -7,7 +7,7 @@
  * `input_refs` range list pointing into the pool; the frontend resolves it with
  * `expandEvents`.
  */
-import type { ChatMessage, Event, ModelOutput, Timeline } from "@tsmono/inspect-common";
+import type { ChatMessage, Event, Timeline } from "@tsmono/inspect-common";
 
 /** Server-built `Timeline` (petri's `build_target_timeline`), event refs as UUIDs. */
 export type ServerTimeline = Timeline;
@@ -89,7 +89,6 @@ export type Up =
   | { t: "inject"; branch: BranchId; role: Role; message: ChatMessage }
   | { t: "branch"; at: string }
   | { t: "resample"; at: string }
-  | { t: "edit"; at: string; output: ModelOutput }
   | { t: "branch_auditor"; branch: BranchId; turn_index: number }
   | { t: "resample_auditor"; branch: BranchId; turn_index: number }
   | {
@@ -124,4 +123,14 @@ export type Up =
       selected_text?: string;
       tool_call_id?: string;
     }
-  | { t: "switch"; branch: BranchId };
+  | { t: "switch"; branch: BranchId }
+  | { t: "export"; branch: BranchId; path: string }
+  | { t: "import"; path: string; sample_id?: string };
+
+/** One entry from `GET /sessions` — a persisted session on disk. */
+export type SavedSession = {
+  session_id: string;
+  seed: string;
+  created_at: string;
+  n_branches: number;
+};

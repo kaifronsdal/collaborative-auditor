@@ -35,19 +35,3 @@ def wire_events(
 ) -> list[dict[str, Any]]:
     """All `event` payloads from the wire capture, in send order."""
     return [m["event"] for m in conn.sent if m["t"] in kinds]
-
-
-def model_events_for(
-    conn: FakeConn, session: Session, span_id: str
-) -> list[dict[str, Any]]:
-    """Wire ModelEvents routed (by span ancestry) to `span_id`, in send order."""
-    out: list[dict[str, Any]] = []
-    for ev in wire_events(conn):
-        if ev["event"] != "model":
-            continue
-        cur: str | None = ev["span_id"]
-        while cur is not None and cur != span_id:
-            cur = session.span_parent.get(cur)
-        if cur == span_id:
-            out.append(ev)
-    return out

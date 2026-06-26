@@ -8,6 +8,7 @@ export default defineConfig({
     // Proxy /ws/* to the backend so only the Vite port needs forwarding.
     proxy: {
       "/ws": { target: "ws://127.0.0.1:8765", ws: true },
+      "/sessions": "http://127.0.0.1:8765",
     },
   },
   test: {

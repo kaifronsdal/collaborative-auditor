@@ -22,7 +22,7 @@ import {
   type EventsByRole,
 } from "../lib/events";
 import type {
-  BranchId, BranchMeta, Down, QueuedMap, Role, Status, TimelineMap, Up,
+  BranchId, BranchMeta, Down, QueuedMap, Role, SavedSession, Status, TimelineMap, Up,
 } from "../lib/wire";
 import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
 import type { GenerateConfigDict } from "../components/ModelPicker";
@@ -143,6 +143,8 @@ export type SessionState = {
    * `state` broadcast lands with a `current`.
    */
   sessionsList: SessionSummary[];
+  /** Persisted sessions from `GET /sessions` (sidebar Recents). */
+  savedSessions: SavedSession[];
   /** Per-branch config captured at `start`, keyed by branch id (PENDING_ID
    *  until reconciled). Read by the sidebar config card. */
   branchConfig: Record<string, BranchConfig>;
@@ -179,6 +181,15 @@ export type SessionState = {
    */
   newAudit: () => void;
 
+  /** Fetch `GET /sessions` and populate `savedSessions`. */
+  fetchSessions: () => Promise<void>;
+
+  /** Export `branchId` (and its subtree) to a `.eval` at `path`. */
+  exportBranch: (branchId: BranchId, path: string) => void;
+
+  /** Import a `.eval` sample as a new root branch in the current session. */
+  importEval: (path: string, sampleId?: string) => void;
+
   /**
    * Optimistically branch at `anchorId`: truncate columns to events up to the
    * clicked row, set `current = PENDING_BRANCH`, send `{t:"branch", at}`.
@@ -190,12 +201,6 @@ export type SessionState = {
    * sends `{t:"resample", at}`.
    */
   resampleAt: (anchorId: string) => void;
-
-  /**
-   * Optimistically edit at `anchorId`: truncate then replace the last event in
-   * each role with a placeholder version, send `{t:"edit", at, output}`.
-   */
-  editAt: (anchorId: string, output: import("@tsmono/inspect-common").ModelOutput) => void;
 
   /**
    * Edit a target-side user/system/tool message. Backend maps it to the
@@ -331,6 +336,7 @@ export const useSession = create<SessionState>((set, get) => ({
   ws: null,
   sessionId: null,
   sessionsList: [],
+  savedSessions: [],
   branchConfig: {},
   branches: {},
   nextConfig: {
@@ -645,6 +651,37 @@ export const useSession = create<SessionState>((set, get) => ({
     set((state) => ({ nextConfig: { ...state.nextConfig, ...patch } }));
   },
 
+  fetchSessions: async () => {
+    try {
+      const res = await fetch("/sessions");
+      if (!res.ok || !res.headers.get("content-type")?.includes("json")) return;
+      set({ savedSessions: (await res.json()) as SavedSession[] });
+    } catch {
+      // backend down / not proxied in this dev setup — recents stays empty
+    }
+  },
+
+  exportBranch: (branchId, path) => {
+    get().send({ t: "export", branch: branchId, path });
+  },
+
+  importEval: (path, sampleId) => {
+    // Optimistic pending-branch — the `state` broadcast that follows the
+    // import's `_register_and_spawn` re-keys it to the real id.
+    set((state) => ({
+      pendingNewAudit: false,
+      prevCurrent: state.current,
+      current: PENDING_BRANCH,
+      status: "paused",
+      byRole: { ...state.byRole, [PENDING_BRANCH]: { auditor: [], target: [] } },
+    }));
+    get().send({
+      t: "import",
+      path,
+      ...(sampleId != null ? { sample_id: sampleId } : {}),
+    });
+  },
+
   newAudit: () => {
     // Back to the empty StartView. The backend branch is untouched; clicking
     // its Recents row re-views it (same socket, `current` flips back).
@@ -657,8 +694,6 @@ export const useSession = create<SessionState>((set, get) => ({
 
   branchAt: (anchorId) => _pendingChild(set, get, anchorId, { t: "branch", at: anchorId }),
   resampleAt: (anchorId) => _pendingChild(set, get, anchorId, { t: "resample", at: anchorId }),
-  editAt: (anchorId, output) =>
-    _pendingChild(set, get, anchorId, { t: "edit", at: anchorId, output }),
 
   editTargetMessage: (messageId, role, content, toolCallId) => {
     const current = get().current;
@@ -771,7 +806,7 @@ export const useSession = create<SessionState>((set, get) => ({
 }));
 
 /**
- * Shared body for `branchAt` / `resampleAt` / `editAt`: optimistically install
+ * Shared body for `branchAt` / `resampleAt` / edit ops: optimistically install
  * a `PENDING_BRANCH` snapshot truncated at `anchorId`, then send `cmd`. The
  * backend's `state` broadcast replaces the pending entry with the real branch.
  */

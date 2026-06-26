@@ -18,9 +18,11 @@ that originated in `_smoke_ui_rollback.py`, plus the new fixtures the
   into a comparable `list[(role, text, ((fn, frozenset(args.items())), …))]`.
 - `make_base(...)` / `run_child(...)` — build+run a parent branch, then
   release a `_dispatch`-spawned child and await it.
-
-The UI smoke tests (`_smoke_ui_rollback.py`, `_smoke_ui_content.py`,
-`_smoke_ui_actions.py`) will be refactored to import from here in a follow-up.
+- `SCRIPT3` / `T0` / `T1` / `T2_END` — the canonical 3-turn deterministic
+  base scenario (set_system + send u1 → r1; send u2 → r2; end).
+- `_diff` / `_send` / `_pool_msg_id` / `_count_trajectories` /
+  `_nth_target_anchor` / `run_suite` — small assertion + lookup helpers
+  shared by every wire-level suite.
 """
 
 from __future__ import annotations
@@ -31,7 +33,9 @@ import json
 import os
 import socket
 import subprocess
-from collections.abc import Callable
+import traceback
+from collections import deque
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager, closing
 from pathlib import Path
 from typing import Any
@@ -45,7 +49,7 @@ from inspect_ai.model import (
 )
 from inspect_ai.tool import ToolCall, ToolChoice, ToolInfo
 
-from workbench.run import Branch
+from workbench.run import GEN_SOURCE, TARGET_GEN_SOURCE, Branch
 from workbench.server import _dispatch, app  # noqa: PLC2701
 from workbench.session import Session
 
@@ -88,19 +92,29 @@ def _free_port() -> int:
 
 @asynccontextmanager
 async def _backend(port: int):
-    cfg = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    srv = uvicorn.Server(cfg)
-    task = asyncio.create_task(srv.serve())
-    try:
-        for _ in range(50):
-            if srv.started:
-                break
-            await anyio.sleep(0.1)
-        assert srv.started, "uvicorn failed to start"
-        yield
-    finally:
-        srv.should_exit = True
-        await task
+    # Isolate tests from the user's persisted sessions and from each other —
+    # each `_backend` gets its own ephemeral store dir.
+    import tempfile
+
+    import workbench.server as srv_mod
+
+    with tempfile.TemporaryDirectory(prefix="wb-smoke-") as tmp:
+        prev = srv_mod.STORE_DIR
+        srv_mod.STORE_DIR = Path(tmp)
+        cfg = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+        srv = uvicorn.Server(cfg)
+        task = asyncio.create_task(srv.serve())
+        try:
+            for _ in range(50):
+                if srv.started:
+                    break
+                await anyio.sleep(0.1)
+            assert srv.started, "uvicorn failed to start"
+            yield
+        finally:
+            srv.should_exit = True
+            await task
+            srv_mod.STORE_DIR = prev
 
 
 @asynccontextmanager
@@ -252,8 +266,6 @@ def normalize(session: Session, branch_id: str) -> list[tuple[str, str, tuple]]:
     Each entry is `(role, text, ((fn, frozenset(args)), …))`; non-scalar
     args are JSON-canonicalised (see `_scalar_args`).
     """
-    from workbench.run import GEN_SOURCE, TARGET_GEN_SOURCE  # noqa: PLC0415
-
     roles = {GEN_SOURCE: "auditor", TARGET_GEN_SOURCE: "target"}
     out: list[tuple[str, str, tuple]] = []
     for s in session.branches[branch_id].audit_tape.log:
@@ -319,3 +331,109 @@ async def run_child(session: Session) -> tuple[str, Branch]:
     child = session.branches[session.current]
     assert child.error is None, f"child branch failed: {child.error}"
     return session.current, child
+
+
+# ── shared 3-turn base scenario ─────────────────────────────────────────────
+#
+#   T0  set_system_message("sys") · send_message("u1") · resume  → target "r1"
+#   T1  send_message("u2") · resume                               → target "r2"
+#   T2  end_conversation
+#
+# Built once; `auditor_by_turn`/`auditor_counted` deep-copy entries per call.
+
+SCRIPT3: list[ModelOutput] = [
+    _auditor_turn(
+        _tc("set_system_message", system_message="sys"),
+        _tc("send_message", message="u1"),
+        _tc("resume"),
+    ),
+    _auditor_turn(_tc("send_message", message="u2"), _tc("resume")),
+    _auditor_turn(_tc("end_conversation")),
+]
+
+T0 = (
+    ("set_system_message", frozenset({("system_message", "sys")})),
+    ("send_message", frozenset({("message", "u1")})),
+    ("resume", frozenset()),
+)
+T1 = (("send_message", frozenset({("message", "u2")})), ("resume", frozenset()))
+T2_END = (("end_conversation", frozenset()),)
+
+
+def _send(msg: str) -> tuple:
+    """`normalize()` shape for an auditor `send_message(msg) · resume` turn."""
+    return (("send_message", frozenset({("message", msg)})), ("resume", frozenset()))
+
+
+# ── assertion / lookup helpers ──────────────────────────────────────────────
+
+
+def _fmt(seq: list[tuple]) -> str:
+    lines: list[str] = []
+    for role, text, calls in seq:
+        cs = ", ".join(f"{fn}({dict(sorted(args))})" for fn, args in calls)
+        lines.append(f"    ({role!r}, {text!r}, [{cs}])")
+    return "\n".join(lines) if lines else "    <empty>"
+
+
+def _diff(actual: list[tuple], expected: list[tuple]) -> str:
+    return (
+        f"\nactual   ({len(actual)}):\n{_fmt(actual)}"
+        f"\nexpected ({len(expected)}):\n{_fmt(expected)}"
+    )
+
+
+def _nth_target_anchor(log: list, n: int) -> str:
+    """anchor_id of the n-th (0-based) target generate in `log`."""
+    hits = [
+        s.anchor_id
+        for s in log
+        if s.source == TARGET_GEN_SOURCE
+        and isinstance(s.value, ModelOutput)
+        and s.anchor_id is not None
+    ]
+    assert len(hits) > n, f"need ≥{n + 1} target steps, got {len(hits)}"
+    return hits[n]
+
+
+def _pool_msg_id(session: Session, role: str, text: str) -> str:
+    for m in session.pool:
+        if m.role == role and m.text == text:
+            assert m.id is not None
+            return m.id
+    raise AssertionError(f"no pool {role} message with text {text!r}")
+
+
+def _pool_user_id(session: Session, text: str) -> str:
+    return _pool_msg_id(session, "user", text)
+
+
+def _count_trajectories(history) -> int:
+    n = 0
+    q = deque([history.root])
+    while q:
+        t = q.popleft()
+        n += 1
+        q.extend(t.children)
+    return n
+
+
+# ── runner ──────────────────────────────────────────────────────────────────
+
+
+async def run_suite(tests: list[tuple[str, Callable[[], Awaitable[None]]]]) -> int:
+    """Run each `(name, async fn)` pair; print PASS/FAIL/ERROR; return exit code."""
+    failed = 0
+    for name, fn in tests:
+        try:
+            await fn()
+            print(f"PASS  {name}")
+        except AssertionError as exc:
+            failed += 1
+            print(f"FAIL  {name}{exc}")
+        except Exception:
+            failed += 1
+            print(f"ERROR {name}")
+            traceback.print_exc()
+    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    return 1 if failed else 0

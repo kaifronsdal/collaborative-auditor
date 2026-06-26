@@ -26,7 +26,7 @@ from inspect_ai.model import (
 from inspect_ai.tool import ToolCall
 from playwright.async_api import async_playwright, expect
 
-from workbench._smoke_ui_rollback import _backend, _free_port, _tc, _vite, _auditor_turn
+from workbench._smoke_fixtures import _auditor_turn, _backend, _free_port, _tc, _vite
 from workbench.run import Branch
 from workbench.server import sessions
 from workbench.session import Session

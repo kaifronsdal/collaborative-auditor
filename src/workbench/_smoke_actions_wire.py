@@ -30,7 +30,6 @@ Coverage audit (W1–W16 of the original plan):
   W11  edit_target_message role=system → here
   W12  edit_target_message role=tool   → here
   W12b edit_target_message multi-send  → here (positional disambiguation)
-  W13  edit (legacy target ModelOutput)→ here
   W14  rewrite_tool_call → apply       → covered: `_smoke_rewrite.py` R1
                                           (draft) + W9 (apply path)
   W15  switch                          → here
@@ -42,21 +41,29 @@ Run:  uv run python -m workbench._smoke_actions_wire
 from __future__ import annotations
 
 import sys
-import traceback
 
 import anyio
 from inspect_ai.model import ModelOutput
 from inspect_ai.tool import ToolCall
 
 from workbench._smoke_fixtures import (
+    SCRIPT3,
+    T0,
+    T1,
+    T2_END,
     _auditor_turn,
-    _target,
+    _diff,
+    _nth_target_anchor,
+    _pool_msg_id,
+    _pool_user_id,
+    _send,
     _tc,
     auditor_by_turn,
     auditor_counted,
     make_base,
     normalize,
     run_child,
+    run_suite,
     target_by_last_user,
     target_counted,
 )
@@ -65,72 +72,8 @@ from workbench.run import find_auditor_step
 from workbench.server import _dispatch  # noqa: PLC2701
 from workbench.session import Session
 
-# ── shared base scenario ────────────────────────────────────────────────────
-#
-#   T0  set_system_message("sys") · send_message("u1") · resume  → target "r1"
-#   T1  send_message("u2") · resume                               → target "r2"
-#   T2  end_conversation
-#
-# `SCRIPT` is built once; `auditor_by_turn`/`auditor_counted` deep-copy entries
-# per call so cross-branch reuse is safe.
-
-SCRIPT: list[ModelOutput] = [
-    _auditor_turn(
-        _tc("set_system_message", system_message="sys"),
-        _tc("send_message", message="u1"),
-        _tc("resume"),
-    ),
-    _auditor_turn(_tc("send_message", message="u2"), _tc("resume")),
-    _auditor_turn(_tc("end_conversation")),
-]
-
-T0 = (
-    ("set_system_message", frozenset({("system_message", "sys")})),
-    ("send_message", frozenset({("message", "u1")})),
-    ("resume", frozenset()),
-)
-T1 = (
-    ("send_message", frozenset({("message", "u2")})),
-    ("resume", frozenset()),
-)
-T2 = (("end_conversation", frozenset()),)
-
-
-def _send(msg: str) -> tuple:
-    return (
-        ("send_message", frozenset({("message", msg)})),
-        ("resume", frozenset()),
-    )
-
 
 # ── helpers ─────────────────────────────────────────────────────────────────
-
-
-def _first_target_anchor(branch) -> str:
-    anchor = next(
-        (
-            s.anchor_id
-            for s in branch.audit_tape.log
-            if s.source == "Model.generate"
-            and isinstance(s.value, ModelOutput)
-            and s.anchor_id is not None
-        ),
-        None,
-    )
-    assert anchor is not None, "base produced no target ModelOutput step"
-    return anchor
-
-
-def _pool_msg_id(session: Session, role: str, text: str) -> str:
-    for m in session.pool:
-        if m.role == role and m.text == text:
-            assert m.id is not None
-            return m.id
-    raise AssertionError(f"no pool {role} message with text {text!r}")
-
-
-def _pool_user_id(session: Session, text: str) -> str:
-    return _pool_msg_id(session, "user", text)
 
 
 async def _settle(session: Session, child_id: str, n: int) -> list[tuple]:
@@ -145,21 +88,6 @@ async def _settle(session: Session, child_id: str, n: int) -> list[tuple]:
     )
 
 
-def _fmt(seq: list[tuple]) -> str:
-    lines: list[str] = []
-    for role, text, calls in seq:
-        cs = ", ".join(f"{fn}({dict(sorted(args))})" for fn, args in calls)
-        lines.append(f"    ({role!r}, {text!r}, [{cs}])")
-    return "\n".join(lines) if lines else "    <empty>"
-
-
-def _diff(actual: list[tuple], expected: list[tuple]) -> str:
-    return (
-        f"\nactual   ({len(actual)}):\n{_fmt(actual)}"
-        f"\nexpected ({len(expected)}):\n{_fmt(expected)}"
-    )
-
-
 # ── W6: branch (target inclusive) ───────────────────────────────────────────
 
 
@@ -169,11 +97,11 @@ async def w6_branch() -> None:
     try:
         base = await make_base(
             session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
+            auditor_outputs=auditor_by_turn(SCRIPT3),
             target_outputs=target_by_last_user({"u1": "r1", "u2": "r2"}),
             max_turns=3,
         )
-        anchor = _first_target_anchor(base)
+        anchor = _nth_target_anchor(base.audit_tape.log, 0)
         await _dispatch(session, {"t": "branch", "branch": "base", "at": anchor})
         child_id, _ = await run_child(session)
 
@@ -183,7 +111,7 @@ async def w6_branch() -> None:
             ("target", "r1", ()),
             ("auditor", "", T1),
             ("target", "r2", ()),
-            ("auditor", "", T2),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
     finally:
@@ -199,11 +127,11 @@ async def w7_resample() -> None:
     try:
         base = await make_base(
             session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
+            auditor_outputs=auditor_by_turn(SCRIPT3),
             target_outputs=target_counted({"u1": ["r1", "r1-v2"], "u2": ["r2"]}),
             max_turns=3,
         )
-        anchor = _first_target_anchor(base)
+        anchor = _nth_target_anchor(base.audit_tape.log, 0)
         await _dispatch(session, {"t": "resample", "branch": "base", "at": anchor})
         child_id, _ = await run_child(session)
 
@@ -213,7 +141,7 @@ async def w7_resample() -> None:
             ("target", "r1-v2", ()),
             ("auditor", "", T1),
             ("target", "r2", ()),
-            ("auditor", "", T2),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
     finally:
@@ -229,7 +157,7 @@ W8_EXPECTED = [
     ("target", "r1", ()),
     ("auditor", "", _send("u2-alt")),
     ("target", "r2-alt", ()),
-    ("auditor", "", T2),
+    ("auditor", "", T2_END),
 ]
 
 
@@ -239,7 +167,7 @@ async def _w8_one(cmd: str) -> list[tuple]:
     try:
         await make_base(
             session,
-            auditor_outputs=auditor_counted(SCRIPT, alt={1: T1_ALT}),
+            auditor_outputs=auditor_counted(SCRIPT3, alt={1: T1_ALT}),
             target_outputs=target_by_last_user(
                 {"u1": "r1", "u2": "r2", "u2-alt": "r2-alt"}
             ),
@@ -269,7 +197,7 @@ W9_EXPECTED = [
     ("target", "r1", ()),
     ("auditor", "", _send("u2-EDIT")),
     ("target", "r2-EDIT", ()),
-    ("auditor", "", T2),
+    ("auditor", "", T2_END),
 ]
 
 
@@ -279,13 +207,13 @@ async def w9_edit_auditor_call() -> None:
     try:
         base = await make_base(
             session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
+            auditor_outputs=auditor_by_turn(SCRIPT3),
             target_outputs=target_by_last_user(
                 {"u1": "r1", "u2": "r2", "u2-EDIT": "r2-EDIT"}
             ),
             max_turns=3,
         )
-        _, step = find_auditor_step(base.audit_tape.log, 1)
+        step = find_auditor_step(base.audit_tape.log, 1)
         assert isinstance(step.value, ModelOutput)
         call_id = next(
             tc.id
@@ -319,7 +247,7 @@ async def w10_edit_target_message() -> None:
     try:
         await make_base(
             session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
+            auditor_outputs=auditor_by_turn(SCRIPT3),
             target_outputs=target_by_last_user(
                 {"u1": "r1", "u2": "r2", "u2-EDIT": "r2-EDIT"}
             ),
@@ -356,7 +284,7 @@ async def w2_step() -> None:
     try:
         await make_base(
             session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
+            auditor_outputs=auditor_by_turn(SCRIPT3),
             target_outputs=target_by_last_user({"u1": "r1", "u2": "r2"}),
             max_turns=3,
         )
@@ -387,7 +315,7 @@ async def w2_step() -> None:
         await _dispatch(session, {"t": "step"})
         await task
         actual = normalize(session, child_id)
-        expected = [*expected_mid, ("auditor", "", T2)]
+        expected = [*expected_mid, ("auditor", "", T2_END)]
         assert actual == expected, _diff(actual, expected)
     finally:
         await session.close()
@@ -404,7 +332,7 @@ async def w4_end() -> None:
     try:
         await make_base(
             session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
+            auditor_outputs=auditor_by_turn(SCRIPT3),
             target_outputs=target_by_last_user({"u1": "r1", "u2": "r2"}),
             max_turns=3,
         )
@@ -439,7 +367,7 @@ async def w5c_inject_ended() -> None:
     try:
         base = await make_base(
             session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
+            auditor_outputs=auditor_by_turn(SCRIPT3),
             target_outputs=target_by_last_user({"u1": "r1", "u2": "r2"}),
             max_turns=3,
         )
@@ -471,7 +399,7 @@ async def w11_edit_target_system() -> None:
     try:
         await make_base(
             session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
+            auditor_outputs=auditor_by_turn(SCRIPT3),
             target_outputs=target_by_last_user({"u1": "r1", "u2": "r2"}),
             max_turns=3,
         )
@@ -499,7 +427,7 @@ async def w11_edit_target_system() -> None:
             ("target", "r1", ()),
             ("auditor", "", T1),
             ("target", "r2", ()),
-            ("auditor", "", T2),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
     finally:
@@ -605,7 +533,7 @@ async def w12_edit_target_tool() -> None:
             TOOL_TGT0,
             ("auditor", "", t1_edit),
             ("target", "cold", ()),
-            ("auditor", "", T2),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
     finally:
@@ -670,45 +598,7 @@ async def w12b_edit_target_multi_send() -> None:
             ("target", "r1", ()),
             ("auditor", "", t1_edit),
             ("target", "r2-EDIT", ()),
-            ("auditor", "", T2),
-        ]
-        assert actual == expected, _diff(actual, expected)
-    finally:
-        await session.close()
-
-
-# ── W13: edit (legacy target ModelOutput edit) ──────────────────────────────
-
-
-async def w13_edit_target_output() -> None:
-    session = Session()
-    await session.start()
-    try:
-        base = await make_base(
-            session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
-            target_outputs=target_by_last_user({"u1": "r1", "u2": "r2"}),
-            max_turns=3,
-        )
-        anchor = _first_target_anchor(base)
-        # `edit` acts on `session.current` (legacy) — `make_base` set it to "base".
-        await _dispatch(
-            session,
-            {
-                "t": "edit",
-                "at": anchor,
-                "output": _target("r1-EDIT").model_dump(mode="json"),
-            },
-        )
-        child_id, _ = await run_child(session)
-
-        actual = normalize(session, child_id)
-        expected = [
-            ("auditor", "", T0),
-            ("target", "r1-EDIT", ()),
-            ("auditor", "", T1),
-            ("target", "r2", ()),
-            ("auditor", "", T2),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
     finally:
@@ -724,11 +614,11 @@ async def w15_switch() -> None:
     try:
         base = await make_base(
             session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
+            auditor_outputs=auditor_by_turn(SCRIPT3),
             target_outputs=target_by_last_user({"u1": "r1", "u2": "r2"}),
             max_turns=3,
         )
-        anchor = _first_target_anchor(base)
+        anchor = _nth_target_anchor(base.audit_tape.log, 0)
         await _dispatch(session, {"t": "branch", "branch": "base", "at": anchor})
         child_id = session.current
         assert child_id is not None and child_id != "base"
@@ -761,7 +651,7 @@ async def w16_fork_running_parent() -> None:
     try:
         await make_base(
             session,
-            auditor_outputs=auditor_by_turn(SCRIPT),
+            auditor_outputs=auditor_by_turn(SCRIPT3),
             target_outputs=target_counted({"u1": ["r1", "r1-v2"], "u2": ["r2"]}),
             max_turns=3,
         )
@@ -778,7 +668,7 @@ async def w16_fork_running_parent() -> None:
         # Fork B from A at A's first target anchor (in A's replayed prefix).
         # `_stop_running_branches` must cancel task_a synchronously inside
         # `_register_and_spawn` before B's task is spawned.
-        anchor = _first_target_anchor(a)
+        anchor = _nth_target_anchor(a.audit_tape.log, 0)
         await _dispatch(session, {"t": "resample", "branch": a_id, "at": anchor})
         assert task_a.done(), "`_stop_running_branches` did not cancel parent A"
         assert a.status == "ended", f"A.status={a.status!r} after cancel"
@@ -791,7 +681,7 @@ async def w16_fork_running_parent() -> None:
             ("target", "r1-v2", ()),
             ("auditor", "", T1),
             ("target", "r2", ()),
-            ("auditor", "", T2),
+            ("auditor", "", T2_END),
         ]
         assert actual == expected, _diff(actual, expected)
     finally:
@@ -813,32 +703,10 @@ TESTS = [
     ("W11  edit_target_message role=system", w11_edit_target_system),
     ("W12  edit_target_message role=tool", w12_edit_target_tool),
     ("W12b edit_target_message multi-send", w12b_edit_target_multi_send),
-    ("W13  edit (target ModelOutput)", w13_edit_target_output),
     ("W15  switch", w15_switch),
     ("W16  fork while parent running", w16_fork_running_parent),
 ]
 
 
-async def _amain() -> int:
-    failed = 0
-    for name, fn in TESTS:
-        try:
-            await fn()
-            print(f"PASS  {name}")
-        except AssertionError as exc:
-            failed += 1
-            print(f"FAIL  {name}{exc}")
-        except Exception:
-            failed += 1
-            print(f"ERROR {name}")
-            traceback.print_exc()
-    print(f"\n{len(TESTS) - failed}/{len(TESTS)} passed")
-    return 1 if failed else 0
-
-
-def main() -> None:
-    sys.exit(anyio.run(_amain))
-
-
 if __name__ == "__main__":
-    main()
+    sys.exit(anyio.run(run_suite, TESTS))

@@ -19,7 +19,13 @@ broadcast.
 from __future__ import annotations
 
 import asyncio
+import itertools
+import json
 import logging
+from collections import deque
+from dataclasses import asdict
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import anyio
@@ -50,7 +56,15 @@ class Connection(Protocol):
 
 
 class Session:
-    def __init__(self) -> None:
+    def __init__(
+        self, session_id: str | None = None, store_dir: Path | None = None
+    ) -> None:
+        #: Persistence identity. `save()`/`save_branch()` write under
+        #: ``{store_dir}/{session_id}/`` when both are set; otherwise no-op.
+        self.session_id = session_id
+        self.store_dir = store_dir
+        self.created_at: str = datetime.now(UTC).isoformat()
+
         # One transcript per session. The contextvar is NOT set here — __init__
         # runs in whichever WS task created the session, and a `start` from a
         # later connection spawns `Branch.run()` in a different task context
@@ -374,6 +388,160 @@ class Session:
     async def push_full_state(self, conn: Connection) -> None:
         await conn.send_json({"t": "state", "v": self.version, **self.view()})
 
+    # -- persistence (#4) -----------------------------------------------------
+
+    @property
+    def seed(self) -> str:
+        """First root branch's seed — the human-readable session label."""
+        for b in self.branches.values():
+            if b.parent_id is None:
+                return b.meta.seed
+        return ""
+
+    def _dir(self, store_dir: Path | None) -> Path | None:
+        sd = store_dir if store_dir is not None else self.store_dir
+        if sd is None or self.session_id is None:
+            return None
+        return sd / self.session_id
+
+    def save(self, store_dir: Path | None = None) -> None:
+        """Persist the full session under ``{store_dir}/{session_id}/``.
+
+        Writes ``index.json`` (current/created_at/seed), ``history.json``
+        (`audit_history.dump()`), and one ``{branch_id}.json`` per branch.
+        No-op if `session_id` or the store dir is unset (e.g. smoke tests).
+        """
+        d = self._dir(store_dir)
+        if d is None:
+            return
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "index.json").write_text(
+            json.dumps(
+                {
+                    "current": self.current,
+                    "created_at": self.created_at,
+                    "seed": self.seed,
+                }
+            )
+        )
+        (d / "history.json").write_text(json.dumps(self._dump_history()))
+        for b in self.branches.values():
+            self._write_branch(d, b)
+
+    def save_branch(self, branch: "Branch") -> None:
+        """Persist one branch (and refresh ``index.json``/``history.json``).
+
+        Called from `Branch.run()`'s ``finally`` so every settled branch
+        lands on disk without an explicit `save()` from the dispatch path.
+        """
+        d = self._dir(None)
+        if d is None:
+            return
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "index.json").write_text(
+            json.dumps(
+                {
+                    "current": self.current,
+                    "created_at": self.created_at,
+                    "seed": self.seed,
+                }
+            )
+        )
+        (d / "history.json").write_text(json.dumps(self._dump_history()))
+        self._write_branch(d, branch)
+
+    def _dump_history(self) -> list[dict[str, Any]]:
+        """`audit_history.dump()` with workbench root-branch fixup.
+
+        `Branch.__init__` clears `branched_from` to ``None`` for root
+        branches (children of the synthetic `audit_history.root`) so the
+        timeline shows no splice anchor. `History.load` rejects
+        ``(branched_from=None, parent=<id>)``; map ``None`` → ``""``
+        (petri's "restart" sentinel) for those nodes — `_collect_replay_steps`
+        treats it identically (empty prefix, ``prefix_len=0``).
+        """
+        out = self.audit_history.dump()
+        for node in out:
+            if node["parent"] is not None and node["branched_from"] is None:
+                node["branched_from"] = ""
+        return out
+
+    @staticmethod
+    def _write_branch(d: Path, branch: "Branch") -> None:
+        meta = {
+            k: v
+            for k, v in asdict(branch.meta).items()
+            if k not in ("auditor_model_args", "target_model_args")
+        }
+        (d / f"{branch.branch_id}.json").write_text(
+            json.dumps({"meta": meta, "status": branch.status})
+        )
+
+    @classmethod
+    async def load(cls, session_id: str, store_dir: Path) -> "Session":
+        """Reconstruct a `Session` from ``{store_dir}/{session_id}/``.
+
+        Rebuilds `audit_history` via `History.load`, then for each persisted
+        branch resets its trajectory's tape for replay (``pending ← log``,
+        ``log ← []``; `prefix_len` preserved) and spawns `Branch.run()`.
+        Replay is ungated and I/O-free (`workbench_auditor` skips the gate
+        while `tape.pending` is non-empty), so the transcript's events,
+        pool, and per-role timelines are reconstructed deterministically
+        from the persisted L2 tape — no live model calls. Branches whose
+        persisted status was ``"ended"`` are `play()`-ed so a tape that
+        terminated via ``end_conversation`` runs to completion and the
+        spawned task exits.
+        """
+        from workbench.run import Branch, BranchMeta  # noqa: PLC0415
+
+        d = store_dir / session_id
+        index = json.loads((d / "index.json").read_text())
+        sess = cls(session_id, store_dir)
+        sess.created_at = index["created_at"]
+        sess.audit_history = History.load(json.loads((d / "history.json").read_text()))
+        # Undo the `_dump_history` ``None → ""`` fixup so `branched_at`
+        # reads ``None`` for root branches as it did pre-save.
+        for t in sess.audit_history.root.children:
+            if t.branched_from == "":
+                t.branched_from = None
+        await sess.start()
+
+        # Spawn in pre-order (parent before children) so a child's shared-
+        # prefix splice in `build_auditor_timeline` finds the parent's
+        # already-replayed events in `session.events`.
+        def preorder(t: Trajectory) -> list[Trajectory]:
+            out = [t]
+            for c in t.children:
+                out.extend(preorder(c))
+            return out
+
+        for traj in preorder(sess.audit_history.root):
+            bf = d / f"{traj.span_id}.json"
+            if not bf.exists():
+                continue  # the synthetic root, or a trajectory with no Branch
+            data = json.loads(bf.read_text())
+            meta = BranchMeta(**data["meta"])
+            # Reset the tape for replay: serve the full recorded log from
+            # `pending`. `prefix_len` is unchanged so `shared_prefix_len` /
+            # `branched_at_turn` / the `_on_event` splice gate behave as
+            # they did in the original run; steps past `prefix_len` are
+            # served on the divergent path (workbench_auditor emits their
+            # `ModelEvent`s inline).
+            traj.tape.pending = deque(traj.tape.log)
+            traj.tape.log = []
+            branch = Branch(sess, trajectory=traj, **asdict(meta))
+            branch.status = data["status"]
+            sess.branches[branch.branch_id] = branch
+            if data["status"] == "ended":
+                branch.play()
+            task = asyncio.create_task(branch.run())
+            sess.branch_tasks.append(task)
+            with anyio.move_on_after(5.0):
+                await branch._replayed.wait()  # noqa: SLF001
+
+        sess.current = index["current"]
+        return sess
+
 
 def build_auditor_timeline(session: Session) -> dict[str, Any]:
     """The session-wide auditor `Timeline`, one `TimelineSpan` per `Branch`.
@@ -425,7 +593,7 @@ def build_auditor_timeline(session: Session) -> dict[str, Any]:
             (s.anchor_id for s in reversed(prefix) if s.source == GEN_SOURCE), None
         )
 
-    counter = iter(range(1, 1 + len(session.branches)))
+    counter = itertools.count(1)
 
     def to_span(t: Trajectory) -> dict[str, Any]:
         return {

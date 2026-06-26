@@ -27,45 +27,24 @@ Run:  uv run python -m workbench._smoke_ui_rollback
 from __future__ import annotations
 
 import asyncio
-import os
-import socket
-import subprocess
 import sys
-from contextlib import asynccontextmanager, closing
-from pathlib import Path
 
 import anyio
-import uvicorn
-from inspect_ai.model import ModelOutput
-from inspect_ai.tool import ToolCall
 from playwright.async_api import async_playwright, expect
 
+from workbench._smoke_fixtures import (
+    _auditor_turn,
+    _backend,
+    _free_port,
+    _target,
+    _tc,
+    _vite,
+)
 from workbench.run import Branch
-from workbench.server import app, sessions
+from workbench.server import sessions
 from workbench.session import Session
 
-REPO = Path(__file__).resolve().parents[2]
-
 # ── scripted model outputs ──────────────────────────────────────────────────
-
-_n = 0
-
-
-def _tc(function: str, **arguments) -> ToolCall:
-    global _n
-    _n += 1
-    return ToolCall(id=f"c{_n}", function=function, type="function", arguments=arguments)
-
-
-def _auditor_turn(*calls: ToolCall) -> ModelOutput:
-    out = ModelOutput.from_content(model="mockllm", content="")
-    out.choices[0].message.tool_calls = list(calls)
-    return out
-
-
-def _target(content: str) -> ModelOutput:
-    return ModelOutput.from_content(model="mockllm", content=content)
-
 
 AUDITOR_SCRIPT = [
     _auditor_turn(
@@ -86,65 +65,6 @@ AUDITOR_SCRIPT = [
 ]
 
 TARGET_SCRIPT = [_target(f"r{i}") for i in range(1, 6)]
-
-
-# ── infra ───────────────────────────────────────────────────────────────────
-
-
-def _free_port() -> int:
-    with closing(socket.socket()) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-@asynccontextmanager
-async def _backend(port: int):
-    cfg = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    srv = uvicorn.Server(cfg)
-    task = asyncio.create_task(srv.serve())
-    try:
-        for _ in range(50):
-            if srv.started:
-                break
-            await anyio.sleep(0.1)
-        assert srv.started, "uvicorn failed to start"
-        yield
-    finally:
-        srv.should_exit = True
-        await task
-
-
-@asynccontextmanager
-async def _vite(ws_port: int, ui_port: int):
-    """Start the Vite dev server pointing its WS at our in-process backend."""
-    env = {**os.environ, "VITE_WS_URL": f"ws://127.0.0.1:{ws_port}"}
-    proc = subprocess.Popen(  # noqa: S603
-        [
-            "npx", "--yes", "pnpm@10.29.3", "dev",
-            "--host", "127.0.0.1", "--port", str(ui_port), "--strictPort",
-        ],
-        cwd=REPO / "frontend-wb",
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    try:
-        for _ in range(100):
-            try:
-                with closing(socket.create_connection(("127.0.0.1", ui_port), 0.2)):
-                    break
-            except OSError:
-                await anyio.sleep(0.2)
-        else:
-            out = proc.stdout.read().decode() if proc.stdout else ""
-            raise RuntimeError(f"vite failed to start on :{ui_port}\n{out}")
-        yield
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
 
 
 # ── the test ────────────────────────────────────────────────────────────────

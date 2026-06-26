@@ -27,7 +27,7 @@ from inspect_ai.model import ChatMessage, GenerateConfig, ModelOutput
 from inspect_ai.tool import ToolChoice, ToolInfo
 from playwright.async_api import Page, async_playwright, expect
 
-from workbench._smoke_ui_rollback import (
+from workbench._smoke_fixtures import (
     _auditor_turn,
     _backend,
     _free_port,

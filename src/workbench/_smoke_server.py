@@ -22,43 +22,15 @@ Run:  uv run python -m workbench._smoke_server
 
 from __future__ import annotations
 
-import asyncio
 import json
-import socket
-from contextlib import asynccontextmanager, closing
 from typing import Any
 
 import anyio
-import uvicorn
 import websockets
 
-from workbench.server import app
+from workbench._smoke_fixtures import _backend, _free_port
 
 MODEL = "anthropic/claude-haiku-4-5-20251001"
-
-
-def _free_port() -> int:
-    with closing(socket.socket()) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-@asynccontextmanager
-async def _server():
-    port = _free_port()
-    cfg = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
-    srv = uvicorn.Server(cfg)
-    task = asyncio.create_task(srv.serve())
-    try:
-        for _ in range(50):
-            if srv.started:
-                break
-            await anyio.sleep(0.1)
-        assert srv.started, "uvicorn failed to start"
-        yield f"ws://127.0.0.1:{port}"
-    finally:
-        srv.should_exit = True
-        await task
 
 
 async def _recv_until(ws, pred, *, timeout: float = 60.0) -> dict[str, Any]:
@@ -71,8 +43,9 @@ async def _recv_until(ws, pred, *, timeout: float = 60.0) -> dict[str, Any]:
 
 
 async def _amain() -> None:
-    async with _server() as base:
-        url = f"{base}/ws/smoke-server"
+    port = _free_port()
+    async with _backend(port):
+        url = f"ws://127.0.0.1:{port}/ws/smoke-server"
 
         # ── S1: cross-connection start ───────────────────────────────────────
         async with websockets.connect(url) as conn_a:

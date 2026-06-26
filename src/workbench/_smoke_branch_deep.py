@@ -38,7 +38,7 @@ from pathlib import Path
 import anyio
 from inspect_ai.model import ModelOutput
 
-from workbench._smoke_fixtures import normalize
+from workbench._smoke_fixtures import _nth_target_anchor, normalize
 from workbench._smoke_util import (
     FakeConn,
     resolve_role as _resolve_branch_role,
@@ -55,25 +55,6 @@ SEED_B = (
     "of the assistant reply you just received, to roll the target back to before it. "
     "Then send the target a different very short greeting. Then call end_conversation."
 )
-
-
-def _nth_target_anchor(log: list, n: int) -> str:
-    """anchor_id of the n-th (1-based) target ModelOutput step in `log`."""
-    targets = [s for s in log if s.source == "Model.generate" and s.value is not None]
-    assert len(targets) >= n, f"need ≥{n} target steps, got {len(targets)}"
-    anchor = targets[n - 1].anchor_id
-    assert anchor is not None, f"target step {n} has no anchor_id"
-    return anchor
-
-
-def _count_trajectories(history) -> int:
-    n = 0
-    q = deque([history.root])
-    while q:
-        t = q.popleft()
-        n += 1
-        q.extend(t.children)
-    return n
 
 
 def _prefix_n(branch: Branch) -> int:
@@ -109,7 +90,7 @@ async def scenario_a(dump_path: Path | None) -> None:
     b1.play()
     await b1.run()
 
-    anchor2 = _nth_target_anchor(b1.audit_tape.log, 2)
+    anchor2 = _nth_target_anchor(b1.audit_tape.log, 1)
     b2 = Branch.fork(session, b1, anchor=anchor2, branch_id="b2")
     session.branches["b2"] = b2
     session.current = "b2"
@@ -120,7 +101,7 @@ async def scenario_a(dump_path: Path | None) -> None:
     # b3 forks at b2's first *fresh* target step so its trajectory's parent
     # is b2 (not b1 — `History.branch` attaches the child to the origin of
     # the anchor, and a replayed-prefix anchor's origin is the ancestor).
-    anchor3 = _nth_target_anchor(b2.audit_tape.log[b2.audit_tape.prefix_len :], 1)
+    anchor3 = _nth_target_anchor(b2.audit_tape.log[b2.audit_tape.prefix_len :], 0)
     b3 = Branch.fork(session, b2, anchor=anchor3, branch_id="b3")
     session.branches["b3"] = b3
     session.current = "b3"
