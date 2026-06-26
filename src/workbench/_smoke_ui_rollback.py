@@ -219,11 +219,8 @@ async def _amain() -> None:
             # r1 (prefix) then r4, r5.
             target_bubbles = target_col.locator(".bubble.assistant")
             texts = [t.strip() for t in await target_bubbles.all_text_contents()]
-            assert "r1" in texts and "r4" in texts and "r5" in texts, (
-                f"branch-2 lineage missing expected replies; got {texts}"
-            )
-            assert "r2" not in texts and "r3" not in texts, (
-                f"branch-2 lineage should not include rolled-back r2/r3; got {texts}"
+            assert texts == ["r1", "r4", "r5"], (
+                f"branch-2 lineage should be exactly r1/r4/r5; got {texts}"
             )
             print(f"UI ✓ branch-2 lineage shows {texts}")
 
@@ -233,11 +230,8 @@ async def _amain() -> None:
                 t.strip()
                 for t in await target_col.locator(".bubble.assistant").all_text_contents()
             ]
-            assert texts1[:3] == ["r1", "r2", "r3"], (
-                f"branch-1 should show r1/r2/r3, got {texts1}"
-            )
-            assert "r4" not in texts1 and "r5" not in texts1, (
-                f"branch-1 should not include post-rollback r4/r5; got {texts1}"
+            assert texts1 == ["r1", "r2", "r3"], (
+                f"branch-1 should be exactly r1/r2/r3; got {texts1}"
             )
             print(f"UI ✓ branch-1 shows {texts1}")
 
@@ -278,8 +272,8 @@ async def _amain() -> None:
                 t.strip()
                 for t in await target_col.locator(".bubble.assistant").all_text_contents()
             ]
-            assert "r4" in texts2 and "r5" in texts2 and "r2" not in texts2, (
-                f"after › expected branch-2 lineage (r1/r4/r5), got {texts2}"
+            assert texts2 == ["r1", "r4", "r5"], (
+                f"after › expected branch-2 lineage exactly r1/r4/r5; got {texts2}"
             )
             await expect(
                 target_col.locator(".branch-nav .branch-nav-pos")

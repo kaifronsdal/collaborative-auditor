@@ -5,12 +5,10 @@ via `Branch.fork()` (which delegates to `session.audit_history.branch()`)
 and runs it under `play()`. Asserts the three things the resume path must
 get right (STREAMING.md §"Replay"; petri footguns #5 and #12):
 
-(a) the second branch's *auditor* column carries only the live suffix —
-    shared-prefix auditor events are dropped in `_on_event` while
-    `_replaying_shared` (the parent supplies them via `splice()`); the
-    *target* column likewise carries only its own live `ModelEvent`s
-    (anchors stable → the target timeline references the parent's events
-    for the replayed prefix);
+(a) full-list `==` on the shared prefix: `normalize(b2)[:N] ==
+    normalize(b1)[:N]` (N = #ModelOutput steps in the replayed prefix),
+    and `len(normalize(b2)) > N` — the child replays the parent verbatim
+    then goes live;
 (b) the second branch's `AuditTape()` does not see the first branch's
     `config_digest` — per-branch `Store` isolation holds (footgun #5);
 (c) the session's single `drain` task is the one started by `Session.start()` —
@@ -25,7 +23,7 @@ import anyio
 from inspect_petri._auditor import AuditTape, audit_context
 from inspect_petri.target import Channel, Controller, Tape
 
-from workbench._smoke_util import FakeConn, model_events_for
+from workbench._smoke_fixtures import normalize
 from workbench.run import Branch
 from workbench.session import Session
 
@@ -57,9 +55,6 @@ async def _amain() -> None:
     assert target_step.anchor_id is not None
 
     # --- branch 2: fork from branch 1 in the SAME session -------------------
-    conn2 = FakeConn()
-    session.connections.append(conn2)
-
     b2 = Branch.fork(session, b1, anchor=target_step.anchor_id)
     expected_auditor = sum(
         1
@@ -80,34 +75,24 @@ async def _amain() -> None:
     await b2.run()
     await session.close()
 
-    # (a) Auditor: while `_replaying_shared`, `_on_event` drops every
-    # auditor-role event — b2's *own* auditor column is post-prefix live
-    # turns only.
-    auditor_evts = model_events_for(conn2, session, b2.auditor_span_id)
-    auditor_uuids = {ev["uuid"] for ev in auditor_evts}
-    assert auditor_uuids, "branch 2 produced no live auditor turn after resume"
-    assert all(ev["input_refs"] for ev in auditor_evts), (
-        "b2 auditor event without input_refs — a shared-prefix event leaked "
-        "past the `_replaying_shared` drop"
+    # (a) Load-bearing assertion: full-list `==` on the shared prefix.
+    # b2's L2 tape is its full lineage (replayed prefix verbatim from b1,
+    # then live), so its first N normalize() entries — N = #ModelOutput
+    # steps in the prefix — must equal b1's first N exactly. Both sides are
+    # normalized *after* b2.run() because the serve path returns shared
+    # `Step` refs and `_eager_resume_inject` mutates them in place — parent
+    # and child settle to the same view, but only once replay completes.
+    actual_b2 = normalize(session, b2.branch_id)
+    captured_b1 = normalize(session, "b1")
+    n = expected_auditor + expected_target
+    assert actual_b2[:n] == captured_b1[:n], (
+        f"b2 shared prefix diverged from b1:\n"
+        f"  b2[:{n}] = {actual_b2[:n]}\n"
+        f"  b1[:{n}] = {captured_b1[:n]}"
     )
-
-    # Target: served generates emit no `ModelEvent`; anchors are stable so
-    # the b2 target timeline references b1's events for the replayed prefix.
-    # b2's own target ModelEvents are live-only.
-    target_uuids = {
-        ev["uuid"] for ev in model_events_for(conn2, session, b2.target_span_id)
-    }
-    tape_target = sum(
-        1
-        for s in b2.audit_tape.log
-        if s.source == "Model.generate" and s.value is not None
-    )
-    assert tape_target >= expected_target, (
-        f"b2 tape has {tape_target} target steps, expected ≥{expected_target}"
-    )
-    assert len(target_uuids) == tape_target - expected_target, (
-        f"b2's own target ModelEvents should be live-only "
-        f"({tape_target - expected_target}), got {len(target_uuids)}"
+    assert len(actual_b2) > n, (
+        f"b2 produced no live suffix past the {n}-entry replayed prefix: "
+        f"{actual_b2}"
     )
 
     # (b) per-branch Store isolation: branch 2's store must not carry branch 1's
@@ -131,9 +116,8 @@ async def _amain() -> None:
 
     print(
         f"resume: prefix_len={b2.audit_tape.prefix_len} "
-        f"b2_auditor_own={len(auditor_uuids)} (live-only; {expected_auditor} "
-        f"shared dropped) b2_target_own={len(target_uuids)} (live-only; "
-        f"{expected_target} replayed → b1's events); "
+        f"normalize(b2)[:{n}]==normalize(b1)[:{n}] "
+        f"live_suffix={len(actual_b2) - n}; "
         f"b1.digest={digests['b1']} b2.digest={digests['b2']} "
         f"(separate stores); single drain task"
     )

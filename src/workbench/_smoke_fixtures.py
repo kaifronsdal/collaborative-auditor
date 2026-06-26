@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import os
 import socket
 import subprocess
@@ -224,10 +225,19 @@ def auditor_counted(script: list[ModelOutput], alt: dict[int, ModelOutput]) -> C
 
 
 def _scalar_args(arguments: dict[str, Any]) -> frozenset[tuple[str, Any]]:
+    """Project tool-call arguments into a hashable, order-insensitive set.
+
+    Scalars (str/int/float/bool/None) pass through unchanged. Non-scalar
+    values (dict/list/anything else) are canonicalised to a sorted-key JSON
+    string so they remain comparable instead of being silently dropped — a
+    `normalize()` `==` over a call whose only distinguishing arg is a dict
+    would otherwise vacuously pass.
+    """
     return frozenset(
         (k, v)
-        for k, v in arguments.items()
         if isinstance(v, (str, int, float, bool)) or v is None
+        else (k, json.dumps(v, sort_keys=True, default=str))
+        for k, v in arguments.items()
     )
 
 
@@ -239,7 +249,8 @@ def normalize(session: Session, branch_id: str) -> list[tuple[str, str, tuple]]:
     (steps `[:prefix_len]`, served verbatim from the parent) followed by
     its own divergent + live calls. So the user-visible execution order is
     exactly the tape's `ModelOutput` steps in log order, projected per role.
-    Each entry is `(role, text, ((fn, frozenset(scalar_args)), …))`.
+    Each entry is `(role, text, ((fn, frozenset(args)), …))`; non-scalar
+    args are JSON-canonicalised (see `_scalar_args`).
     """
     from workbench.run import GEN_SOURCE, TARGET_GEN_SOURCE  # noqa: PLC0415
 

@@ -247,14 +247,16 @@ async def _amain() -> None:
             replies1 = [
                 t.strip() for t in await tgt.locator(".bubble.assistant").all_text_contents()
             ]
-            assert any("EDITED-one" in u for u in users1), (
-                f"fork1 target column missing edited user bubble; got {users1}"
+            # Turn 0 is the divergent (served, edited) step → no live auditor
+            # call; turns 1+2 go live → `_aud_live` 4, 5. So turn 1's probe is
+            # `probe-4` and the target echoes it.
+            assert users1 == ["EDITED-one", "probe-4"], (
+                f"fork1 target user bubbles should be exactly "
+                f"['EDITED-one', 'probe-4']; got {users1}"
             )
-            assert "reply-to:EDITED-one" in replies1[0], (
-                f"fork1 first target reply should echo the edited user msg; got {replies1}"
-            )
-            assert not any("hello-one" in r for r in replies1), (
-                f"fork1 target still references the un-edited msg; got {replies1}"
+            assert replies1 == ["reply-to:EDITED-one", "reply-to:probe-4"], (
+                f"fork1 target replies should be exactly "
+                f"['reply-to:EDITED-one', 'reply-to:probe-4']; got {replies1}"
             )
             print(f"1 ✓ edit_target_message → fork target replies {replies1}")
 
@@ -297,11 +299,11 @@ async def _amain() -> None:
                 tgt.locator(".bubble.assistant").filter(has_text="reply-to:hello-one")
             ).to_be_visible(timeout=10_000)
             replies2 = _target_replies(fork2)
-            assert replies2[0] == "reply-to:hello-one", (
-                f"fork2 turn-0 prefix not replayed; tape={replies2}"
-            )
-            assert "reply-to:probe-" in replies2[1] and orig_probe not in replies2[1], (
-                f"fork2 target did not reply to a regenerated probe; tape={replies2}"
+            # Turn 0 replayed (no live call); turn 1 regenerated live →
+            # `_aud_live` 6 (after fork1 left it at 5); turn 2 live → 7.
+            assert replies2 == ["reply-to:hello-one", "reply-to:probe-6"], (
+                f"fork2 target tape should be exactly "
+                f"['reply-to:hello-one', 'reply-to:probe-6']; got {replies2}"
             )
             print(
                 f"2 ✓ resample_auditor → turn 1 regenerated: sig={new_sig!r}; "
@@ -345,11 +347,11 @@ async def _amain() -> None:
                 tgt.locator(".bubble.assistant").filter(has_text="reply-to:hello-one")
             ).to_be_visible(timeout=10_000)
             replies3 = _target_replies(fork3)
-            assert replies3[0] == "reply-to:hello-one", (
-                f"fork3 turn-0 prefix not replayed; tape={replies3}"
-            )
-            assert replies3[1] == "reply-to:ARGS-EDITED", (
-                f"fork3 target never saw the edited tool-call args; tape={replies3}"
+            # Turn 0 replayed; turn 1 is the divergent edited step (served,
+            # not live); turn 2 live → `_aud_live` 8.
+            assert replies3 == ["reply-to:hello-one", "reply-to:ARGS-EDITED"], (
+                f"fork3 target tape should be exactly "
+                f"['reply-to:hello-one', 'reply-to:ARGS-EDITED']; got {replies3}"
             )
             print(f"3 ✓ edit_auditor_call → target tape={replies3}")
 

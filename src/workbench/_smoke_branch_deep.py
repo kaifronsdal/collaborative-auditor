@@ -2,19 +2,22 @@
 
 Goes beyond `_smoke_branch.py` by exercising the historically-fragile paths:
 
-  Scenario A — auditor (level-2) branch chain b1 → b2 → b3, asserting the
-  wire-protocol invariants that make lost/dup events structurally impossible:
+  Scenario A — auditor (level-2) branch chain b1 → b2 → b3. Primary
+  assertion: full-list `==` on each child's shared prefix
+  (`normalize(child)[:N] == normalize(parent)[:N]`, with a live suffix
+  past N). Secondary wire-protocol invariants:
     A1. every `{t:"event"}` uuid is globally unique across the whole session
     A2. every `{t:"update"}` uuid was first introduced by `event`/`state`
     A3. every event's span_id resolves to exactly one (branch, role)
     A4. no ModelEvent uuid lands under more than one branch's column
     A5. each branch's auditor + target columns are non-empty
     A6. b1/b2/b3 stores are pairwise distinct (footgun #5)
-    A7. b3's prefix length is consistent with branching at b2's anchor
+    A7. no empty-`input` synth markers on the wire
 
   Scenario B — target (level-1) rollback inside a single branch: the auditor
-  is instructed to call `rollback_conversation` mid-run. Asserts:
-    B1. ≥2 target trajectories exist (rollback actually happened)
+  is instructed to call `rollback_conversation` mid-run. Primary assertion
+  (B1): per-trajectory target lineage, full-list `==` on each child's shared
+  prefix vs its parent, with a live suffix. Secondary:
     B2. ≥1 `BranchEvent` and ≥1 `AnchorEvent` emitted under the target span
     B3. target ModelEvent uuids are unique (no re-emission of pre-rollback turn)
     B4. both trajectories' events route to the same (branch, "target") column
@@ -35,6 +38,7 @@ from pathlib import Path
 import anyio
 from inspect_ai.model import ModelOutput
 
+from workbench._smoke_fixtures import normalize
 from workbench._smoke_util import (
     FakeConn,
     resolve_role as _resolve_branch_role,
@@ -72,6 +76,18 @@ def _count_trajectories(history) -> int:
     return n
 
 
+def _prefix_n(branch: Branch) -> int:
+    """Count of `normalize()`-visible entries in `branch`'s shared prefix."""
+    from workbench.run import GEN_SOURCE, TARGET_GEN_SOURCE  # noqa: PLC0415
+
+    return sum(
+        1
+        for s in branch.audit_tape.log[: branch.audit_tape.prefix_len]
+        if s.source in (GEN_SOURCE, TARGET_GEN_SOURCE)
+        and isinstance(s.value, ModelOutput)
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Scenario A — level-2 branch chain
 # ─────────────────────────────────────────────────────────────────────────────
@@ -84,10 +100,7 @@ async def scenario_a(dump_path: Path | None) -> None:
     session.connections.append(conn)
     await session.push_full_state(conn)
 
-    # b1: 6 turns so we reliably get ≥2 target steps to slice from. Without
-    # petri's eager_resume (intentionally off in workbench_auditor) the
-    # auditor occasionally stages-without-resume and that turn yields no
-    # target step.
+    # b1: 6 turns so we reliably get ≥2 target steps to slice from.
     b1 = Branch(
         session, "b1", seed=SEED_A, auditor_model=MODEL, target_model=MODEL, max_turns=6
     )
@@ -109,13 +122,36 @@ async def scenario_a(dump_path: Path | None) -> None:
     # the anchor, and a replayed-prefix anchor's origin is the ancestor).
     anchor3 = _nth_target_anchor(b2.audit_tape.log[b2.audit_tape.prefix_len :], 1)
     b3 = Branch.fork(session, b2, anchor=anchor3, branch_id="b3")
-    prefix3 = list(b3.audit_tape.pending)
     session.branches["b3"] = b3
     session.current = "b3"
     await session.push_full_state(conn)
     b3.play()
     await b3.run()
     await session.close()
+
+    # ── Primary assertion: full-list `==` on each child's shared prefix ─────
+    # Real model → can't hardcode `EXPECTED`; instead normalize each branch
+    # and assert the child's first N entries (N = #ModelOutput steps in its
+    # replayed prefix) match the parent's exactly. Any drift in role/text/
+    # tool-call args across the b1→b2→b3 chain fails this. All normalize()
+    # calls happen *after* b3.run() because the serve path returns shared
+    # `Step` refs and `_eager_resume_inject` mutates them in place — every
+    # branch settles to the same view of shared steps, but only once the
+    # whole chain has replayed.
+    captured: dict[str, list[tuple]] = {
+        bid: normalize(session, bid) for bid in ("b1", "b2", "b3")
+    }
+    for child, parent in (("b2", "b1"), ("b3", "b2")):
+        n = _prefix_n(session.branches[child])
+        assert captured[child][:n] == captured[parent][:n], (
+            f"A: {child} shared prefix diverged from {parent}:\n"
+            f"  {child}[:{n}] = {captured[child][:n]}\n"
+            f"  {parent}[:{n}] = {captured[parent][:n]}"
+        )
+        assert len(captured[child]) > n, (
+            f"A: {child} produced no live suffix past its {n}-entry prefix: "
+            f"{captured[child]}"
+        )
 
     # ── A1: every {t:"event"} uuid is globally unique ────────────────────────
     new_uuids: list[str] = [m["event"]["uuid"] for m in conn.sent if m["t"] == "event"]
@@ -172,45 +208,11 @@ async def scenario_a(dump_path: Path | None) -> None:
         and b1.store is not b3.store
     ), "A6: branch stores are not pairwise distinct"
 
-    # ── A7: b3's prefix is consistent with branching at b2's anchor ─────────
-    # Splice model: shared-prefix generates are *served* (no provider call →
-    # no `ModelEvent` under b3's spans). Anchors are stable
-    # (`Controller._gen_id` served), so b3's timelines reference b1/b2's
-    # events for the prefix. b3's own columns are strictly live turns.
-    expected_b3_target_steps = sum(
-        1
-        for s in prefix3
-        if s.source == "Model.generate" and isinstance(s.value, ModelOutput)
-    )
-    expected_b3_auditor_steps = sum(
-        1
-        for s in prefix3
-        if s.source == "auditor:Model.generate" and isinstance(s.value, ModelOutput)
-    )
-    assert b3.audit_tape.prefix_len == len(prefix3), "A7: prefix_len mismatch"
-    tape_target = sum(
-        1
-        for s in b3.audit_tape.log
-        if s.source == "Model.generate" and isinstance(s.value, ModelOutput)
-    )
-    assert tape_target >= expected_b3_target_steps, (
-        f"A7: b3 tape has {tape_target} target steps, expected "
-        f"≥{expected_b3_target_steps} replayed from prefix"
-    )
-    b3_target = by_branch_role.get(("b3", "target"), set())
-    assert len(b3_target) == tape_target - expected_b3_target_steps, (
-        f"A7: b3's own target ModelEvents should be live-only "
-        f"({tape_target - expected_b3_target_steps}), got {len(b3_target)}"
-    )
-    b3_auditor = by_branch_role.get(("b3", "auditor"), set())
-    assert len(b3_auditor) <= b3.meta.max_turns - expected_b3_auditor_steps, (
-        f"A7: b3 auditor column has {len(b3_auditor)} own events; the "
-        f"{expected_b3_auditor_steps} shared-prefix turns should have been "
-        f"dropped, leaving ≤{b3.meta.max_turns - expected_b3_auditor_steps} live"
-    )
-    # No event anywhere carries an empty-`input` synth marker — every
-    # `ModelEvent` on the wire is either a real provider call or a divergent
-    # serve, both of which carry the caller's real `input`.
+    # ── A7: no empty-`input` synth markers on the wire ──────────────────────
+    # (The count-based prefix consistency checks are subsumed by the
+    # full-list `normalize()` `==` above.) Every `ModelEvent` on the wire is
+    # either a real provider call or a divergent serve, both of which carry
+    # the caller's real `input`.
     assert not any(
         ev["event"] == "model"
         and ev["input"] == []
@@ -218,11 +220,12 @@ async def scenario_a(dump_path: Path | None) -> None:
         for ev in _events(conn)
     ), "A7: found a ModelEvent with empty input"
 
+    n2, n3 = _prefix_n(b2), _prefix_n(b3)
     print(
         f"A: branches=3 events={len(new_uuids)} "
         f"model_events={sum(len(v) for v in by_branch_role.values())} "
-        f"b3_target_own={len(b3_target)} ({expected_b3_target_steps} "
-        f"replayed → ancestors) b3_auditor_own={len(b3_auditor)}"
+        f"normalize(b2)[:{n2}]==b1[:{n2}] live={len(captured['b2']) - n2} "
+        f"normalize(b3)[:{n3}]==b2[:{n3}] live={len(captured['b3']) - n3}"
     )
     print("✓ scenario A (level-2 branch chain) passed")
 
@@ -252,8 +255,27 @@ async def scenario_b(dump_path: Path | None = None) -> None:
     await b.run()
     await session.close()
 
-    # B1: rollback created ≥2 target trajectories
-    n_traj = _count_trajectories(b.history)
+    # B1: per-trajectory target lineage, full-list `==` on shared prefixes.
+    # Walk the L1 tree; for each trajectory extract its target replies
+    # (`tape.log` is full lineage: replayed prefix + live). Every child's
+    # first N entries (N = #ModelOutput steps in its `log[:prefix_len]`)
+    # must equal its parent's first N exactly.
+    def _traj_replies(traj) -> list[str]:
+        return [
+            s.value.completion
+            for s in traj.tape.log
+            if s.source == "Model.generate" and isinstance(s.value, ModelOutput)
+        ]
+
+    lineages: dict[str, list[str]] = {}
+    n_traj = 0
+    q = deque([b.history.root])
+    while q:
+        traj = q.popleft()
+        n_traj += 1
+        lineages[traj.span_id] = _traj_replies(traj)
+        for child in traj.children:
+            q.append(child)
     rollback_calls = [
         s
         for s in b.audit_tape.log
@@ -270,6 +292,25 @@ async def scenario_b(dump_path: Path | None = None) -> None:
         f"if 0, the model ignored the seed; if ≥1, rollback was rejected "
         f"(check anchor_id validity)."
     )
+    q = deque([b.history.root])
+    while q:
+        traj = q.popleft()
+        for child in traj.children:
+            n = sum(
+                1
+                for s in child.tape.log[: child.tape.prefix_len]
+                if s.source == "Model.generate" and isinstance(s.value, ModelOutput)
+            )
+            assert lineages[child.span_id][:n] == lineages[traj.span_id][:n], (
+                f"B1: child trajectory lineage prefix diverged from parent:\n"
+                f"  child[:{n}]  = {lineages[child.span_id][:n]}\n"
+                f"  parent[:{n}] = {lineages[traj.span_id][:n]}"
+            )
+            assert len(lineages[child.span_id]) > n, (
+                f"B1: child trajectory has no live target reply past its "
+                f"{n}-entry prefix: {lineages[child.span_id]}"
+            )
+            q.append(child)
 
     # B2: AnchorEvent + BranchEvent under target span
     target_evs = [

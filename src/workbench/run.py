@@ -403,16 +403,17 @@ class Branch:
         self.trajectory = trajectory
 
         #: Auditor turn index at the branch point — count of `GEN_SOURCE`
-        #: steps in the replayed prefix. Stable across edits (anchor ids
-        #: re-mint, the index doesn't). Captured at construction from
-        #: `pending` (drained on first use).
+        #: steps in the *shared* replayed prefix (`pending[:prefix_len]` —
+        #: an `edit_*` op appends the edited step past `prefix_len`, and
+        #: that step is divergent, not shared). Stable across edits.
+        tape = self.trajectory.tape
         self.branched_at_turn: int | None = (
             sum(
                 1
-                for s in self.trajectory.tape.pending
+                for s in list(tape.pending)[: tape.prefix_len]
                 if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
             )
-            if self.trajectory.tape.prefix_len > 0
+            if tape.prefix_len > 0
             else None
         )
 

@@ -4,16 +4,13 @@ Runs a branch to completion, then forks at the first target-model turn via
 `Branch.fork()` (which delegates to `session.audit_history.branch()` —
 PETRI-L2-HISTORY) and runs the child. Asserts:
 
-(a) The child's `audit_tape` prefix (`tape.prefix_len`) matches the parent's
-    log up to the cutoff, unfiltered (marks included — `_mark` pops `pending`).
-(b) Splice model: the child's *own* auditor-role events (in `_by_role`) are
-    post-prefix only — shared-prefix events are dropped while
-    `_replaying_shared`; the parent supplies them via `splice()`. Anchors
-    are stable across replay (`Controller._gen_id` served), so the child's
-    target timeline references the parent's `ModelEvent`s for the prefix.
-(c) The child goes live and produces ≥1 fresh auditor `ModelEvent`.
-(d) `Branch.fork()` raises `ValueError` for an unknown anchor.
-(e) `view()` includes a `branches` key with parent/branched_at metadata
+(a) Full-list `==` on the shared prefix: `normalize(b2)[:N] ==
+    normalize(b1)[:N]` where N is the count of auditor+target `ModelOutput`
+    steps in b2's replayed prefix. This is the load-bearing check — every
+    role/text/tool-call in the lineage matches the parent verbatim.
+(b) The child goes live: `len(normalize(b2)) > N`.
+(c) `Branch.fork()` raises `ValueError` for an unknown anchor.
+(d) `view()` includes a `branches` key with parent/branched_at metadata
     derived from the `Trajectory`.
 
 Run:  uv run python -m workbench._smoke_branch
@@ -25,7 +22,7 @@ import anyio
 from inspect_petri._auditor import AuditTape, audit_context
 from inspect_petri.target import Channel, Controller, Step, Tape
 
-from workbench._smoke_util import FakeConn, model_events_for
+from workbench._smoke_fixtures import normalize
 from workbench.run import Branch
 from workbench.session import Session
 
@@ -65,12 +62,9 @@ async def _amain() -> None:
         pass
 
     # ── branch 2: fork from b1 at the target anchor ──────────────────────────
-    conn2 = FakeConn()
-    session.connections.append(conn2)
-
     b2 = Branch.fork(session, b1, anchor=anchor)
     # max_turns covers the replayed prefix's auditor steps plus headroom for
-    # ≥1 live turn — without eager_resume the prefix can carry up to 3.
+    # ≥1 live turn.
     expected_auditor = sum(
         1
         for s in b2.audit_tape.pending
@@ -103,45 +97,29 @@ async def _amain() -> None:
     await b2.run()
     await session.close()
 
-    # (b)/(c) Auditor: while `_replaying_shared`, `_on_event` drops every
-    # auditor-role event — the shared prefix is spliced from the parent's
-    # `TimelineSpan`, not re-emitted per branch. So b2's *own* auditor
-    # column is live-only; the `expected_auditor` shared turns are absent.
-    auditor_evts = model_events_for(conn2, session, b2.auditor_span_id)
-    auditor_uuids = {ev["uuid"] for ev in auditor_evts}
-    assert len(auditor_uuids) <= b2.meta.max_turns - expected_auditor, (
-        f"b2 auditor column has {len(auditor_uuids)} events; shared-prefix "
-        f"({expected_auditor}) should have been dropped, leaving "
-        f"≤{b2.meta.max_turns - expected_auditor} live"
+    # (a)/(b) Load-bearing assertion: full-list `==` on the shared prefix.
+    # b2's L2 tape is its full lineage (replayed prefix verbatim from b1,
+    # then live), so its first N normalize() entries — N = #ModelOutput
+    # steps in the prefix — must equal b1's first N exactly: every role,
+    # text, and tool-call arg. Any drift in replay (re-generated content,
+    # dropped/reordered steps, mutated args) fails this. Both sides are
+    # normalized *after* b2.run() because the serve path returns shared
+    # `Step` refs and `_eager_resume_inject` mutates them in place — parent
+    # and child settle to the same view, but only once replay completes.
+    actual_b2 = normalize(session, b2.branch_id)
+    captured_b1 = normalize(session, "b1")
+    n = expected_auditor + expected_target
+    assert actual_b2[:n] == captured_b1[:n], (
+        f"b2 shared prefix diverged from b1:\n"
+        f"  b2[:{n}] = {actual_b2[:n]}\n"
+        f"  b1[:{n}] = {captured_b1[:n]}"
     )
-    assert auditor_uuids, "branch 2 produced no live auditor turn after prefix"
-
-    # (b) Target: shared-prefix target generates are *served* (no provider
-    # call → no `ModelEvent` under b2's span). Anchors are stable, so the
-    # b2 target timeline references b1's events for those steps; only b2's
-    # *live* target generates land under its own span.
-    target_evts = model_events_for(conn2, session, b2.target_span_id)
-    target_uuids = {ev["uuid"] for ev in target_evts}
-    # b2's L2 tape carries the full lineage; its target steps must be ≥
-    # the prefix's (replayed) plus ≥1 live.
-    tape_target = sum(
-        1
-        for s in b2.audit_tape.log
-        if s.source == "Model.generate" and s.value is not None
-    )
-    assert tape_target >= expected_target, (
-        f"b2 tape has {tape_target} target steps, expected ≥{expected_target} "
-        f"replayed from prefix"
-    )
-    assert all(ev["input_refs"] for ev in target_evts), (
-        "b2 target event missing input_refs"
-    )
-    assert len(target_uuids) == tape_target - expected_target, (
-        f"b2's own target ModelEvents should be live-only "
-        f"({tape_target - expected_target}), got {len(target_uuids)}"
+    assert len(actual_b2) > n, (
+        f"b2 produced no live suffix past the {n}-entry replayed prefix: "
+        f"{actual_b2}"
     )
 
-    # (e) session view() includes branches metadata derived from Trajectory.
+    # (d) session view() includes branches metadata derived from Trajectory.
     view = session.view()
     assert "branches" in view, "view() missing 'branches' key"
     b2_meta = view["branches"].get(b2.branch_id)
@@ -170,9 +148,8 @@ async def _amain() -> None:
 
     print(
         f"branch: prefix_len={b2.audit_tape.prefix_len} "
-        f"b2_target_own={len(target_uuids)} (live-only; {expected_target} "
-        f"replayed → b1's events) b2_auditor_own={len(auditor_uuids)} "
-        f"(live-only; {expected_auditor} shared dropped); "
+        f"normalize(b2)[:{n}]==normalize(b1)[:{n}] "
+        f"live_suffix={len(actual_b2) - n}; "
         f"parent=b1 branched_at={anchor[:8]}…"
     )
     print("✓ branch smoke passed")
