@@ -22,7 +22,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import anyio
 import uvicorn
@@ -250,7 +250,12 @@ async def _step_after_replay(branch: Branch) -> None:
 
 
 async def _candidates(
-    session: Session, data: dict, *, locate: Locate, kind: str, step: bool
+    session: Session,
+    data: dict,
+    *,
+    locate: Locate,
+    kind: Literal["target", "auditor"],
+    step: bool,
 ) -> None:
     """Resample-N: spawn `n` background sibling forks at one anchor.
 
