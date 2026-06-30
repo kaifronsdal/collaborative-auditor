@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING
 import anyio
 from inspect_ai.agent import Agent, AgentState, agent
 from inspect_ai.event import AnchorEvent, ModelEvent
-from inspect_ai.log._transcript import transcript  # noqa: PLC2701
+from inspect_ai.log import transcript
 from inspect_ai.model import (
     ChatMessageSystem,
     ChatMessageUser,

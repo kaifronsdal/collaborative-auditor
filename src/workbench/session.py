@@ -31,8 +31,13 @@ import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from fastapi import WebSocketDisconnect
 from inspect_ai.event import BranchEvent, Event, ModelEvent, SpanBeginEvent
-from inspect_ai.event._pool import _compress_refs, _msg_hash  # noqa: PLC2701
-from inspect_ai.log._transcript import Transcript, init_transcript
+from inspect_ai.event._pool_index import (  # noqa: PLC2701
+    CallPoolIndex,
+    MessagePoolIndex,
+    condense_model_event_with_indices,
+)
+from inspect_ai.log import Transcript
+from inspect_ai.log._transcript import init_transcript  # noqa: PLC2701
 from inspect_ai.model import ChatMessage
 from inspect_petri._auditor import build_history_timeline
 from inspect_petri.target import History, Trajectory
@@ -99,8 +104,11 @@ class Session:
 
         # message pool (STREAMING.md §B): content-hash-deduped, append-only.
         # ModelEvent.input is interned here and replaced by input_refs ranges.
+        # Indexing is inspect's own (`event/_pool_index.py`, #4222) so dedup
+        # matches the `.eval` recorder byte-for-byte.
         self.pool: list[ChatMessage] = []
-        self.pool_idx: dict[str, int] = {}  # content hash → pool index
+        self._msg_index = MessagePoolIndex()
+        self._call_index = CallPoolIndex()
         self.pool_sent: int = 0  # high-water-mark already shipped to clients
 
         # event store + span routing (STREAMING.md §B)
@@ -178,38 +186,33 @@ class Session:
         if self._run_task is not None:
             await self._run_task
 
-    # -- message pool ---------------------------------------------------------
-
-    def _lookup(self, msg: ChatMessage) -> int:
-        """Intern a message into the pool, returning its index.
-
-        The hash matches inspect's `.eval` recorder (`event/_pool.py`), so the
-        wire encoding is byte-identical to what `expandEvents` resolves.
-        """
-        h = _msg_hash(msg)
-        idx = self.pool_idx.get(h)
-        if idx is None:
-            idx = len(self.pool)
-            self.pool_idx[h] = idx
-            self.pool.append(msg)
-        return idx
-
     # -- event handling (sync, fast, inline in the generating task) -----------
 
     def _condense(self, ev: Event) -> dict[str, Any]:
         """Dump an event, interning `ModelEvent.input` into the pool.
 
-        Mirrors inspect's `.eval` condensation (`event/_pool.py`): a typed
-        `model_copy` that sets `input_refs` and clears `input`, so the wire
-        shape is what `@tsmono/inspect-common`'s `expandEvents` resolves. The
-        per-event `*_with_lookup` helper was removed upstream (inspect #4222)
-        in favour of incremental indices; we already maintain our own index
-        in `_lookup`, so only the trivial `_compress_refs` step is borrowed.
+        Delegates to inspect's `condense_model_event_with_indices` (#4222),
+        which sets `input_refs` and clears `input` so the wire shape is what
+        `@tsmono/inspect-common`'s `expandEvents` resolves. Identity-bucketed
+        lookup means re-sent history costs no per-message hashing. Walk is
+        identity (no attachment refs in the workbench). `event.call` is never
+        populated (no `log_model_api`), so the `calls` index and `add_call`
+        are unreached stubs; if that changes, add a call pool to the wire.
         """
-        if isinstance(ev, ModelEvent) and ev.input:
-            raw = [self._lookup(m) for m in ev.input]
-            ev = ev.model_copy(
-                update={"input": [], "input_refs": _compress_refs(raw)}
+        if isinstance(ev, ModelEvent):
+
+            def add_message(_hash: str, msg: ChatMessage) -> int:
+                self.pool.append(msg)
+                return len(self.pool) - 1
+
+            ev = condense_model_event_with_indices(
+                ev,
+                messages=self._msg_index,
+                calls=self._call_index,
+                walk_message=lambda m: m,
+                walk_call_message=lambda v: v,
+                add_message=add_message,
+                add_call=lambda _h, _v: 0,
             )
         return ev.model_dump(mode="json")
 
