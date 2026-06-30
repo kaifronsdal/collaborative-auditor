@@ -31,10 +31,7 @@ import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from fastapi import WebSocketDisconnect
 from inspect_ai.event import BranchEvent, Event, ModelEvent, SpanBeginEvent
-from inspect_ai.event._pool import (  # noqa: PLC2701
-    _msg_hash,
-    condense_model_event_inputs_with_lookup,
-)
+from inspect_ai.event._pool import _compress_refs, _msg_hash  # noqa: PLC2701
 from inspect_ai.log._transcript import Transcript, init_transcript
 from inspect_ai.model import ChatMessage
 from inspect_petri._auditor import build_history_timeline
@@ -202,14 +199,19 @@ class Session:
     def _condense(self, ev: Event) -> dict[str, Any]:
         """Dump an event, interning `ModelEvent.input` into the pool.
 
-        Delegates to inspect's `condense_model_event_inputs_with_lookup` — a
-        typed `model_copy` that sets `input_refs` and clears `input`, so the
-        wire shape tracks inspect's own `.eval` condensation rather than a
-        hand-patched dict.
+        Mirrors inspect's `.eval` condensation (`event/_pool.py`): a typed
+        `model_copy` that sets `input_refs` and clears `input`, so the wire
+        shape is what `@tsmono/inspect-common`'s `expandEvents` resolves. The
+        per-event `*_with_lookup` helper was removed upstream (inspect #4222)
+        in favour of incremental indices; we already maintain our own index
+        in `_lookup`, so only the trivial `_compress_refs` step is borrowed.
         """
-        return condense_model_event_inputs_with_lookup(ev, self._lookup).model_dump(
-            mode="json"
-        )
+        if isinstance(ev, ModelEvent) and ev.input:
+            raw = [self._lookup(m) for m in ev.input]
+            ev = ev.model_copy(
+                update={"input": [], "input_refs": _compress_refs(raw)}
+            )
+        return ev.model_dump(mode="json")
 
     def _on_event(self, ev: Event) -> None:
         assert ev.uuid is not None, "event missing uuid at ingress"
