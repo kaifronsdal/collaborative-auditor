@@ -58,6 +58,19 @@ def prewarm() -> None:
         scout_init_display("none")
     except ImportError:
         pass
+    # plotly's default IPython renderer inlines the full ``plotly.min.js``
+    # (~4.8 MB, twice) into ``text/html`` on every figure. The workbench
+    # frontend loads ``plotly.js-basic-dist-min`` once (M1-PLOTTING.md), so
+    # figures should emit only the ~9 KB div + data. ``_wire_bundle``'s
+    # 128 KB cap is the safety net; this is the real fix.
+    try:
+        import plotly.io as pio  # noqa: PLC0415
+
+        r = pio.renderers["notebook_connected"]
+        r.connected = True  # CDN <script src>, not inline bundle
+        pio.renderers.default = "notebook_connected"
+    except ImportError:
+        pass
 
 
 # -- steering registry --------------------------------------------------------
