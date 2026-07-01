@@ -58,12 +58,16 @@ Same `RunHandle` (polls the same `.eval`), just
 should survive the workbench process. 2 s startup is irrelevant there.
 `SIGINT` for cancel (`SIGTERM` leaves the log at `status='started'`).
 
-### `wb.pin(audit_id)` → M0 `Branch` (C's capability, on demand)
+### Desk interaction — no `wb.pin`
 
-Imports one sample's tape from the run's `.eval` as an M0 `Branch` via the
-existing `server._dispatch("import")` path. That gives live
-pause/step/resample/edit on the ≤3 audits you actually want to interact
-with, without paying C's O(N²) `build_auditor_timeline` cost on the batch.
+Batch runs are fire-and-collect; `wb.steer`/`wb.stop` reach running
+samples via `CONTROL`, and `wb.transcript`/`wb.excerpt` read the `.eval`.
+Live pause/step/**resample/edit** is what the M0 desk *is* — the human
+gets there by clicking a `RunHandle` row → `server._dispatch("import")`
+loads that sample's tape as a `Branch`. That's a UI action, not something
+the agent calls, so there's no `wb.pin`. (If "pull a *running* sample into
+the desk" is ever needed, the row action reads the tape from
+`active_samples()[i]`'s Store — still UI, not `wb.*`.)
 
 ## §steer — steering under A
 
@@ -142,5 +146,6 @@ Plus optionally one throwaway `eval_async` to pay the ~2.5 s cold cost.
 - The "kernel must share the loop so `run_audits` can spawn `Branch`
   coroutines" rationale (§Kernel) narrows to "so gates can `await` Futures
   the WS handler resolves, and `wb.steer` can reach `active_samples()`".
-- New helper: `wb.pin(audit_id)` — imports one sample as an M0 `Branch`.
+- Desk interaction on a batch audit is a *UI* action (`RunHandle` row →
+  `import`), not a `wb.*` helper.
 - `run_audits`/`run_eval` gain `detached: bool = False`.

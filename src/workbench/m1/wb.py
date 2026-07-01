@@ -44,7 +44,7 @@ class Workbench:
 
     def __repr__(self) -> str:
         return (
-            "<wb · run_audits run_eval steer stop pin ask_human "
+            "<wb · run_audits run_eval steer stop ask_human "
             "scan cite excerpt transcript>"
         )
 
@@ -144,17 +144,6 @@ class Workbench:
     def stop(self, ids: str | Iterable[str], *, hard: bool = False) -> None:
         """Ask each sample to end (``hard=True`` interrupts immediately)."""
         stop([ids] if isinstance(ids, str) else ids, hard=hard)
-
-    # -- desk bridge ------------------------------------------------------
-
-    def pin(self, audit_id: str, *, log: str | None = None) -> None:
-        """Import one audit as an M0 ``Branch`` for live pause/step/resample.
-
-        Delegates to the existing ``server._dispatch("import")`` path so the
-        desk's edit/branch/resample machinery applies unchanged. ``log``
-        defaults to the most recent ``run_audits`` log dir.
-        """
-        raise NotImplementedError("wb.pin: M1.2 stub — wire to server import path")
 
     # -- stubs for M1.3 ---------------------------------------------------
 

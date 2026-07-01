@@ -483,10 +483,21 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             await _stop_running_branches(session)
 
         case "step" | "play" | "pause" as cmd:
-            if session.current is None:
-                logger.warning("%r before start — dropping", cmd)
+            # Explicit target (matching `inject`/`edit_*`/`switch`): a
+            # branch id, ``"orch"`` for the orchestrator, or omitted for
+            # ``session.current`` (M0 back-compat). Lets the human step a
+            # non-current branch (imported / candidate) without a
+            # `switch` round-trip.
+            tgt = data.get("target")
+            obj = (
+                session.orchestrator
+                if tgt == "orch"
+                else session.branches.get(tgt or session.current or "")
+            )
+            if obj is None:
+                logger.warning("%r: no target %r — dropping", cmd, tgt)
                 return
-            getattr(session.branches[session.current], cmd)()
+            getattr(obj, cmd)()
             await session.broadcast_status()
 
         case "inject":
@@ -689,13 +700,6 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             await session.broadcast(
                 {"t": "state", "v": session.version, **session.view()}
             )
-
-        case "orch_step" | "orch_play" | "orch_pause" as cmd:
-            if session.orchestrator is None:
-                logger.warning("%r before start_orchestrator — dropping", cmd)
-                return
-            getattr(session.orchestrator, cmd.removeprefix("orch_"))()
-            await session.broadcast_status()
 
         case "orch_send":
             if session.orchestrator is None:
