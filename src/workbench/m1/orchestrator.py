@@ -48,6 +48,8 @@ from inspect_ai.util import span
 from shortuuid import uuid
 
 from workbench.m1.kernel import DisplayEvent, OrchestratorKernel
+from workbench.m1.run import prewarm
+from workbench.m1.wb import Workbench
 from workbench.view import Status
 
 if TYPE_CHECKING:
@@ -90,9 +92,16 @@ class Orchestrator:
         self.span_id = uuid()
         session.span_role[self.span_id] = ("orch", "orch")
 
+        # Pay inspect's cold-start cost (display type, hooks banner) once,
+        # before the first cell runs — otherwise the first in-cell
+        # ``eval_async`` leaks ~8 stream events (M1-RUN-AUDITS.md §Required).
+        prewarm()
         self.kernel = OrchestratorKernel(
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
+        # Replace the kernel's stub ``wb`` with the session-aware one now
+        # that both kernel and session exist.
+        self.kernel.shell.user_ns["wb"] = Workbench(self.kernel, session)
         # Step gate — same shape as `Branch._gate`: the agent loop awaits it
         # each turn, `play()` self-re-arms.
         self._gate = anyio.Event()
