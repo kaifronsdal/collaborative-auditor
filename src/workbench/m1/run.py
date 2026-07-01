@@ -22,7 +22,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from inspect_ai import Task, eval_async
-from inspect_ai.log import EvalSampleSummary
+from inspect_ai.log import EvalSampleSummary, list_eval_logs
 from inspect_ai.log._file import (  # noqa: PLC2701
     read_eval_log_sample_summaries_async,
 )
@@ -48,6 +48,16 @@ def prewarm() -> None:
     from inspect_ai._util.platform import platform_init  # noqa: PLC0415, PLC2701
 
     platform_init()
+    # scout has its own display registry (SCOUT_DISPLAY); silence it too so
+    # ``wb.scan`` doesn't leak a rich progress bar into ``_CellStream``.
+    try:
+        from inspect_scout._display._display import (  # noqa: PLC0415, PLC2701
+            init_display_type as scout_init_display,
+        )
+
+        scout_init_display("none")
+    except ImportError:
+        pass
 
 
 # -- steering registry --------------------------------------------------------
@@ -89,9 +99,7 @@ async def adopt_running(sample_id: str, *, timeout: float = 5.0) -> tuple[Any, A
     """
     from workbench.export import import_eval  # noqa: PLC0415
 
-    s = next(
-        (s for s in active_samples() if str(s.sample.id) == str(sample_id)), None
-    )
+    s = next((s for s in active_samples() if str(s.sample.id) == str(sample_id)), None)
     if s is None:
         raise ValueError(f"sample {sample_id!r} not running")
     log = s.log_location
@@ -122,6 +130,24 @@ def stop(ids: Iterable[str], *, hard: bool = False) -> None:
         for s in active_samples():
             if str(s.sample.id) in want:
                 s.interrupt("score")
+
+
+class BatchHooks:
+    """``TurnHooks`` for ``wb.run_audits`` — free-running, drains ``CONTROL``.
+
+    Resolves ``sample_id`` per call via ``sample_state()`` (the auditor
+    ``Agent`` is constructed once and shared across all samples in the
+    batch, so the hooks can't carry a fixed id).
+    """
+
+    async def pre_turn(self) -> tuple[list[ChatMessageUser], bool]:
+        from inspect_ai.solver._task_state import sample_state  # noqa: PLC0415, PLC2701
+
+        st = sample_state()
+        return drain_control(st.sample_id if st else None)
+
+    def post_generate(self) -> None:
+        pass
 
 
 def drain_control(sample_id: Any) -> tuple[list[ChatMessageUser], bool]:
@@ -302,17 +328,11 @@ class RunHandle:
 
     async def _poll(self) -> None:
         if self._log_file is None:
-            # Resolve from the in-process registry — set the moment the
-            # first sample enters its context, earlier than the ``.eval``
-            # header is flushed to disk.
-            self._log_file = next(
-                (
-                    s.log_location
-                    for s in active_samples()
-                    if s.log_location.startswith(self.log_dir)
-                ),
-                None,
-            )
+            # ``list_eval_logs`` (not ``active_samples()[i].log_location``)
+            # because the latter is set before the first flush — reading a
+            # mid-write zip raises ``EOCD not found``. The directory walk
+            # only returns files the recorder has actually copied out.
+            self._log_file = next((i.name for i in list_eval_logs(self.log_dir)), None)
             if self._log_file is None:
                 return
         summaries = await read_eval_log_sample_summaries_async(self._log_file)
@@ -375,18 +395,164 @@ class RunHandle:
 
 
 @dataclass
+class ScanHandle:
+    """Live handle on one ``inspect_scout.aio.scan_async`` job.
+
+    Same shape as ``RunHandle``: ``_watch`` polls ``scan_status_async`` on the
+    scan's location (resolved via ``scan_list_async(scans_dir)`` — one scan per
+    fresh temp dir) and ``dh.update(self)`` s on any change. ``.df`` is the
+    ``ScanResultsDF.scanners`` mapping (name → DataFrame), populated by the
+    watcher's final poll so ``await h.wait(); h.df["…"]`` works without a
+    second async call.
+
+    ``total`` stays 0 until the job settles (scout only exposes it via a
+    PID-keyed KV store that concurrent in-process scans overwrite); the card
+    reports ``N scanned`` while running and ``N/N`` once ``finished``.
+    """
+
+    scans_dir: str
+    scanner_names: list[str]
+    id: str = field(default_factory=lambda: uuid4().hex)
+    description: str = ""
+    total: int = 0
+    #: name → {scans, results, errors} — mirrors ``Summary.scanners``.
+    per_scanner: dict[str, dict[str, int]] = field(default_factory=dict)
+    finished: bool = False
+    error: str | None = None
+
+    _task: asyncio.Task[Any] | None = field(default=None, repr=False)
+    _watcher: asyncio.Task[None] | None = field(default=None, repr=False)
+    _dh: DisplayHandle | None = field(default=None, repr=False)
+    _location: str | None = field(default=None, repr=False)
+    _results: Any | None = field(default=None, repr=False)
+    _poll_interval: float = field(default=0.25, repr=False)
+
+    kind: str = "scan"
+
+    @property
+    def n_done(self) -> int:
+        return sum(s.get("scans", 0) for s in self.per_scanner.values())
+
+    @property
+    def location(self) -> str | None:
+        return self._location
+
+    @property
+    def df(self) -> Any:
+        """``Mapping[str, DataFrame]`` of scanner results (post-``wait()``)."""
+        if self._results is None:
+            raise RuntimeError("scan not finished — await h.wait() first")
+        return self._results.scanners
+
+    async def wait(self) -> "ScanHandle":
+        if self._task is not None:
+            await asyncio.gather(self._task, return_exceptions=True)
+        if self._watcher is not None:
+            await self._watcher
+        return self
+
+    def cancel(self) -> None:
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
+    async def _watch(self, scan_task: asyncio.Task[Any]) -> None:
+        from inspect_scout.aio import scan_results_df_async  # noqa: PLC0415
+
+        last: tuple[int, ...] | None = None
+        while not scan_task.done():
+            await self._poll()
+            sig = tuple(
+                v
+                for s in self.per_scanner.values()
+                for v in sorted(s.items())  # type: ignore[misc]
+            )
+            if sig != last:
+                last = sig
+                self._update()
+            await asyncio.sleep(self._poll_interval)
+        await self._poll()
+        self.finished = True
+        self.total = self.total or self.n_done
+        if scan_task.cancelled():
+            self.error = "cancelled"
+        elif (exc := scan_task.exception()) is not None:
+            self.error = f"{type(exc).__name__}: {exc}"
+        elif self._location is None:
+            # ``scan_async`` returned a Status; take its location.
+            self._location = scan_task.result().location
+        if self._location is not None and self.error is None:
+            self._results = await scan_results_df_async(self._location)
+        self._update()
+
+    async def _poll(self) -> None:
+        from inspect_scout.aio import scan_list_async, scan_status_async  # noqa: PLC0415
+
+        if self._location is None:
+            listed = await scan_list_async(self.scans_dir)
+            if not listed:
+                return
+            self._location = listed[0].location
+        status = await scan_status_async(self._location)
+        self.per_scanner = {
+            name: {"scans": s.scans, "results": s.results, "errors": s.errors}
+            for name, s in status.summary.scanners.items()
+        }
+
+    def _update(self) -> None:
+        if self._dh is not None:
+            self._dh.update(self)
+
+    def _start(self, coro: Any) -> "ScanHandle":
+        self._dh = display(self, display_id=self.id)
+        self._task = asyncio.create_task(coro)
+        self._watcher = asyncio.create_task(self._watch(self._task))
+        return self
+
+    def _repr_mimebundle_(
+        self, include: Any = None, exclude: Any = None
+    ) -> dict[str, Any]:
+        state = "done" if self.finished else "running"
+        if self.error:
+            state = self.error
+        counter = f"{self.n_done}/{self.total}" if self.total else f"{self.n_done}"
+        return {
+            "text/plain": (
+                f"<ScanHandle {'+'.join(self.scanner_names)} · "
+                f"{counter} scanned · {state}>"
+            ),
+            WB_MIME: {
+                "kind": self.kind,
+                "id": self.id,
+                "description": self.description,
+                "scans_dir": self.scans_dir,
+                "location": self._location,
+                "done": self.n_done,
+                "total": self.total,
+                "finished": self.finished,
+                "error": self.error,
+                "per_scanner": self.per_scanner,
+            },
+        }
+
+
+@dataclass
 class AuditRunHandle(RunHandle):
     """``run_audits`` handle — per-audit rows are ``wb://audit/{id}`` links;
-    ``.audits`` returns ``samples_df(log_dir)`` when done."""
+    ``.audits`` returns a per-dimension-scored DataFrame when done."""
 
     kind: str = "audit_run"
 
     @property
     def audits(self) -> Any:
-        """DataFrame of completed audits (``inspect_ai.analysis.samples_df``)."""
-        from inspect_ai.analysis import samples_df  # noqa: PLC0415
+        """DataFrame of completed audits with per-dimension score columns.
 
-        return samples_df(self.log_dir)
+        ``inspect_petri.audits_df`` = ``samples_df`` + ``flat_score_values``,
+        so ``audit_judge``'s dict-valued score becomes one column per
+        dimension (``score_concerning``, ``score_deception``, …).
+        """
+        from inspect_petri import audits_df  # noqa: PLC0415
+
+        return audits_df(self.log_dir)
 
 
 # -- launcher -----------------------------------------------------------------

@@ -13,10 +13,18 @@ from typing import TYPE_CHECKING, Any
 from inspect_ai import Task
 
 from workbench.m1.kernel import Prompt
+from workbench.m1.read import (
+    Excerpt,
+    TranscriptRef,
+    excerpt,
+    read_transcript,
+    transcript,
+)
 from workbench.m1.run import (
     AuditRunHandle,
     RunHandle,
     RunProposal,
+    ScanHandle,
     _launch,
     steer,
     stop,
@@ -45,7 +53,7 @@ class Workbench:
     def __repr__(self) -> str:
         return (
             "<wb · run_audits run_eval steer stop ask_human "
-            "scan cite excerpt transcript>"
+            "scan cite excerpt transcript read_transcript>"
         )
 
     # -- gated launchers --------------------------------------------------
@@ -68,8 +76,24 @@ class Workbench:
         ``dh.update``; ``await h.wait()`` for the result inline. Shares
         ``_launch`` with ``run_eval``; the petri specifics are the
         ``RunProposal`` seed-preview and ``AuditRunHandle`` per-audit rows.
+
+        The task is built from petri's public parts (``seeds_dataset`` /
+        ``audit_solver`` / ``audit_judge`` / ``audit_viewer``) with
+        ``workbench_auditor(BatchHooks(), compaction=True, …)`` as the
+        auditor — so ``wb.steer``/``wb.stop`` reach running samples via the
+        same loop that drives the M0 desk, and we control the ``config``
+        surface rather than tracking petri's ``audit()`` kwargs.
         """
-        from inspect_petri import audit  # noqa: PLC0415
+        from inspect_petri import (  # noqa: PLC0415
+            audit_judge,
+            audit_solver,
+            audit_viewer,
+            seeds_dataset,
+            target_agent,
+        )
+
+        from workbench.auditor import workbench_auditor  # noqa: PLC0415
+        from workbench.m1.run import BatchHooks  # noqa: PLC0415
 
         seed_list = [seeds] if isinstance(seeds, str) else list(seeds)
         cfg = dict(config or {})
@@ -92,9 +116,19 @@ class Workbench:
                     error=f"denied: {reason}",
                 )
 
-        task = audit(
-            seed_instructions=prop.seeds,
-            **cfg,
+        max_turns = int(cfg.pop("max_turns", 30))
+        auditor = workbench_auditor(
+            BatchHooks(),
+            max_turns=max_turns,
+            compaction=cfg.pop("compaction", True),
+            realism_filter=cfg.pop("realism_filter", False),
+        )
+        task = Task(
+            dataset=seeds_dataset(prop.seeds),
+            solver=audit_solver(auditor=auditor, target=target_agent()),
+            scorer=audit_judge(cfg.get("judge_dimensions")),
+            viewer=audit_viewer(cfg.get("judge_dimensions")),
+            name=f"audit-{prop.id[:6]}",
         )
         model_roles = {"target": model, "auditor": auditor_model or model}
         h = await _launch(
@@ -145,16 +179,88 @@ class Workbench:
         """Ask each sample to end (``hard=True`` interrupts immediately)."""
         stop([ids] if isinstance(ids, str) else ids, hard=hard)
 
-    # -- stubs for M1.3 ---------------------------------------------------
+    # -- read transcripts -------------------------------------------------
 
-    async def scan(self, logs: str, scanner: Any, **kw: Any) -> Any:
-        raise NotImplementedError("wb.scan: M1.3")
+    def transcript(
+        self, log: str | RunHandle, sample_id: str, *, at: int | None = None
+    ) -> TranscriptRef:
+        """Embed an inspect-view of one sample. The model sees a one-line
+        summary; use ``excerpt``/``read_transcript`` to read content."""
+        return transcript(log, sample_id, at=at)
+
+    async def excerpt(
+        self, log: str | RunHandle, sample_id: str, *, at: int, around: int = 1
+    ) -> Excerpt:
+        """Render ``messages[at-around : at+around+1]`` inline."""
+        return await excerpt(log, sample_id, at=at, around=around)
+
+    async def read_transcript(
+        self,
+        log: str | RunHandle,
+        sample_id: str,
+        *,
+        range: tuple[int, int] | None = None,  # noqa: A002
+    ) -> str:
+        """Plain ``messages_as_str`` text — for the model, no frontend card."""
+        return await read_transcript(log, sample_id, range=range)
+
+    # -- scan (inspect_scout) ---------------------------------------------
+
+    async def scan(
+        self,
+        logs: str | RunHandle | list[str],
+        scanner: Any,
+        *,
+        description: str = "",
+        model: str | None = None,
+        scans_dir: str | None = None,
+    ) -> ScanHandle:
+        """Run scout scanners over eval logs — returns a live ``ScanHandle``.
+
+        ``logs`` may be a ``RunHandle`` (uses ``.log_dir``), a path, or a list
+        of paths. ``scanner`` may be a single ``Scanner``, a list, or a
+        ``{name: Scanner}`` dict. Each call gets a fresh ``scans_dir`` so
+        ``ScanHandle._poll`` can resolve the one scan location inside it via
+        ``scan_list_async`` (mirrors ``RunHandle`` resolving its ``.eval``).
+        """
+        import tempfile  # noqa: PLC0415
+
+        from inspect_scout import ScanJob, transcripts_from  # noqa: PLC0415
+        from inspect_scout.aio import scan_async  # noqa: PLC0415
+
+        if isinstance(logs, RunHandle):
+            logs = logs.log_dir
+        transcripts = transcripts_from(logs)
+
+        if isinstance(scanner, dict):
+            scanners = scanner
+            names = list(scanner)
+        elif isinstance(scanner, (list, tuple)):
+            scanners = list(scanner)
+            names = [s[0] if isinstance(s, tuple) else "?" for s in scanners]
+        else:
+            scanners = [scanner]
+            names = ["scan"]
+
+        scans_dir = scans_dir or tempfile.mkdtemp(prefix="wb-scan-")
+        job = ScanJob(
+            transcripts=transcripts,
+            scanners=scanners,
+            scans=scans_dir,
+            model=model,
+            # Scout's multiprocess strategy forks workers that each re-run
+            # ``platform_init()`` (hooks banner → parent stdout, past the
+            # ``_CellStream`` tee). In-kernel scans are small; keep it in-loop.
+            max_processes=1,
+        )
+        h = ScanHandle(
+            scans_dir=scans_dir,
+            scanner_names=names,
+            description=description,
+        )
+        return h._start(scan_async(job))
+
+    # -- stubs for M1.3 ---------------------------------------------------
 
     async def cite(self, claim: str, quotes: Any, **kw: Any) -> Any:
         raise NotImplementedError("wb.cite: M1.3")
-
-    def excerpt(self, audit_id: str, at: int, around: int = 1) -> Any:
-        raise NotImplementedError("wb.excerpt: M1.3")
-
-    def transcript(self, audit_id: str, at: int | None = None) -> Any:
-        raise NotImplementedError("wb.transcript: M1.3")

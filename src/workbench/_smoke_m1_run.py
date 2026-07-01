@@ -169,6 +169,39 @@ async def _amain() -> None:  # noqa: PLR0915
     assert "denied: too many" in r.text, r.text
     print("✓ run_audits gates at n>8; deny → settled handle (no traceback)")
 
+    # ---- 6. wb.scan over a RunHandle's logs (scout grep_scanner) ----------
+    try:
+        from inspect_scout import grep_scanner  # noqa: PLC0415, F401
+    except ImportError:
+        print("- wb.scan: inspect_scout not installed, skipping")
+    else:
+        k.shell.user_ns["grep_scanner"] = grep_scanner
+        r = await k.run_turn(
+            "sh = await wb.scan(h, {'g': grep_scanner('a-')})\n"
+            "await sh.wait()\n"
+            "sh"
+        )
+        assert r.success, r.text
+        sh = k.shell.user_ns["sh"]
+        assert sh.finished and sh.error is None, (sh.finished, sh.error)
+        assert sh.location and sh.location.startswith(sh.scans_dir)
+        assert sh.per_scanner["g"]["scans"] == 4, sh.per_scanner
+        assert sh.n_done == sh.total == 4
+        assert "4/4" in r.text and "done" in r.text, r.text
+        # .df is the ScanResultsDF.scanners mapping — one frame per scanner
+        df = sh.df["g"]
+        assert len(df) == 4, len(df)
+        # card ticked at least once (initial + final)
+        scan_evs = [ev for ev in r.outputs if ev.stable and ev.id == sh.id]
+        assert len(scan_evs) >= 2 and scan_evs[-1].update
+        assert scan_evs[-1].bundle[WB_MIME]["kind"] == "scan"
+        # scout progress didn't leak into stream events
+        assert not [ev for ev in r.outputs if STREAM_MIME in ev.bundle]
+        print(
+            f"✓ wb.scan: {sh.n_done}/{sh.total} via grep_scanner, "
+            f"df['g'] {len(df)} rows, {len(scan_evs)} ticks"
+        )
+
     k.restore_streams()
     print("\n✓ all M1.2 run smoke checks passed")
 

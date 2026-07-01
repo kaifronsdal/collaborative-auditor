@@ -57,6 +57,7 @@ from inspect_petri.target import (
 from shortuuid import uuid
 
 from workbench.auditor import workbench_auditor
+from workbench.gate import StepGated
 from workbench.sources import GEN_SOURCE, TARGET_GEN_SOURCE
 from workbench.view import Role, Status
 
@@ -301,7 +302,7 @@ async def generate_rewrite(
     return _extract_json_object(raw), raw
 
 
-class Branch:
+class Branch(StepGated):
     def __init__(
         self,
         session: Session,
@@ -354,13 +355,10 @@ class Branch:
         self.channel = Channel(seed_instructions=seed)
         self.history = History()
 
-        # step gate — `workbench_auditor` awaits `_gate.wait()` each turn then
-        # replaces it (one-shot Event). `play()` sets `_free_running`; the loop
-        # re-sets the gate after each turn while that flag holds, so play
-        # self-perpetuates without a polling pump and `pause()` takes effect at
-        # the next turn boundary.
-        self._gate = anyio.Event()
-        self._free_running = False
+        # step gate — see ``StepGated``. `workbench_auditor` calls
+        # ``pre_turn()`` (which awaits the gate) each live turn and
+        # ``post_generate()`` (which re-arms while playing).
+        self._init_gate()
         # Set by `workbench_auditor` once `tape.pending` is drained — i.e. the
         # deterministic prefix (and any appended divergent step) has finished
         # replaying. `_register_and_spawn` awaits this so the dispatch handler
@@ -442,26 +440,22 @@ class Branch:
             if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
         )
 
-    # -- step gate ------------------------------------------------------------
+    # -- TurnHooks (auditor.py) ----------------------------------------------
 
-    def step(self) -> None:
-        """Release one auditor turn."""
-        if self.status != "ended":
-            self.status = "running"
-        self._gate.set()
+    async def pre_turn(self) -> tuple[list[ChatMessage], bool]:
+        """Desk pre-generate: mark replay done, await the step-gate, drain
+        queued operator messages, flip the spinner."""
+        if not self._replayed.is_set():
+            self._replayed.set()
+        await self._await_gate()
+        msgs = self.queued["auditor"]
+        self.queued["auditor"] = []
+        self.generating = "auditor"
+        return list(msgs), False  # M0 stops via task-cancel, never here
 
-    def play(self) -> None:
-        """Run freely: each turn re-arms the gate itself until `pause()`."""
-        self._free_running = True
-        if self.status != "ended":
-            self.status = "running"
-        self._gate.set()
-
-    def pause(self) -> None:
-        """Stop after the current turn; the next gate wait blocks."""
-        self._free_running = False
-        if self.status != "ended":
-            self.status = "paused"
+    def post_generate(self) -> None:
+        self.generating = None
+        self._rearm_if_playing()
 
     # -- run ------------------------------------------------------------------
 

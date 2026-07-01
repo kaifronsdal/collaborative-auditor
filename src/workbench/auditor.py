@@ -1,40 +1,50 @@
-"""The workbench's own auditor agent — petri's loop, minus the unattended-run
-machinery, plus the step-gate and queued-feedback drain inline.
+"""The workbench's auditor agent — petri's loop, with a two-method hook seam.
 
-Why a custom auditor instead of `auditor_agent(generate=hook)`:
+One function serves both the M0 desk (one audit, human-in-loop) and M1 batch
+runs (N audits inside ``eval_async``, unattended). The differences reduce to
+where operator messages are drained from and whether a step-gate blocks:
 
-- The workbench is human-in-the-loop. Compaction, realism-filter and approval
-  policies are for unattended runs and would surprise a watching operator
-  (silent context rewrites, auto-rejections). eager_resume is kept — it
-  corrects the auditor's "staged but forgot resume" mistake; without it the
-  human sees a staged message and nothing happens, which is more confusing.
-- The step-gate and queued-message drain want to live *in* the loop, not
-  threaded through a `generate=` hook whose signature couples to petri's.
-- Owning the loop means the gate wait/re-arm and the model call are three
-  consecutive lines in one task — the µs re-arm race the hook had goes away.
+- M0: ``Branch`` implements ``TurnHooks`` — ``pre_turn`` awaits the desk gate,
+  drains ``branch.queued["auditor"]``, and flips ``branch.generating``.
+- M1 batch: ``BatchHooks`` (in ``m1/run.py``) drains ``CONTROL[sample_id]``
+  and never blocks.
+
+Everything else — divergent-serve emit, the ``if not tape.pending`` replay
+burn-through, the ``TURN_END_SOURCE`` anchor — is replay mechanics, not an
+M0/M1 difference: batch has no forks/edits so ``tape.pending`` is always
+empty and those paths are inert. They stay unconditional.
+
+Compaction and realism-filter are ordinary parameters defaulting off (M0's
+default — a watching operator would be surprised by silent context rewrites,
+and compaction summaries aren't tape-recorded so enabling it under M0's
+fork/replay would desync). ``resolve_compaction(False)`` returns petri's
+``CompactNone`` no-op, so the loop calls ``compact.compact_input`` /
+``record_output`` unconditionally at zero cost.
 
 What we still take from petri (the load-bearing parts):
 
-- `auditor_tools()` — tool implementations (send_message, rollback, …)
-- `audit_tape()` / `Tape.replayable` — record/replay; `AnchorEvent`/`BranchEvent`
-- `AuditTape` / `config_digest` — resume validation
-- The system/user prompt templates (we just render them simpler)
-- `run_audit()` itself — the auditor+target task-group orchestration; this
-  module returns an `Agent` that `run_audit(auditor=…)` accepts unchanged.
+- ``auditor_tools()`` — tool implementations (send_message, rollback, …)
+- ``audit_tape()`` / ``Tape.replayable`` — record/replay; anchor/branch events
+- ``resolve_compaction`` / ``auditor_approval`` — the unattended-run policies
+- The system/user prompt templates and ``eager_resume`` correction
+- ``run_audit()`` itself — the auditor+target task-group orchestration
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Protocol
 
-import anyio
 from inspect_ai.agent import Agent, AgentState, agent
+from inspect_ai.approval import ApprovalPolicy
 from inspect_ai.event import AnchorEvent, ModelEvent
 from inspect_ai.log import transcript
 from inspect_ai.model import (
+    ChatMessage,
     ChatMessageSystem,
     ChatMessageUser,
+    CompactionStrategy,
     GenerateConfig,
+    ModelOutput,
     execute_tools,
     get_model,
 )
@@ -51,20 +61,47 @@ from inspect_petri._auditor.agent import (  # noqa: PLC2701
     _eager_resume_inject,
     _eager_resume_strip_on_error,
 )
+from inspect_petri._auditor.compaction import resolve_compaction  # noqa: PLC2701
+from inspect_petri._auditor.tools import auditor_approval  # noqa: PLC2701
 from inspect_petri.target import controller
 
 from workbench.sources import GEN_SOURCE, TURN_END_SOURCE
 
-if TYPE_CHECKING:
-    from workbench.run import Branch
+
+class TurnHooks(Protocol):
+    """The two per-turn seams that differ between desk and batch."""
+
+    async def pre_turn(self) -> tuple[list[ChatMessage], bool]:
+        """Called before each *live* generate (once ``tape.pending`` is drained).
+
+        May block (M0's step-gate). Returns ``(messages to inject, stop-now)``
+        — ``stop-now`` breaks the loop cleanly (M1's ``wb.stop`` path; M0
+        stops via task-cancel and never returns ``True`` here).
+        """
+        ...
+
+    def post_generate(self) -> None:
+        """Called after the model returns, before tools execute."""
+        ...
 
 
-def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
-    """An auditor `Agent` for `run_audit(auditor=…)` with the workbench's
-    step-gate and queued-feedback drain inline in the turn loop."""
-    # prefill=True so `resume(prefill=…)` validates — both real auditors and
-    # user `edit_auditor_call` on `resume` args use it (combo C8).
+def workbench_auditor(
+    hooks: TurnHooks,
+    *,
+    max_turns: int,
+    compaction: bool | int | float | CompactionStrategy = False,
+    realism_filter: bool | float = False,
+    approval: str | list[ApprovalPolicy] | None = None,
+) -> Agent:
+    """An auditor ``Agent`` for ``run_audit(auditor=…)`` / ``audit_solver``.
+
+    ``hooks`` supplies the two lines that differ between the M0 desk
+    (``Branch``) and M1 batch (``BatchHooks``); everything else is petri's
+    own machinery. ``compaction``/``realism_filter`` default off for the
+    desk and are set by ``wb.run_audits`` for unattended batches.
+    """
     tools = auditor_tools(prefill=True)
+    approval_policies = auditor_approval(realism_filter, approval)
 
     @agent
     def _factory() -> Agent:
@@ -77,10 +114,6 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
             get_today = tape.replayable(today, source=TODAY_SOURCE)
             today_date = await get_today()
 
-            # config_digest: same role as petri's — fail loudly on resume if the
-            # settings that shape the recorded call sequence changed. Compaction
-            # / realism / eager_resume are fixed-off here, so the digest is just
-            # models + prompts.
             store = AuditTape()
             if not store.seed_instructions:
                 store.seed_instructions = controller().state.seed_instructions
@@ -89,6 +122,8 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
                 target_model=target_model.name,
                 system_message=AUDITOR_SYSTEM_MESSAGE,
                 user_message=AUDITOR_USER_MESSAGE,
+                compaction=compaction is not False,
+                realism_filter=realism_filter,
             )
             if store.config_digest and store.config_digest != digest:
                 raise ValueError(
@@ -113,66 +148,45 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
                 ),
                 ChatMessageUser(content=AUDITOR_USER_MESSAGE.format_map(template_vars)),
             ]
+            compact = resolve_compaction(
+                compaction, state.messages[:], tools, agent_model
+            )
 
             for turn in range(max_turns):
-                # ── step-gate + queued-feedback drain, inline ─────────────────
-                # Replay turns (served from `pending`) are deterministic and
-                # I/O-free — burn through them ungated so the prefix events
-                # land before the dispatch handler returns. Gate, drain
-                # queued feedback, and flip `generating` only on *live*
-                # turns.
+                # Replay turns (served from ``pending``) are deterministic and
+                # I/O-free — burn through ungated. First live turn onward:
+                # hand control to the hooks (which may block on the desk gate).
                 if not tape.pending:
-                    if not branch._replayed.is_set():  # noqa: SLF001
-                        branch._replayed.set()  # noqa: SLF001
-                    await branch._gate.wait()  # noqa: SLF001
-                    branch._gate = anyio.Event()  # noqa: SLF001
-                    state.messages.extend(branch.queued["auditor"])
-                    branch.queued["auditor"].clear()
-                    branch.generating = "auditor"
-                # ──────────────────────────────────────────────────────────────
+                    injected, stop_now = await hooks.pre_turn()
+                    if stop_now:
+                        break
+                    state.messages.extend(injected)
 
-                # Divergent serve: an `edit_*` op appended one edited auditor
-                # step to `pending` past `prefix_len`. `Tape.replayable` serves
-                # it without a `ModelEvent`, so emit one here (with its fresh
-                # `AnchorEvent`) — it's the only `Step` no other branch's
-                # transcript carries, and `build_auditor_timeline` /
-                # `_on_event`'s splice gate need it to resolve the edited turn.
+                input_msgs, c_msg = await compact.compact_input(state.messages)
+                if c_msg is not None:
+                    state.messages.append(c_msg)
+
+                # Divergent serve: an ``edit_*`` op appended one edited step
+                # past ``prefix_len``. Inert in batch (``pending`` is always
+                # empty there); stays unconditional so M0 replay works.
                 divergent = bool(tape.pending) and len(tape.log) >= tape.prefix_len
-                state.output = await generate(input=state.messages, tools=tools)
+                state.output = await generate(input=input_msgs, tools=tools)
                 if divergent:
-                    transcript()._event(  # noqa: SLF001
-                        ModelEvent(
-                            model=agent_model.name,
-                            role="auditor",
-                            input=list(state.messages),
-                            tools=[],
-                            tool_choice="auto",
-                            config=GenerateConfig(),
-                            output=state.output,
-                            pending=False,
-                        )
+                    _emit_divergent(
+                        agent_model.name, list(state.messages), state.output
                     )
-                    if (a := state.output.message.id) is not None:
-                        transcript()._event(  # noqa: SLF001
-                            AnchorEvent(anchor_id=a, source=GEN_SOURCE)
-                        )
                 state.messages.append(state.output.message)
-                branch.generating = None
-                if branch._free_running:  # noqa: SLF001
-                    branch._gate.set()  # noqa: SLF001
+                await compact.record_output(input_msgs, state.output)
+                hooks.post_generate()
 
                 if state.output.message.tool_calls:
-                    # eager_resume: petri's stage-without-resume correction. The
-                    # injection mutates after `tape.replayable`'s isolate() copy,
-                    # so the tape records the pre-injection output and replay
-                    # reproduces the same injection deterministically.
-                    injected = _eager_resume_inject(state.output, turn)
+                    injected_resume = _eager_resume_inject(state.output, turn)
                     messages, exec_output = await execute_tools(
-                        messages=state.messages, tools=tools
+                        messages=state.messages, tools=tools, approval=approval_policies
                     )
-                    if injected is not None:
+                    if injected_resume is not None:
                         messages, state.output = _eager_resume_strip_on_error(
-                            injected, messages, state.output
+                            injected_resume, messages, state.output
                         )
                     if exec_output is not None:
                         state.output = exec_output
@@ -187,12 +201,6 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
                         ChatMessageUser(content=AUDITOR_CONTINUE_PROMPT)
                     )
 
-                # End-of-turn anchor for the auditor timeline. petri's own
-                # `AnchorEvent` (from `Tape.replayable`) lands *before*
-                # `execute_tools`, so `splice()` on it would drop this
-                # turn's `ToolEvent`s; this one comes *after* them. The
-                # auditor timeline keeps only `TURN_END_SOURCE` anchors, so
-                # `splice()`'s `findIndex` resolves to this.
                 if state.output.message.id:
                     transcript()._event(  # noqa: SLF001
                         AnchorEvent(
@@ -206,3 +214,29 @@ def workbench_auditor(branch: "Branch", *, max_turns: int) -> Agent:
         return execute
 
     return _factory()
+
+
+def _emit_divergent(
+    model_name: str, input_msgs: list[ChatMessage], output: ModelOutput
+) -> None:
+    """Emit the ``ModelEvent`` + ``AnchorEvent`` for a served divergent step.
+
+    ``Tape.replayable`` serves an edited step without a ``ModelEvent``, so
+    the desk's ``build_auditor_timeline`` and ``session._on_event`` splice
+    gate need one emitted here — it's the only ``Step`` no other branch's
+    transcript carries.
+    """
+    transcript()._event(  # noqa: SLF001
+        ModelEvent(
+            model=model_name,
+            role="auditor",
+            input=input_msgs,
+            tools=[],
+            tool_choice="auto",
+            config=GenerateConfig(),
+            output=output,
+            pending=False,
+        )
+    )
+    if (a := output.message.id) is not None:
+        transcript()._event(AnchorEvent(anchor_id=a, source=GEN_SOURCE))  # noqa: SLF001
