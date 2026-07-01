@@ -46,6 +46,7 @@ from workbench.sources import GEN_SOURCE
 from workbench.view import Role
 
 if TYPE_CHECKING:
+    from workbench.m1.orchestrator import Orchestrator
     from workbench.run import Branch
 
 logger = logging.getLogger(__name__)
@@ -101,6 +102,10 @@ class Session:
         #: Resample-N batches keyed by `batch_id` (RESAMPLE-N.md). Candidates
         #: are background `Branch`es that run without repointing `current`.
         self.candidate_batches: dict[str, CandidateBatch] = {}
+        #: The M1 orchestrator (M1-NOTEBOOK.md). At most one per *process*
+        #: (``InteractiveShell`` singleton — M1-KERNEL-NOTES.md §3); ``None``
+        #: on M0-only sessions.
+        self.orchestrator: Orchestrator | None = None
 
         # message pool (STREAMING.md §B): content-hash-deduped, append-only.
         # ModelEvent.input is interned here and replaced by input_refs ranges.
@@ -392,6 +397,7 @@ class Session:
         return {
             "pool": [m.model_dump(mode="json") for m in self.pool],
             "events": list(self.events.values()),
+            "orchestrator": self.orchestrator.view() if self.orchestrator else None,
             "span_role": {sid: list(v) for sid, v in self.span_role.items()},
             "queued": queued,
             "current": self.current,

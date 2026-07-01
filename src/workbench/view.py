@@ -10,5 +10,5 @@ from __future__ import annotations
 
 from typing import Literal
 
-Role = Literal["auditor", "target"]
+Role = Literal["auditor", "target", "orch"]
 Status = Literal["idle", "running", "paused", "ended"]

@@ -32,6 +32,7 @@ from inspect_petri.target import Step
 from shortuuid import uuid
 
 from workbench.export import export_branch, import_eval
+from workbench.m1.orchestrator import Orchestrator, send
 from workbench.run import (
     Branch,
     edited_auditor_step,
@@ -372,7 +373,13 @@ async def _draft_reply(
     session: Session, data: dict, key: dict[str, str], **body: Any
 ) -> None:
     await session.broadcast(
-        {"t": "rewrite_draft", "v": session.version, "branch": data["branch"], **key, **body}
+        {
+            "t": "rewrite_draft",
+            "v": session.version,
+            "branch": data["branch"],
+            **key,
+            **body,
+        }
     )
 
 
@@ -421,7 +428,16 @@ async def _rewrite_draft(
 #: Commands whose handler must NOT take `_dispatch_lock` — `rewrite_*`
 #: makes a model call (seconds) and `export` does file I/O; both are
 #: stateless drafts that don't touch `branches` / `current` / tape.
-UNLOCKED = {"rewrite_tool_call", "rewrite_target_message", "export"}
+#: `approve`/`detach_cell` only set a Future/Event — the cell task does
+#: the work; blocking dispatch on them would serialise unrelated commands
+#: behind a running cell.
+UNLOCKED = {
+    "rewrite_tool_call",
+    "rewrite_target_message",
+    "export",
+    "approve",
+    "detach_cell",
+}
 
 
 async def _dispatch(session: Session, data: dict) -> None:
@@ -562,9 +578,7 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             )
 
         case "edit_auditor_call":
-            await _fork(
-                session, data, locate=_locate_edit_auditor_call, autoplay=True
-            )
+            await _fork(session, data, locate=_locate_edit_auditor_call, autoplay=True)
 
         case "edit_target_message":
             await _fork(
@@ -652,6 +666,61 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             imported.tape.rewind()
             branch = Branch(session, trajectory=imported, **asdict(meta))
             await _register_and_spawn(session, branch, autoplay=False)
+
+        # -- M1 orchestrator (M1-NOTEBOOK.md) ---------------------------------
+
+        case "start_orchestrator":
+            if session.orchestrator is not None:
+                await session.broadcast(
+                    {
+                        "t": "error",
+                        "v": session.version,
+                        "message": "orchestrator already running",
+                    }
+                )
+                return
+            orch = Orchestrator(
+                session,
+                model=data["model"],
+                system_prompt=data.get("system_prompt", ""),
+            )
+            session.orchestrator = orch
+            session.branch_tasks["orch"] = asyncio.create_task(orch.run())
+            await session.broadcast(
+                {"t": "state", "v": session.version, **session.view()}
+            )
+
+        case "orch_step" | "orch_play" | "orch_pause" as cmd:
+            if session.orchestrator is None:
+                logger.warning("%r before start_orchestrator — dropping", cmd)
+                return
+            getattr(session.orchestrator, cmd.removeprefix("orch_"))()
+
+        case "orch_send":
+            if session.orchestrator is None:
+                logger.warning("orch_send before start_orchestrator — dropping")
+                return
+            send(session.orchestrator, data["text"])
+
+        case "approve":
+            # Resolve a pending gate (`run_proposal`/`cite`/`ask_human`).
+            # ``verdict`` is opaque to the server — the awaiting `_gate`
+            # coroutine interprets it (edits/denied/answer).
+            if session.orchestrator is None:
+                return
+            ok = session.orchestrator.kernel.resolve(
+                data["display_id"], data.get("verdict")
+            )
+            if not ok:
+                logger.warning("approve for unknown display_id %r", data["display_id"])
+
+        case "detach_cell":
+            if session.orchestrator is not None:
+                session.orchestrator.kernel.detach()
+
+        case "cancel_cell":
+            if session.orchestrator is not None:
+                session.orchestrator.kernel.cancel(int(data["turn"]))
 
         case "switch":
             branch_id = data["branch"]
