@@ -33,7 +33,6 @@ from typing import TYPE_CHECKING, Any
 import anyio
 from inspect_ai.agent import Agent, AgentState, agent
 from inspect_ai.event import InfoEvent
-from inspect_ai.log import transcript
 from inspect_ai.log._transcript import init_transcript  # noqa: PLC2701
 from inspect_ai.model import (
     ChatMessage,
@@ -58,6 +57,32 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ORCH_SOURCE = "orchestrator"
+
+#: Cap on any single MIME payload shipped to the wire. Plotly's default
+#: renderer inlines ``plotly.min.js`` (~5 MB, twice) into ``text/html``;
+#: without a cap one figure is ~10 MB in ``session.events`` + WS. The real
+#: fix is ``include_plotlyjs=False`` in the workbench pio template
+#: (M1-PLOTTING.md); this is the safety net for anything else.
+_WIRE_MIME_CAP = 128 * 1024
+
+#: Types ``InfoEvent.data: JsonValue`` accepts. Anything else in a
+#: ``_repr_mimebundle_`` (raw ``bytes`` for ``image/png``, ``numpy.int64``,
+#: ``set``) would raise ``ValidationError`` at ``InfoEvent(...)`` and fail
+#: the whole cell — degrade instead.
+_JSON_LEAF = (str, int, float, bool, type(None), dict, list)
+
+
+def _wire_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
+    """Cap oversize MIME strings and coerce non-JSON leaves to ``str``."""
+    out: dict[str, Any] = {}
+    for mime, v in bundle.items():
+        if isinstance(v, str) and len(v) > _WIRE_MIME_CAP:
+            out[mime] = v[:_WIRE_MIME_CAP] + f"\n<!-- truncated {len(v)} bytes -->"
+        elif isinstance(v, _JSON_LEAF):
+            out[mime] = v
+        else:
+            out[mime] = repr(v)
+    return out
 
 #: Process-wide guard (M1-KERNEL-NOTES.md §3): the ``InteractiveShell``
 #: singleton and ``sys.stdout`` tee mean at most one live kernel per process.
@@ -121,14 +146,17 @@ class Orchestrator:
         done-callback that emits them runs outside the cell task's context.
         """
         if ev.meta.get("sys"):
-            self.session._enqueue({"t": "notify", "text": ev.bundle["text/plain"]})  # noqa: SLF001
+            self.session.version += 1
+            self.session._enqueue(  # noqa: SLF001
+                {"t": "notify", "v": self.session.version, "text": ev.bundle["text/plain"]}
+            )
             return
         ie = InfoEvent(
             source=ORCH_SOURCE,
             data={
                 "id": ev.id,
                 "turn": ev.turn_id,
-                "bundle": ev.bundle,
+                "bundle": _wire_bundle(ev.bundle),
                 "meta": ev.meta,
                 "stable": ev.stable,
             },
@@ -138,10 +166,14 @@ class Orchestrator:
             # ``uuid`` → ``session._on_event`` sees ``is_update=True`` and
             # ships ``{"t":"update"}`` — the M0 path, unchanged.
             ie.uuid = ev.id
+        # Use the session's transcript directly rather than the
+        # ``transcript()`` contextvar — an emit from a foreign context (WS
+        # handler, thread) would otherwise land on a fresh unsubscribed
+        # ``Transcript`` and be silently lost.
         if ev.update:
-            transcript()._event_updated(ie)  # noqa: SLF001
+            self.session.transcript._event_updated(ie)  # noqa: SLF001
         else:
-            transcript()._event(ie)  # noqa: SLF001
+            self.session.transcript._event(ie)  # noqa: SLF001
 
     # -- step gate (identical shape to Branch) --------------------------------
 

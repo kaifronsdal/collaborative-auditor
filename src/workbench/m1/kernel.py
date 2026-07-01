@@ -42,7 +42,7 @@ import functools
 import io
 import sys
 import traceback
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from uuid import uuid4
@@ -247,11 +247,12 @@ class _CellStream(io.TextIOBase):
         if turn is None:
             self._real.write(s)
             return len(s)
-        buf = self._buf.get(turn, "") + s
+        buf = self._buf.pop(turn, "") + s
         *lines, rest = buf.split("\n")
         for line in lines:
             self._emit(line + "\n")
-        self._buf[turn] = rest
+        if rest:
+            self._buf[turn] = rest
         return len(s)
 
     def flush(self) -> None:
@@ -440,18 +441,26 @@ class OrchestratorKernel:
         turn = self._current_turn.get()
         ev.turn_id = turn if turn is not None else -1
         self.outputs.setdefault(ev.turn_id, []).append(ev)
-        if self.on_display is not None:
+        self._forward(ev)
+
+    def _forward(self, ev: DisplayEvent) -> None:
+        # A broken wire callback (e.g. WS enqueue on a closed stream) must
+        # not turn every ``print()`` into a cell error — the callback runs
+        # inline in ``_CellStream.write`` / ``publish``, so an unguarded
+        # exception surfaces as ``error_in_exec``.
+        if self.on_display is None:
+            return
+        try:
             self.on_display(ev)
+        except Exception:  # noqa: BLE001
+            traceback.print_exc(file=self._real_stderr)
 
     def notify(self, msg: str) -> None:
         """Queue a sys-chip line to be drained into the agent's next input."""
         self.notifications.append(msg)
-        if self.on_display is not None:
-            self.on_display(
-                DisplayEvent(
-                    id=uuid4().hex, bundle={"text/plain": msg}, meta={"sys": True}
-                )
-            )
+        self._forward(
+            DisplayEvent(id=uuid4().hex, bundle={"text/plain": msg}, meta={"sys": True})
+        )
 
     def drain_notifications(self) -> list[str]:
         out, self.notifications = self.notifications, []
@@ -472,7 +481,6 @@ class OrchestratorKernel:
         self._turn_counter += 1
         turn_id = self._turn_counter
         self.outputs[turn_id] = []
-        ns0 = set(self.shell.user_ns)
         detach = asyncio.Event()
         self._current_detach = detach
 
@@ -482,7 +490,7 @@ class OrchestratorKernel:
         self.bg[turn_id] = cell_task
         self._bg_code[turn_id] = code
 
-        cell_task.add_done_callback(functools.partial(self._on_cell_done, turn_id, ns0))
+        cell_task.add_done_callback(functools.partial(self._on_cell_done, turn_id, code))
 
         if background:
             self._detached.add(turn_id)
@@ -500,7 +508,7 @@ class OrchestratorKernel:
         if cell_task in done:
             detach_task.cancel()
             r = cell_task.result()
-            return self._settle(turn_id, ns0, r)
+            return self._settle(turn_id, code, r)
 
         # detached mid-run
         self._detached.add(turn_id)
@@ -531,33 +539,52 @@ class OrchestratorKernel:
         # ``~/.ipython/profile_default/history.sqlite``; agent-generated
         # code shouldn't land there. ``quiet()`` (which reads history) is
         # overridden anyway.
-        r = await self.shell.run_cell_async(
-            code,
-            transformed_cell=transformed,
-            preprocessing_exc_tuple=exc_tuple,
-            store_history=False,
-        )
-        # ``run_cell_async`` fires ``pre_execute``/``pre_run_cell`` but not
-        # the post-events (only the sync ``run_cell`` wrapper does). Without
-        # this ``matplotlib_inline``'s ``flush_figures`` never runs.
-        self.shell.events.trigger("post_execute")
-        self.shell.events.trigger("post_run_cell", r)
-        return r
+        try:
+            r = await self.shell.run_cell_async(
+                code,
+                transformed_cell=transformed,
+                preprocessing_exc_tuple=exc_tuple,
+                store_history=False,
+            )
+            # ``run_cell_async`` fires ``pre_execute``/``pre_run_cell`` but
+            # not the post-events (only the sync ``run_cell`` wrapper does).
+            # Without this ``matplotlib_inline``'s ``flush_figures`` never
+            # runs.
+            self.shell.events.trigger("post_execute")
+            self.shell.events.trigger("post_run_cell", r)
+            return r
+        finally:
+            # Emit any partial line still in ``_CellStream._buf[turn_id]``
+            # (``print(..., end="")`` with no later newline) and drop the
+            # buffer entry — otherwise the text is lost and the dict grows
+            # unboundedly. Runs under this task's contextvar so ``flush()``
+            # resolves the right turn.
+            sys.stdout.flush()
+            sys.stderr.flush()
 
     def _on_cell_done(
-        self, turn_id: int, ns0: set[str], task: asyncio.Task[ExecutionResult]
+        self, turn_id: int, code: str, task: asyncio.Task[ExecutionResult]
     ) -> None:
         self.bg.pop(turn_id, None)
         self._bg_code.pop(turn_id, None)
+        # Belt-and-braces buffer drop for the hard-cancel path where
+        # ``_run_cell``'s ``finally`` never ran.
+        for s in (sys.stdout, sys.stderr):
+            if isinstance(s, _CellStream):
+                s._buf.pop(turn_id, None)
         if turn_id not in self._detached:
             return  # fg cell — the agent already has the settled TurnResult
         self._detached.discard(turn_id)
-        if task.cancelled():
+        err: BaseException | None = None
+        if not task.cancelled():
+            r = task.result()
+            err = r.error_before_exec or r.error_in_exec
+        # IPython's ``run_code`` catches ``CancelledError`` and returns it
+        # as ``error_in_exec``, so ``task.cancelled()`` alone isn't enough.
+        if task.cancelled() or isinstance(err, asyncio.CancelledError):
             self.notify(f"[cell-{turn_id} cancelled]")
             return
-        r = task.result()
-        err = r.error_before_exec or r.error_in_exec
-        bound = _new_names(ns0, self.shell.user_ns, self._ns_baseline)
+        bound = _bound_names(code, self.shell.user_ns)
         # ``r.result`` races under concurrent cells (module docstring); read
         # the last displayed value from the event stream instead.
         tail = next(
@@ -574,9 +601,9 @@ class OrchestratorKernel:
             f"result: {result}]"
         )
 
-    def _settle(self, turn_id: int, ns0: set[str], r: ExecutionResult) -> TurnResult:
+    def _settle(self, turn_id: int, code: str, r: ExecutionResult) -> TurnResult:
         err = r.error_before_exec or r.error_in_exec
-        new = _new_names(ns0, self.shell.user_ns, self._ns_baseline)
+        new = _bound_names(code, self.shell.user_ns)
         text = self._render_outputs(turn_id)
         if err is not None:
             text += ("\n" if text else "") + "".join(
@@ -694,11 +721,15 @@ class _WbNamespace:
 # -- helpers ------------------------------------------------------------------
 
 
-def _new_names(
-    ns0: set[str], ns1: dict[str, Any], baseline: Iterable[str]
-) -> list[str]:
-    added = set(ns1) - ns0 - set(baseline)
-    return sorted(n for n in added if not n.startswith("_"))
+def _bound_names(code: str, ns: dict[str, Any]) -> list[str]:
+    """Top-level assignment targets in ``code`` that actually landed in ``ns``.
+
+    Replaces the launch-time ``ns0`` snapshot diff, which under concurrent
+    cells attributed *every* name bound between launch and settle to the
+    settling cell. AST targets are exact for the cell's own top-level
+    assigns and immune to concurrent siblings.
+    """
+    return sorted(n for n in _assign_targets(code) if n in ns)
 
 
 def _truncate(s: str, n: int = 60) -> str:
