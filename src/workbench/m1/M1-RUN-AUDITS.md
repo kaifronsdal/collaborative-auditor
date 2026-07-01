@@ -103,8 +103,9 @@ global-state audit + empirical test found:
 - 2-way and 3-way concurrent `eval_async` (guard patched out) succeed with
   no cross-contamination, cwd preserved. 3-way wall 0.84 s vs solo 0.49 s.
 
-Patch: `patches/inspect-eval-async-guard.patch` — apply on `inspect_ai`
-`model-event-output-streaming` (upstream candidate). Fallback if upstream
+Applied on `inspect_ai` `model-event-output-streaming` @ `fa94cd82`
+(upstream candidate; patch archived at
+`patches/inspect-eval-async-guard.patch`). Fallback if upstream
 declines: `eval_async([taskA, taskB], max_tasks=N)` writes one `.eval` per
 task into a shared `log_dir`; each `RunHandle._find_log()` picks its own by
 task name (verified working).
