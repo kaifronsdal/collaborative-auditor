@@ -221,7 +221,50 @@ async def _amain() -> None:  # noqa: PLR0915
     # ---- 13. resolve unknown id is a no-op --------------------------------
     assert k.resolve("nope", "x") is False
 
-    # ---- 14. on_display forwarded everything ------------------------------
+    # ---- 14. quiet() race: later cell's ';' must not drop earlier's expr --
+    ra = await k.run_turn("await asyncio.sleep(0.05)\n'survived'", background=True)
+    await k.run_turn("await asyncio.sleep(0.01)\n99;", background=True)
+    await asyncio.wait_for(asyncio.gather(*k.bg.values()), timeout=1.0)
+    assert any(ev.text == "'survived'" for ev in k.outputs[ra.turn_id]), (
+        "concurrent ';' cell suppressed another cell's last-expr"
+    )
+    print("✓ quiet() race disarmed")
+
+    # ---- 15. input transforms: %magic works -------------------------------
+    r = await k.run_turn("%time _v = sum(range(100))")
+    assert r.success, r.error
+    assert "Wall time" in r.text or "CPU times" in r.text, r.text
+    print("✓ %magic via transform_cell")
+
+    # ---- 16. Markdown → model sees the markdown, not the object repr ------
+    r = await k.run_turn("display(Markdown('**rate:** 7/24 (29%)'))")
+    assert "**rate:** 7/24 (29%)" in r.text, r.text
+    assert "IPython.core.display.Markdown" not in r.text
+    print("✓ display(Markdown) → text/markdown preferred")
+
+    # ---- 17. single traceback; no ANSI; fg cell doesn't notify -----------
+    k.drain_notifications()
+    r = await k.run_turn("raise RuntimeError('once')")
+    assert r.text.count("RuntimeError: once") == 1 and "\x1b[" not in r.text, r.text
+    assert k.drain_notifications() == [], "fg cell enqueued a [done] chip"
+    print("✓ traceback rendered once, no ANSI, fg cell silent")
+
+    # ---- 18. assign-only cell → <ok · bound: …> ---------------------------
+    r = await k.run_turn("cfg = {'n': 3}\nseeds = [1, 2, 3]")
+    assert r.text == "<ok · bound: cfg, seeds>", r.text
+    print("✓ assign-only cell reports bindings")
+
+    # ---- 19. clear_output truncates model text ----------------------------
+    r = await k.run_turn(
+        "print('gone')\n"
+        "from IPython.display import clear_output\n"
+        "clear_output()\n"
+        "print('kept')"
+    )
+    assert "gone" not in r.text and "kept" in r.text, r.text
+    print("✓ clear_output honoured in model-facing render")
+
+    # ---- 20. on_display forwarded everything ------------------------------
     assert len(wire) >= sum(len(v) for v in k.outputs.values())
     assert all(ev.turn_id != -1 for ev in wire if not ev.meta.get("sys")), (
         "some in-cell output emitted with turn_id=-1"
