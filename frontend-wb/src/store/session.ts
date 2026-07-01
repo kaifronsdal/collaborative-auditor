@@ -17,13 +17,14 @@ import { create } from "zustand";
 import {
   assignByRole,
   buildByRole,
+  emptyRoles,
   isModelEvent,
   resolveRole,
   type EventsByRole,
 } from "../lib/events";
 import type {
-  BranchId, BranchMeta, CandidateBatch, Down, QueuedMap, Role, SavedSession,
-  Status, TimelineMap, Up,
+  BranchId, BranchMeta, CandidateBatch, Down, OrchestratorState, QueuedMap,
+  Role, SavedSession, Status, TimelineMap, Up,
 } from "../lib/wire";
 import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
 import type { GenerateConfigDict } from "../components/ModelPicker";
@@ -133,6 +134,9 @@ export type SessionState = {
   pendingNewAudit: boolean;
   /** Lifecycle status of the current branch (idle/running/paused/ended). */
   status: Status | null;
+  /** M1 orchestrator column state (M1-NOTEBOOK.md). Null until
+   *  `start_orchestrator` — DeskView keeps its M0 two-column layout. */
+  orchestrator: OrchestratorState | null;
   ws: WebSocket | null;
   /** Id of the session the current socket is for; guards idempotent connect. */
   sessionId: string | null;
@@ -282,7 +286,7 @@ export type SessionState = {
    * Push a message into `queued[branch][role]` immediately (ghost bubble
    * appears before the server echo), then send `{t:"inject", …}`.
    */
-  inject: (branch: BranchId, role: Role, message: ChatMessage) => void;
+  inject: (branch: BranchId, role: "auditor" | "target", message: ChatMessage) => void;
 };
 
 /** Resolve a single ModelEvent's `input_refs` against the pool. */
@@ -329,7 +333,7 @@ function reconcileQueued(queued: QueuedMap, ev: Event): QueuedMap {
   const next: QueuedMap = {};
   for (const [branch, roles] of Object.entries(queued)) {
     next[branch] = { auditor: [], target: [] };
-    for (const role of ["auditor", "target"] as Role[]) {
+    for (const role of ["auditor", "target"] as const) {
       const kept = roles[role].filter((m) => m.id == null || !inputIds.has(m.id));
       if (kept.length !== roles[role].length) changed = true;
       next[branch][role] = kept;
@@ -350,6 +354,7 @@ export const useSession = create<SessionState>((set, get) => ({
   current: null,
   pendingNewAudit: false,
   status: null,
+  orchestrator: null,
   ws: null,
   sessionId: null,
   sessionsList: [],
@@ -445,6 +450,7 @@ export const useSession = create<SessionState>((set, get) => ({
             branchConfig,
             branches: msg.branches ?? {},
             candidateBatches: msg.candidate_batches ?? {},
+            orchestrator: msg.orchestrator ?? null,
             prevCurrent: null,
           };
         }
@@ -457,7 +463,29 @@ export const useSession = create<SessionState>((set, get) => ({
             state.current === PENDING_ID || state.current === PENDING_BRANCH;
           const resolvedStatus =
             isPendingOp && msg.status == null ? state.status : msg.status;
-          return { status: resolvedStatus, version: msg.v };
+          return {
+            status: resolvedStatus,
+            version: msg.v,
+            // Orchestrator status piggybacks on the same broadcast; keep the
+            // existing view() snapshot but overlay the fresh status.
+            ...(msg.orch_status !== undefined && state.orchestrator
+              ? { orchestrator: { ...state.orchestrator, status: msg.orch_status ?? "idle" } }
+              : {}),
+          };
+        }
+
+        case "notify": {
+          // sys-chip pushed by a backgrounded cell's done-callback. Full
+          // list is refreshed on the next `state`; append optimistically so
+          // the chip renders above the next turn immediately.
+          if (state.orchestrator == null) return { version: msg.v };
+          return {
+            version: msg.v,
+            orchestrator: {
+              ...state.orchestrator,
+              notifications: [...state.orchestrator.notifications, msg.text],
+            },
+          };
         }
 
         case "pool": {
@@ -625,10 +653,7 @@ export const useSession = create<SessionState>((set, get) => ({
       // Empty columns for the pending branch — the DeskView skeleton is visible
       // immediately with no spinner. The real `state` broadcast re-keys to the
       // actual branch id and populates events.
-      byRole: {
-        ...state.byRole,
-        [PENDING_ID]: { auditor: [], target: [] },
-      },
+      byRole: { ...state.byRole, [PENDING_ID]: emptyRoles() },
       branches: {
         ...state.branches,
         [PENDING_ID]: {
@@ -692,7 +717,7 @@ export const useSession = create<SessionState>((set, get) => ({
       prevCurrent: state.current,
       current: PENDING_BRANCH,
       status: "paused",
-      byRole: { ...state.byRole, [PENDING_BRANCH]: { auditor: [], target: [] } },
+      byRole: { ...state.byRole, [PENDING_BRANCH]: emptyRoles() },
     }));
     get().send({
       t: "import",
@@ -893,11 +918,11 @@ function _truncateByRole(
   branchId: BranchId,
   anchorId: string
 ): Record<Role, Event[]> {
-  const roleBuckets = state.byRole[branchId] ?? { auditor: [], target: [] };
-  const roles: Role[] = ["auditor", "target"];
+  const roleBuckets = state.byRole[branchId] ?? emptyRoles();
+  const roles = ["auditor", "target"] as const;
 
   // Find the anchor index in each role.
-  const anchorIdx: Record<Role, number> = { auditor: -1, target: -1 };
+  const anchorIdx = { auditor: -1, target: -1 };
   for (const role of roles) {
     const events = roleBuckets[role];
     for (let i = 0; i < events.length; i++) {
@@ -909,7 +934,7 @@ function _truncateByRole(
     }
   }
 
-  const result: Record<Role, Event[]> = { auditor: [], target: [] };
+  const result = emptyRoles();
   for (const role of roles) {
     const events = roleBuckets[role];
     const cutoff = anchorIdx[role];

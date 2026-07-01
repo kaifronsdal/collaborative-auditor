@@ -46,6 +46,14 @@ export function resolveRole(
 
 export type EventsByRole = Record<BranchId, Record<Role, Event[]>>;
 
+/** Fresh per-role bucket. Centralized so extending `Role` (e.g. adding
+ *  `"orch"` for M1) touches one place instead of every initializer site. */
+export const emptyRoles = (): Record<Role, Event[]> => ({
+  auditor: [],
+  target: [],
+  orch: [],
+});
+
 /**
  * Bucket events into `[branch][role]` lists, preserving iteration order.
  *
@@ -63,7 +71,7 @@ export function buildByRole(
     const role = resolveRole(ev.span_id, spanParent, spanRole);
     if (!role) continue;
     const [branch, r] = role;
-    (out[branch] ??= { auditor: [], target: [] })[r].push(ev);
+    (out[branch] ??= emptyRoles())[r].push(ev);
   }
   return out;
 }
@@ -81,7 +89,7 @@ export function assignByRole(
   ev: Event,
   prev: Event | undefined
 ): EventsByRole {
-  const branchBuckets = byRole[branch] ?? { auditor: [], target: [] };
+  const branchBuckets = byRole[branch] ?? emptyRoles();
   const arr = branchBuckets[role];
   let nextArr: Event[];
   if (prev !== undefined) {

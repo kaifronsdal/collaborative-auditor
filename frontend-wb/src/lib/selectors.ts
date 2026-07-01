@@ -42,7 +42,10 @@ export function usePending(branch: BranchId, role: Role): ModelEvent | null {
 }
 
 export function useQueued(branch: BranchId, role: Role): ChatMessage[] {
-  return useSession((s) => s.queued[branch]?.[role] ?? EMPTY_MSGS);
+  // The queued map only tracks auditor/target (orch input goes via `orch_send`).
+  return useSession((s) =>
+    role === "orch" ? EMPTY_MSGS : (s.queued[branch]?.[role] ?? EMPTY_MSGS)
+  );
 }
 
 const STAGING_TOOLS: Record<string, ChatMessage["role"]> = {

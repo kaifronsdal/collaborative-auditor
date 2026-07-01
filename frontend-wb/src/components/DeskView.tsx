@@ -4,6 +4,7 @@ import { type JSX, useCallback, useEffect, useRef, useState } from "react";
 
 import { useSession } from "../store/session";
 import { Column, type ColumnHandle } from "./Column";
+import { OrchColumn } from "./orch/OrchColumn";
 import { SwimlaneColumn } from "./SwimlaneColumn";
 import { IconClose, IconPause, IconPlay, IconSend } from "./icons";
 
@@ -26,6 +27,7 @@ export function DeskView(): JSX.Element {
   );
   const error = useSession((s) => s.error);
   const dismissError = useSession((s) => s.dismissError);
+  const hasOrch = useSession((s) => s.orchestrator != null);
 
   const auditorRef = useRef<ColumnHandle>(null);
   const targetRef = useRef<ColumnHandle>(null);
@@ -137,7 +139,7 @@ export function DeskView(): JSX.Element {
         <span className="rl-seed" title={seedTitle}>{seedTitle || "—"}</span>
       </div>
 
-      <div className="desk-body" ref={bodyRef}>
+      <div className={`desk-body${hasOrch ? " has-orch" : ""}`} ref={bodyRef}>
         <div className="columns">
           <div onPointerEnter={() => (hoverRole.current = "auditor")} className="col-wrap">
             <Column
@@ -224,6 +226,11 @@ export function DeskView(): JSX.Element {
               onSync={(ts) => syncFrom("target", ts)}
             />
           </div>
+
+          {/* M1 orchestrator column (M1-NOTEBOOK.md). Appended as a fourth grid
+              track only when an orchestrator is running, so the M0 two-column
+              layout (and its drag/sync divider) is untouched. */}
+          {hasOrch && <OrchColumn />}
         </div>
       </div>
     </>
