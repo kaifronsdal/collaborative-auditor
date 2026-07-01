@@ -12,6 +12,7 @@ what's left is upstream PRs and larger refactors deferred to M1.3.
 | `inspect_petri.__init__` | re-export `render_target_timeline`, `RenderedTarget` | `wb.transcript`/`wb.read_transcript` = 3-line wrappers |
 | `inspect_petri.util` (new) | `flat_score_values` (from `petri_ukaisi.analysis`) + `audits_df(log_dir)` | `AuditRunHandle.audits` per-dimension columns |
 | `inspect_ai` (upstream candidate) | guard removal + `init_active_samples` no-op — already on `model-event-output-streaming` @ `4636d9a6` | concurrent `eval_async` |
+| `inspect_ai.log._samples.ActiveSample` | add `store: Store` field (pass `state.store` at `_eval/task/run.py:1195`) | `import_running` v2 — snapshot a running sample's tape without stopping it |
 
 ## Applied from the reviews
 

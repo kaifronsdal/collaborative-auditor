@@ -73,6 +73,41 @@ def steer(ids: Iterable[str], message: str) -> None:
         CONTROL.setdefault(str(i), SampleControl()).queued.append(message)
 
 
+async def adopt_running(sample_id: str, *, timeout: float = 5.0) -> tuple[Any, Any]:
+    """Punch down into a running batch sample: stop it, then load its tape.
+
+    ``interrupt("score")`` cancels the sample's task group; petri's
+    ``run_audit`` finally dumps the live ``AuditTape.trajectories`` into the
+    sample's ``Store``; the eval recorder flushes it to ``.eval`` (with
+    ``log_buffer=1`` this is immediate). Then read it back via
+    ``import_eval`` — same ``(History, BranchMeta)`` the existing
+    ``server._dispatch("import")`` case consumes. Adopt semantics: the batch
+    loses this sample; the desk picks it up at the exact turn it was on.
+
+    v2 (snapshot without stopping) needs ``ActiveSample.store`` on the
+    inspect fork — 3-line addition (M1-REFACTOR-NOTES.md).
+    """
+    from workbench.export import import_eval  # noqa: PLC0415
+
+    s = next(
+        (s for s in active_samples() if str(s.sample.id) == str(sample_id)), None
+    )
+    if s is None:
+        raise ValueError(f"sample {sample_id!r} not running")
+    log = s.log_location
+    s.interrupt("score")
+    # Wait for the recorder to flush this sample.
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        summaries = await read_eval_log_sample_summaries_async(log)
+        if any(str(x.id) == str(sample_id) for x in summaries):
+            break
+        await asyncio.sleep(0.1)
+    else:
+        raise TimeoutError(f"sample {sample_id!r} did not flush within {timeout}s")
+    return import_eval(log, sample_id)
+
+
 def stop(ids: Iterable[str], *, hard: bool = False) -> None:
     """Request each sample end at its next turn boundary.
 

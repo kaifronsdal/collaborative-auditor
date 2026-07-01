@@ -58,16 +58,25 @@ Same `RunHandle` (polls the same `.eval`), just
 should survive the workbench process. 2 s startup is irrelevant there.
 `SIGINT` for cancel (`SIGTERM` leaves the log at `status='started'`).
 
-### Desk interaction — no `wb.pin`
+### Desk interaction — punch down into a running sample
 
 Batch runs are fire-and-collect; `wb.steer`/`wb.stop` reach running
 samples via `CONTROL`, and `wb.transcript`/`wb.excerpt` read the `.eval`.
 Live pause/step/**resample/edit** is what the M0 desk *is* — the human
-gets there by clicking a `RunHandle` row → `server._dispatch("import")`
-loads that sample's tape as a `Branch`. That's a UI action, not something
-the agent calls, so there's no `wb.pin`. (If "pull a *running* sample into
-the desk" is ever needed, the row action reads the tape from
-`active_samples()[i]`'s Store — still UI, not `wb.*`.)
+gets there by clicking a `RunHandle` row:
+
+- **completed sample** → `{"t": "import", "path": log, "sample_id": id}`
+  (existing).
+- **running sample** → `{"t": "import_running", "sample_id": id}` —
+  `adopt_running` interrupts the sample (its `AuditTape` flushes to
+  `.eval`), then `import_eval`s it. Adopt semantics: the batch loses that
+  sample; the desk `Branch` picks up at the exact turn it was on.
+
+That's a UI action, not something the agent calls, so there's no
+`wb.pin`. **v2** (snapshot without stopping — the batch sample keeps
+running, the desk `Branch` is a fork) needs `ActiveSample.store` on the
+inspect fork so the tape can be read without waiting for a flush; ~3
+lines, tracked in M1-REFACTOR-NOTES.md.
 
 ## §steer — steering under A
 

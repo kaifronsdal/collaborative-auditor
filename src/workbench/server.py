@@ -33,6 +33,7 @@ from shortuuid import uuid
 
 from workbench.export import export_branch, import_eval
 from workbench.m1.orchestrator import Orchestrator, send
+from workbench.m1.run import adopt_running
 from workbench.run import (
     Branch,
     edited_auditor_step,
@@ -192,7 +193,10 @@ async def _stop_running_branches(
     running = {
         bid: t
         for bid, t in session.branch_tasks.items()
-        if not t.done() and (only is None or bid in only)
+        # The orchestrator is never a "branch" in the M0 sense — its task
+        # lives in `branch_tasks["orch"]` for `close()` teardown, but M0
+        # fork/import commands must not cancel it.
+        if bid != "orch" and not t.done() and (only is None or bid in only)
     }
     for t in running.values():
         t.cancel()
@@ -423,6 +427,22 @@ async def _rewrite_draft(
         content = args.get(arg_key)
         extra["content"] = content if isinstance(content, str) else raw
     await _draft_reply(session, data, key, args=args, raw=raw, **extra)
+
+
+async def _import(session: Session, history: Any, meta: Any) -> None:
+    """Graft a loaded ``History`` under ``session.audit_history.root`` and
+    replay it as a fresh root ``Branch`` (shared tail of ``import`` /
+    ``import_running``). The imported root carries the full recorded log
+    (``History.load`` contract); reset the tape for replay exactly as
+    ``Session.load`` does."""
+    imported = history.root
+    imported.span_id = uuid()
+    imported.parent = session.audit_history.root
+    imported.branched_from = ""
+    session.audit_history.root.children.append(imported)
+    imported.tape.rewind()
+    branch = Branch(session, trajectory=imported, **asdict(meta))
+    await _register_and_spawn(session, branch, autoplay=False)
 
 
 #: Commands whose handler must NOT take `_dispatch_lock` — `rewrite_*`
@@ -664,19 +684,9 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
 
         case "import":
             # Load one sample's `AuditTape` from a `.eval`, install it as a
-            # fresh root branch, and replay it. The imported `History`'s
-            # root carries the full recorded log (`History.load` contract);
-            # graft it under `session.audit_history.root` and reset the
-            # tape for replay exactly as `Session.load` does.
+            # fresh root branch, and replay it.
             history, meta = import_eval(data["path"], data.get("sample_id"))
-            imported = history.root
-            imported.span_id = uuid()
-            imported.parent = session.audit_history.root
-            imported.branched_from = ""
-            session.audit_history.root.children.append(imported)
-            imported.tape.rewind()
-            branch = Branch(session, trajectory=imported, **asdict(meta))
-            await _register_and_spawn(session, branch, autoplay=False)
+            await _import(session, history, meta)
 
         # -- M1 orchestrator (M1-NOTEBOOK.md) ---------------------------------
 
@@ -700,6 +710,12 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             await session.broadcast(
                 {"t": "state", "v": session.version, **session.view()}
             )
+
+        case "import_running":
+            # Punch down into a running batch sample: adopt it as an M0
+            # `Branch` at its current turn (M1-RUN-AUDITS.md §Desk).
+            history, meta = await adopt_running(data["sample_id"])
+            await _import(session, history, meta)
 
         case "orch_send":
             if session.orchestrator is None:
