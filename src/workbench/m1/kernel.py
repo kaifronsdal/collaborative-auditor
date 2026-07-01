@@ -315,10 +315,11 @@ class OrchestratorKernel:
     """One in-process IPython shell driving the M1 orchestrator turn loop.
 
     Owns the ``InteractiveShell``, the per-turn output lists, the pending-
-    gate futures, and the background-cell task registry. The eventual
-    ``Session`` integration is a single ``on_display`` callback: hook it to
-    ``session._enqueue(ev.wire())`` and every kernel output lands on the
-    wire in emission order alongside the M0 event stream.
+    gate futures, and the background-cell task registry. The ``Session``
+    integration is a single ``on_display`` callback: ``Orchestrator`` hooks
+    it to ``Orchestrator._on_display → session.emit(InfoEvent)`` so every
+    kernel output lands on the wire in emission order alongside the M0
+    event stream.
     """
 
     def __init__(

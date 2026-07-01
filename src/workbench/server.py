@@ -32,7 +32,6 @@ from inspect_petri.target import Step
 from shortuuid import uuid
 
 from workbench.export import export_branch, import_eval
-from workbench.m1.orchestrator import Orchestrator, send
 from workbench.m1.run import adopt_running
 from workbench.run import (
     Branch,
@@ -130,7 +129,7 @@ def _parent(session: Session, data: dict) -> Branch | None:
     """Resolve the parent branch for a fork command.
 
     New per-message edit/resample commands name their `branch` explicitly; the
-    legacy `branch`/`resample`/`edit` commands act on `session.current`.
+    legacy `branch`/`resample` commands act on `session.current`.
     """
     branch_id = data.get("branch") or session.current
     if branch_id is None:
@@ -193,10 +192,7 @@ async def _stop_running_branches(
     running = {
         bid: t
         for bid, t in session.branch_tasks.items()
-        # The orchestrator is never a "branch" in the M0 sense — its task
-        # lives in `branch_tasks["orch"]` for `close()` teardown, but M0
-        # fork/import commands must not cancel it.
-        if bid != "orch" and not t.done() and (only is None or bid in only)
+        if not t.done() and (only is None or bid in only)
     }
     for t in running.values():
         t.cancel()
@@ -457,6 +453,7 @@ UNLOCKED = {
     "export",
     "approve",
     "detach_cell",
+    "cancel_cell",
 }
 
 
@@ -700,15 +697,8 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
                     }
                 )
                 return
-            orch = Orchestrator(
-                session,
-                model=data["model"],
-                system_prompt=data.get("system_prompt", ""),
-            )
-            session.orchestrator = orch
-            session.branch_tasks["orch"] = asyncio.create_task(orch.run())
-            await session.broadcast(
-                {"t": "state", "v": session.version, **session.view()}
+            await session.start_orchestrator(
+                model=data["model"], system_prompt=data.get("system_prompt", "")
             )
 
         case "import_running":
@@ -721,7 +711,7 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             if session.orchestrator is None:
                 logger.warning("orch_send before start_orchestrator — dropping")
                 return
-            send(session.orchestrator, data["text"])
+            session.orchestrator.send(data["text"])
 
         case "approve":
             # Resolve a pending gate (`run_proposal`/`cite`/`ask_human`).

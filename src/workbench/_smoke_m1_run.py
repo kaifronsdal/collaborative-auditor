@@ -1,6 +1,6 @@
 """M1.2 smoke: ``wb.run_eval`` / ``wb.run_audits`` / ``steer`` / ``stop`` in-cell.
 
-Exercises the shared ``_launch`` path against mockllm inside a real
+Exercises the shared ``RunHandle.launch`` path against mockllm inside a real
 ``OrchestratorKernel`` cell:
 
 - ``run_eval(task)`` → ``RunHandle`` displays, ``.eval`` written, ``_watch``
@@ -11,7 +11,8 @@ Exercises the shared ``_launch`` path against mockllm inside a real
 
 ``run_audits`` with the real petri task needs role models mockllm can't
 satisfy; that path is exercised only up to task construction here — the
-launcher is the same ``_launch``, so ``run_eval`` covers the mechanics.
+launcher is the same ``RunHandle.launch``, so ``run_eval`` covers the
+mechanics.
 
 Run:  ``uv run python -m workbench._smoke_m1_run``
 """
@@ -26,7 +27,8 @@ from inspect_ai.dataset import Sample
 from inspect_ai.solver import Generate, TaskState, solver
 
 from workbench.m1.kernel import STREAM_MIME, WB_MIME, OrchestratorKernel
-from workbench.m1.run import CONTROL, RunHandle, drain_control, prewarm
+from workbench.m1.orchestrator import _prewarm  # noqa: PLC2701
+from workbench.m1.run import CONTROL, RunHandle, drain_control
 from workbench.m1.wb import Workbench
 
 
@@ -57,14 +59,14 @@ def make_task(tag: str, n: int = 4) -> Task:
 
 
 async def _amain() -> None:  # noqa: PLR0915
-    prewarm()
+    _prewarm()
     k = OrchestratorKernel()
     k.shell.user_ns["wb"] = Workbench(k, session=None)
     k.shell.user_ns.update(make_task=make_task, RunHandle=RunHandle)
 
     # ---- 1. run_eval in-cell: card ticks, .eval written, text collapses ----
     r = await k.run_turn(
-        "h = await wb.run_eval(make_task('a'), model='mockllm/model')\n"
+        "h = wb.run_eval(make_task('a'), model='mockllm/model')\n"
         "await h.wait()\n"
         "h"
     )
@@ -88,7 +90,7 @@ async def _amain() -> None:  # noqa: PLR0915
 
     # ---- 2. steer + stop via CONTROL reach the solver ---------------------
     r = await k.run_turn(
-        "h2 = await wb.run_eval(make_task('b'), model='mockllm/model')\n"
+        "h2 = wb.run_eval(make_task('b'), model='mockllm/model')\n"
         "await asyncio.sleep(0.05)\n"
         "wb.steer(['b-1'], 'STEERED')\n"
         "wb.stop(['b-2'])\n"
@@ -112,10 +114,8 @@ async def _amain() -> None:  # noqa: PLR0915
 
     # ---- 3. two concurrent run_eval (guard lifted) ------------------------
     r = await k.run_turn(
-        "hx, hy = await asyncio.gather(\n"
-        "    wb.run_eval(make_task('x', 3), model='mockllm/model'),\n"
-        "    wb.run_eval(make_task('y', 3), model='mockllm/model'),\n"
-        ")\n"
+        "hx = wb.run_eval(make_task('x', 3), model='mockllm/model')\n"
+        "hy = wb.run_eval(make_task('y', 3), model='mockllm/model')\n"
         "await asyncio.gather(hx.wait(), hy.wait())\n"
         "(hx.n_done, hy.n_done)"
     )
@@ -130,7 +130,7 @@ async def _amain() -> None:  # noqa: PLR0915
 
     # ---- 4. cancel mid-run ------------------------------------------------
     r = await k.run_turn(
-        "hc = await wb.run_eval(make_task('c', 6), model='mockllm/model')\n"
+        "hc = wb.run_eval(make_task('c', 6), model='mockllm/model')\n"
         "await asyncio.sleep(0.1)\n"
         "hc.cancel()\n"
         "try:\n"
@@ -148,7 +148,7 @@ async def _amain() -> None:  # noqa: PLR0915
         f"✓ cancel: handle finished with error='cancelled', {hc.n_done}/{hc.total} landed"
     )
 
-    # ---- 5. RunProposal gate → deny raises Denied -------------------------
+    # ---- 5. RunProposal gate → deny returns settled handle ----------------
     turn = asyncio.create_task(
         k.run_turn(
             "await wb.run_audits(['s']*12, {}, description='big', model='mockllm/model')"

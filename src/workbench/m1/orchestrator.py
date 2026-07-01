@@ -46,11 +46,11 @@ from inspect_ai.model import (
 from inspect_ai.tool import Tool, tool
 from inspect_ai.tool._tools._execute import code_viewer  # noqa: PLC2701
 from inspect_ai.util import span
+from inspect_ai.util._display import init_display_type  # noqa: PLC2701
 from shortuuid import uuid
 
 from workbench.gate import StepGated
 from workbench.m1.kernel import DisplayEvent, OrchestratorKernel
-from workbench.m1.run import prewarm
 from workbench.m1.wb import Workbench
 from workbench.view import Status
 
@@ -119,7 +119,7 @@ class Orchestrator(StepGated):
         # Pay inspect's cold-start cost (display type, hooks banner) once,
         # before the first cell runs — otherwise the first in-cell
         # ``eval_async`` leaks ~8 stream events (M1-RUN-AUDITS.md §Required).
-        prewarm()
+        _prewarm()
         self.kernel = OrchestratorKernel(
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
@@ -127,6 +127,8 @@ class Orchestrator(StepGated):
         self._init_gate()
         self.status: Status = "idle"
         self.queued: list[ChatMessage] = []
+        #: The detached ``run()`` task; set by ``Session.start_orchestrator``.
+        self.task: asyncio.Task[None] | None = None
 
     # -- kernel → wire bridge -------------------------------------------------
 
@@ -140,14 +142,7 @@ class Orchestrator(StepGated):
         done-callback that emits them runs outside the cell task's context.
         """
         if ev.meta.get("sys"):
-            self.session.version += 1
-            self.session._enqueue(  # noqa: SLF001
-                {
-                    "t": "notify",
-                    "v": self.session.version,
-                    "text": ev.bundle["text/plain"],
-                }
-            )
+            self.session.notify(ev.bundle["text/plain"])
             return
         ie = InfoEvent(
             source=ORCH_SOURCE,
@@ -164,14 +159,7 @@ class Orchestrator(StepGated):
             # ``uuid`` → ``session._on_event`` sees ``is_update=True`` and
             # ships ``{"t":"update"}`` — the M0 path, unchanged.
             ie.uuid = ev.id
-        # Use the session's transcript directly rather than the
-        # ``transcript()`` contextvar — an emit from a foreign context (WS
-        # handler, thread) would otherwise land on a fresh unsubscribed
-        # ``Transcript`` and be silently lost.
-        if ev.update:
-            self.session.transcript._event_updated(ie)  # noqa: SLF001
-        else:
-            self.session.transcript._event(ie)  # noqa: SLF001
+        self.session.emit(ie, update=ev.update)
 
     # -- run ------------------------------------------------------------------
 
@@ -201,6 +189,7 @@ class Orchestrator(StepGated):
             )
         finally:
             self.status = "ended"
+            await self.session.broadcast_status()
             self.kernel.restore_streams()
             global _LIVE
             if _LIVE is self:
@@ -222,6 +211,19 @@ class Orchestrator(StepGated):
             "bg_cells": sorted(self.kernel.bg),
             "notifications": list(self.kernel.notifications),
         }
+
+    # -- composer → orchestrator ---------------------------------------------
+
+    def send(self, text: str) -> None:
+        """Composer → orchestrator: enqueue a user message and release one turn.
+
+        Also detaches the current foreground cell if one is running — per
+        M1-NOTEBOOK.md §Background execution, typing in the composer while a
+        cell runs means "background it and deliver this".
+        """
+        self.kernel.detach()
+        self.queued.append(ChatMessageUser(content=text))
+        self.step()
 
 
 # -- the agent ---------------------------------------------------------------
@@ -262,13 +264,13 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
     def _factory() -> Agent:
         async def execute(state: AgentState) -> AgentState:
             for _ in range(orch.max_turns):
-                await orch._await_gate()  # noqa: SLF001
+                await orch.await_step()
                 state.messages.extend(orch.queued)
                 orch.queued.clear()
 
                 state.output = await model.generate(input=state.messages, tools=tools)
                 state.messages.append(state.output.message)
-                orch._rearm_if_playing()  # noqa: SLF001
+                orch.rearm()
 
                 if state.output.message.tool_calls:
                     messages, _ = await execute_tools(
@@ -286,13 +288,41 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
     return _factory()
 
 
-def send(orch: Orchestrator, text: str) -> None:
-    """Composer → orchestrator: enqueue a user message and release one turn.
+# -- pre-warm (call once at kernel init; M1-RUN-AUDITS.md §Required) ----------
 
-    Also detaches the current foreground cell if one is running — per
-    M1-NOTEBOOK.md §Background execution, typing in the composer while a
-    cell runs means "background it and deliver this".
+
+def _prewarm() -> None:
+    """Suppress inspect's progress display and pay the hooks-banner once.
+
+    ``init_display_type("none")`` stops ``eval_async`` writing progress to
+    stdout (which ``_CellStream`` would capture as stream events).
+    ``platform_init()`` prints the aisitools hooks banner idempotently — do
+    it here so the first in-cell ``eval_async`` doesn't leak 8 stream lines.
     """
-    orch.kernel.detach()
-    orch.queued.append(ChatMessageUser(content=text))
-    orch.step()
+    init_display_type("none")
+    from inspect_ai._util.platform import platform_init  # noqa: PLC0415, PLC2701
+
+    platform_init()
+    # scout has its own display registry (SCOUT_DISPLAY); silence it too so
+    # ``wb.scan`` doesn't leak a rich progress bar into ``_CellStream``.
+    try:
+        from inspect_scout._display._display import (  # noqa: PLC0415, PLC2701
+            init_display_type as scout_init_display,
+        )
+
+        scout_init_display("none")
+    except ImportError:
+        pass
+    # plotly's default IPython renderer inlines the full ``plotly.min.js``
+    # (~4.8 MB, twice) into ``text/html`` on every figure. The workbench
+    # frontend loads ``plotly.js-basic-dist-min`` once (M1-PLOTTING.md), so
+    # figures should emit only the ~9 KB div + data. ``_wire_bundle``'s
+    # 128 KB cap is the safety net; this is the real fix.
+    try:
+        import plotly.io as pio  # noqa: PLC0415
+
+        r = pio.renderers["notebook_connected"]
+        r.connected = True  # CDN <script src>, not inline bundle
+        pio.renderers.default = "notebook_connected"
+    except ImportError:
+        pass

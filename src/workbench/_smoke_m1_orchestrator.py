@@ -27,7 +27,7 @@ from inspect_ai.model import ChatMessage, GenerateConfig, ModelOutput
 from inspect_ai.tool import ToolCall, ToolChoice, ToolInfo
 
 from workbench._smoke_util import FakeConn
-from workbench.m1.orchestrator import ORCH_SOURCE, Orchestrator
+from workbench.m1.orchestrator import ORCH_SOURCE
 from workbench.session import Session
 
 # ── scripted orchestrator model ─────────────────────────────────────────────
@@ -70,14 +70,13 @@ async def _amain() -> None:  # noqa: PLR0915
     conn = FakeConn()
     session.connections.append(conn)
 
-    orch = Orchestrator(
-        session,
+    await session.start_orchestrator(
         model="mockllm/model",
         model_args={"custom_outputs": _orch_outputs},
         max_turns=5,
     )
-    session.orchestrator = orch
-    task = asyncio.create_task(orch.run())
+    orch = session.orchestrator
+    assert orch is not None
 
     # ---- turn 1: display/update/print/last-expr → InfoEvents ---------------
     orch.step()
@@ -168,7 +167,6 @@ async def _amain() -> None:  # noqa: PLR0915
     await _settle()
     assert orch.status == "paused"
 
-    task.cancel()
     await session.close()
     orch.kernel.restore_streams()
     print("\n✓ all M1.1 wire smoke checks passed")

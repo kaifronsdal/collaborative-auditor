@@ -25,7 +25,6 @@ from workbench.m1.run import (
     RunHandle,
     RunProposal,
     ScanHandle,
-    _launch,
     steer,
     stop,
 )
@@ -43,12 +42,12 @@ class Workbench:
 
     ``run_audits``/``run_eval``/``cite``/``ask_human`` block on a gate;
     ``steer``/``stop`` mutate running samples; ``scan``/``excerpt``/
-    ``transcript``/``pin`` are compute/read helpers with a rich repr.
+    ``transcript`` are compute/read helpers with a rich repr.
     """
 
-    def __init__(self, kernel: "OrchestratorKernel", session: "Session | None") -> None:
+    def __init__(self, kernel: "OrchestratorKernel", session: "Session | None") -> None:  # noqa: ARG002
+        # ``session`` is unused until ``cite`` (M1.3) needs it.
         self._k = kernel
-        self._session = session
 
     def __repr__(self) -> str:
         return (
@@ -74,7 +73,7 @@ class Workbench:
         Gates on approval when ``n > GATE_THRESHOLD``; the human may strike
         seeds. Returns a live ``AuditRunHandle`` — the card ticks via
         ``dh.update``; ``await h.wait()`` for the result inline. Shares
-        ``_launch`` with ``run_eval``; the petri specifics are the
+        ``RunHandle.launch`` with ``run_eval``; the petri specifics are the
         ``RunProposal`` seed-preview and ``AuditRunHandle`` per-audit rows.
 
         The task is built from petri's public parts (``seeds_dataset`` /
@@ -131,10 +130,9 @@ class Workbench:
             name=f"audit-{prop.id[:6]}",
         )
         model_roles = {"target": model, "auditor": auditor_model or model}
-        h = await _launch(
+        return AuditRunHandle.launch(
             task,
-            handle_cls=AuditRunHandle,
-            handle_id=prop.id,
+            id=prop.id,
             log_dir=log_dir,
             total=prop.n,
             description=description,
@@ -142,10 +140,8 @@ class Workbench:
             model_roles=model_roles,
             epochs=n_per_seed,
         )
-        assert isinstance(h, AuditRunHandle)
-        return h
 
-    async def run_eval(
+    def run_eval(
         self,
         task: Task,
         *,
@@ -156,9 +152,8 @@ class Workbench:
     ) -> RunHandle:
         """Launch any inspect ``Task`` — same launcher as ``run_audits``."""
         total = len(task.dataset) if task.dataset else 0
-        return await _launch(
+        return RunHandle.launch(
             task,
-            handle_cls=RunHandle,
             log_dir=log_dir,
             total=total,
             description=description,

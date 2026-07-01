@@ -60,6 +60,7 @@ from inspect_petri._auditor.agent import (  # noqa: PLC2701
     AUDITOR_USER_MESSAGE,
     _eager_resume_inject,
     _eager_resume_strip_on_error,
+    _format_tools_prompt,
 )
 from inspect_petri._auditor.compaction import resolve_compaction  # noqa: PLC2701
 from inspect_petri._auditor.tools import auditor_approval  # noqa: PLC2701
@@ -101,13 +102,16 @@ def workbench_auditor(
     desk and are set by ``wb.run_audits`` for unattended batches.
     """
     tools = auditor_tools(prefill=True)
-    approval_policies = auditor_approval(realism_filter, approval)
 
     @agent
     def _factory() -> Agent:
         async def execute(state: AgentState) -> AgentState:
             agent_model = get_model(role="auditor", required=True)
             target_model = get_model(role="target", required=True)
+            # Built per-execute (not at factory time) so realism_approver's
+            # closure history is per-sample; at factory scope one history
+            # would be shared across all N batch samples.
+            approval_policies = auditor_approval(realism_filter, approval)
             tape = audit_tape()
             assert tape is not None, "workbench_auditor requires audit_context()"
             generate = tape.replayable(agent_model.generate, source=GEN_SOURCE)
@@ -133,6 +137,7 @@ def workbench_auditor(
             store.config_digest = digest
 
             seed = controller().state.seed_instructions
+            seed_tools = controller().state.seed_tools
             template_vars = {
                 **controller().state.metadata,
                 "max_turns": max_turns,
@@ -140,7 +145,7 @@ def workbench_auditor(
                 "seed_instructions": seed,
                 "today_date": today_date,
                 "skills_prompt": "",
-                "tools_prompt": "",
+                "tools_prompt": _format_tools_prompt(seed_tools) if seed_tools else "",
             }
             state.messages[:] = [
                 ChatMessageSystem(

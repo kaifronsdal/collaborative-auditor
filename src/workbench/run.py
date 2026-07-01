@@ -445,17 +445,16 @@ class Branch(StepGated):
     async def pre_turn(self) -> tuple[list[ChatMessage], bool]:
         """Desk pre-generate: mark replay done, await the step-gate, drain
         queued operator messages, flip the spinner."""
-        if not self._replayed.is_set():
-            self._replayed.set()
-        await self._await_gate()
+        self._replayed.set()
+        await self.await_step()
         msgs = self.queued["auditor"]
         self.queued["auditor"] = []
         self.generating = "auditor"
-        return list(msgs), False  # M0 stops via task-cancel, never here
+        return msgs, False  # M0 stops via task-cancel, never here
 
     def post_generate(self) -> None:
         self.generating = None
-        self._rearm_if_playing()
+        self.rearm()
 
     # -- run ------------------------------------------------------------------
 

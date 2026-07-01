@@ -4,9 +4,9 @@ Both drive an agent loop that awaits a one-shot ``anyio.Event`` each turn.
 ``step()`` releases one turn; ``play()`` sets a free-running flag so the loop
 re-arms the gate itself after each turn (self-perpetuating without a pump
 task); ``pause()`` clears the flag so the next await blocks. The wait/re-arm
-pair lives here as ``_await_gate`` / ``_rearm_if_playing`` so the two agent
-loops (``workbench_auditor``, ``orchestrator_agent``) don't each carry the
-``_gate = anyio.Event()`` reset + ``# noqa: SLF001`` littering.
+pair lives here as ``await_step`` / ``rearm`` so the two agent loops
+(``workbench_auditor``, ``orchestrator_agent``) don't each carry the
+``_gate = anyio.Event()`` reset.
 """
 
 from __future__ import annotations
@@ -42,10 +42,10 @@ class StepGated:
         if self.status != "ended":
             self.status = "paused"
 
-    async def _await_gate(self) -> None:
+    async def await_step(self) -> None:
         await self._gate.wait()
         self._gate = anyio.Event()
 
-    def _rearm_if_playing(self) -> None:
+    def rearm(self) -> None:
         if self._free_running:
             self._gate.set()

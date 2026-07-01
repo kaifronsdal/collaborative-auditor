@@ -7,7 +7,7 @@ The ``RunHandle`` polls the ``.eval`` log (samples flush per-completion with
 
 Steering: a process-local ``CONTROL[sample_id]`` registry that a cooperating
 solver drains before each generate — same 3-line pattern as M0's
-``workbench_auditor.queued``, keyed by sample instead of branch. ``stop()``
+``Branch.queued["auditor"]``, keyed by sample instead of branch. ``stop()``
 also uses ``active_samples()[i].interrupt("score")`` so it works on any task
 without cooperation.
 """
@@ -18,7 +18,7 @@ import asyncio
 import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, Self
 from uuid import uuid4
 
 from inspect_ai import Task, eval_async
@@ -28,50 +28,9 @@ from inspect_ai.log._file import (  # noqa: PLC2701
 )
 from inspect_ai.log._samples import active_samples  # noqa: PLC2701
 from inspect_ai.model import ChatMessageUser
-from inspect_ai.util._display import init_display_type  # noqa: PLC2701
 from IPython.display import DisplayHandle, display
 
 from workbench.m1.kernel import WB_MIME
-
-# -- pre-warm (call once at kernel init; M1-RUN-AUDITS.md §Required) ----------
-
-
-def prewarm() -> None:
-    """Suppress inspect's progress display and pay the hooks-banner once.
-
-    ``init_display_type("none")`` stops ``eval_async`` writing progress to
-    stdout (which ``_CellStream`` would capture as stream events).
-    ``platform_init()`` prints the aisitools hooks banner idempotently — do
-    it here so the first in-cell ``eval_async`` doesn't leak 8 stream lines.
-    """
-    init_display_type("none")
-    from inspect_ai._util.platform import platform_init  # noqa: PLC0415, PLC2701
-
-    platform_init()
-    # scout has its own display registry (SCOUT_DISPLAY); silence it too so
-    # ``wb.scan`` doesn't leak a rich progress bar into ``_CellStream``.
-    try:
-        from inspect_scout._display._display import (  # noqa: PLC0415, PLC2701
-            init_display_type as scout_init_display,
-        )
-
-        scout_init_display("none")
-    except ImportError:
-        pass
-    # plotly's default IPython renderer inlines the full ``plotly.min.js``
-    # (~4.8 MB, twice) into ``text/html`` on every figure. The workbench
-    # frontend loads ``plotly.js-basic-dist-min`` once (M1-PLOTTING.md), so
-    # figures should emit only the ~9 KB div + data. ``_wire_bundle``'s
-    # 128 KB cap is the safety net; this is the real fix.
-    try:
-        import plotly.io as pio  # noqa: PLC0415
-
-        r = pio.renderers["notebook_connected"]
-        r.connected = True  # CDN <script src>, not inline bundle
-        pio.renderers.default = "notebook_connected"
-    except ImportError:
-        pass
-
 
 # -- steering registry --------------------------------------------------------
 
@@ -184,10 +143,6 @@ def drain_control(sample_id: Any) -> tuple[list[ChatMessageUser], bool]:
 # -- proposals (gated cards) --------------------------------------------------
 
 
-class Denied(Exception):  # noqa: N818
-    """Raised by a gated launcher when the human denies the proposal."""
-
-
 @dataclass
 class RunProposal:
     """The pre-launch gate card for ``run_audits``.
@@ -260,45 +215,31 @@ class SampleRow:
     scores: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
-class RunHandle:
-    """Live handle on one ``eval_async`` (or subprocess) run.
+@dataclass(kw_only=True)
+class _PollingHandle:
+    """Live handle on one background job with a polling watcher.
 
-    ``_watch`` polls the ``.eval`` log via ``read_eval_log_sample_summaries``
-    and ``dh.update(self)`` s on any change; the model-facing render collapses
-    to the latest counters at the initial ``display()`` position.
+    ``_watch`` calls ``_poll()`` on an interval and ``dh.update(self)`` s
+    whenever ``_signature()`` changes; after ``_task`` settles it does one
+    final poll, sets ``finished`` / ``error``, calls ``_settle()``, and fires
+    a last update. Subclasses supply ``_poll`` / ``_signature`` / ``_settle``
+    / ``n_done`` / ``_repr_mimebundle_`` and their domain fields.
     """
 
-    task_name: str
-    log_dir: str
-    total: int
     id: str = field(default_factory=lambda: uuid4().hex)
     description: str = ""
-    #: rows keyed by sample id — completed samples only (``log_buffer=1``
-    #: flushes each on completion; running samples aren't in the summaries
-    #: yet).
-    rows: dict[str, SampleRow] = field(default_factory=dict)
+    total: int = 0
     finished: bool = False
     error: str | None = None
+    kind: str = ""  # WB_MIME dispatch key
 
     _task: asyncio.Task[Any] | None = field(default=None, repr=False)
     _watcher: asyncio.Task[None] | None = field(default=None, repr=False)
     _dh: DisplayHandle | None = field(default=None, repr=False)
-    _log_file: str | None = field(default=None, repr=False)
     _poll_interval: float = field(default=0.25, repr=False)
 
-    kind: str = "eval_run"  # WB_MIME dispatch key
-
-    @property
-    def n_done(self) -> int:
-        return sum(1 for r in self.rows.values() if r.status == "done")
-
-    @property
-    def location(self) -> str | None:
-        return self._log_file
-
-    async def wait(self) -> "RunHandle":
-        """Await the eval *and* the watcher's final poll/update.
+    async def wait(self) -> Self:
+        """Await the job *and* the watcher's final poll/update.
 
         ``_task`` alone isn't enough — ``_watch`` sets ``finished`` and fires
         the last ``dh.update`` after ``_task.done()``, so returning before it
@@ -314,30 +255,104 @@ class RunHandle:
         if self._task is not None and not self._task.done():
             self._task.cancel()
 
-    # -- polling ----------------------------------------------------------
+    def _update(self) -> None:
+        if self._dh is not None:
+            self._dh.update(self)
 
-    async def _watch(self, eval_task: asyncio.Task[Any]) -> None:
-        last: tuple[int, ...] | None = None
-        while not eval_task.done():
+    def _start(self, coro: Any) -> Self:
+        """Display the card, spawn the job + watcher. Owns the field wiring
+        so the ``display → task → watcher`` invariant lives with the class."""
+        self._dh = display(self, display_id=self.id)
+        self._task = asyncio.create_task(coro)
+        self._watcher = asyncio.create_task(self._watch(self._task))
+        return self
+
+    async def _watch(self, task: asyncio.Task[Any]) -> None:
+        last: Any = None
+        while not task.done():
             await self._poll()
-            sig = (len(self.rows), self.n_done)
+            sig = self._signature()
             if sig != last:
                 last = sig
                 self._update()
             await asyncio.sleep(self._poll_interval)
-        # final poll after the eval settles (last flush may land after done)
+        # final poll after the job settles (last flush may land after done)
         await self._poll()
         self.finished = True
-        if eval_task.cancelled():
+        if task.cancelled():
             self.error = "cancelled"
-        elif (exc := eval_task.exception()) is not None:
+        elif (exc := task.exception()) is not None:
             self.error = f"{type(exc).__name__}: {exc}"
+        await self._settle(task)
         self._update()
-        # Drop this run's control entries — sample ids can collide across
-        # runs, and ``_row`` reads ``CONTROL[id].stop`` to distinguish
-        # stopped from errored.
-        for sid in self.rows:
-            CONTROL.pop(sid, None)
+
+    # -- hooks ------------------------------------------------------------
+
+    async def _poll(self) -> None:
+        raise NotImplementedError
+
+    def _signature(self) -> Any:
+        raise NotImplementedError
+
+    async def _settle(self, task: asyncio.Task[Any]) -> None:
+        pass
+
+
+@dataclass(kw_only=True)
+class RunHandle(_PollingHandle):
+    """Live handle on one ``eval_async`` (or subprocess) run.
+
+    ``_watch`` polls the ``.eval`` log via ``read_eval_log_sample_summaries``
+    and ``dh.update(self)`` s on any change; the model-facing render collapses
+    to the latest counters at the initial ``display()`` position.
+    """
+
+    task_name: str
+    log_dir: str
+    #: rows keyed by sample id — completed samples only (``log_buffer=1``
+    #: flushes each on completion; running samples aren't in the summaries
+    #: yet).
+    rows: dict[str, SampleRow] = field(default_factory=dict)
+    kind: str = "eval_run"
+
+    _log_file: str | None = field(default=None, repr=False)
+
+    @property
+    def n_done(self) -> int:
+        return sum(1 for r in self.rows.values() if r.status == "done")
+
+    @property
+    def location(self) -> str | None:
+        return self._log_file
+
+    @classmethod
+    def launch(
+        cls,
+        task: Task,
+        *,
+        total: int,
+        log_dir: str | None = None,
+        description: str = "",
+        id: str | None = None,  # noqa: A002
+        **eval_kw: Any,
+    ) -> Self:
+        """``display(h)`` first so the card appears before the first
+        ``await``; then spawn ``eval_async`` and a poller. Returns
+        immediately — callers ``await h.wait()`` if they want the result
+        inline. Each call gets its own ``log_dir`` (concurrent-``eval_async``
+        safety)."""
+        log_dir = log_dir or tempfile.mkdtemp(prefix="wb-run-")
+        h = cls(
+            task_name=task.name or "task",
+            log_dir=log_dir,
+            total=total,
+            description=description,
+        )
+        if id is not None:
+            h.id = id
+        return h._start(eval_async(task, log_dir=log_dir, log_buffer=1, **eval_kw))
+
+    # -- hooks ------------------------------------------------------------
 
     async def _poll(self) -> None:
         if self._log_file is None:
@@ -352,6 +367,16 @@ class RunHandle:
         for s in summaries:
             self.rows[str(s.id)] = self._row(s)
 
+    def _signature(self) -> tuple[int, int]:
+        return (len(self.rows), self.n_done)
+
+    async def _settle(self, task: asyncio.Task[Any]) -> None:
+        # Drop this run's control entries — sample ids can collide across
+        # runs, and ``_row`` reads ``CONTROL[id].stop`` to distinguish
+        # stopped from errored.
+        for sid in self.rows:
+            CONTROL.pop(sid, None)
+
     def _row(self, s: EvalSampleSummary) -> SampleRow:
         status: SampleStatus = "done"
         if s.error:
@@ -364,19 +389,6 @@ class RunHandle:
             input=str(s.input)[:80],
             scores={k: v.value for k, v in (s.scores or {}).items()},
         )
-
-    def _update(self) -> None:
-        if self._dh is not None:
-            self._dh.update(self)
-
-    def _start(self, coro: Any) -> "RunHandle":
-        """Display the card, spawn the eval + watcher. Owns the field wiring
-        so the ``display → task → watcher`` invariant lives with the class,
-        not scattered across ``_launch``."""
-        self._dh = display(self, display_id=self.id)
-        self._task = asyncio.create_task(coro)
-        self._watcher = asyncio.create_task(self._watch(self._task))
-        return self
 
     # -- repr -------------------------------------------------------------
 
@@ -407,8 +419,8 @@ class RunHandle:
         }
 
 
-@dataclass
-class ScanHandle:
+@dataclass(kw_only=True)
+class ScanHandle(_PollingHandle):
     """Live handle on one ``inspect_scout.aio.scan_async`` job.
 
     Same shape as ``RunHandle``: ``_watch`` polls ``scan_status_async`` on the
@@ -425,22 +437,12 @@ class ScanHandle:
 
     scans_dir: str
     scanner_names: list[str]
-    id: str = field(default_factory=lambda: uuid4().hex)
-    description: str = ""
-    total: int = 0
     #: name → {scans, results, errors} — mirrors ``Summary.scanners``.
     per_scanner: dict[str, dict[str, int]] = field(default_factory=dict)
-    finished: bool = False
-    error: str | None = None
+    kind: str = "scan"
 
-    _task: asyncio.Task[Any] | None = field(default=None, repr=False)
-    _watcher: asyncio.Task[None] | None = field(default=None, repr=False)
-    _dh: DisplayHandle | None = field(default=None, repr=False)
     _location: str | None = field(default=None, repr=False)
     _results: Any | None = field(default=None, repr=False)
-    _poll_interval: float = field(default=0.25, repr=False)
-
-    kind: str = "scan"
 
     @property
     def n_done(self) -> int:
@@ -457,45 +459,7 @@ class ScanHandle:
             raise RuntimeError("scan not finished — await h.wait() first")
         return self._results.scanners
 
-    async def wait(self) -> "ScanHandle":
-        if self._task is not None:
-            await asyncio.gather(self._task, return_exceptions=True)
-        if self._watcher is not None:
-            await self._watcher
-        return self
-
-    def cancel(self) -> None:
-        if self._task is not None and not self._task.done():
-            self._task.cancel()
-
-    async def _watch(self, scan_task: asyncio.Task[Any]) -> None:
-        from inspect_scout.aio import scan_results_df_async  # noqa: PLC0415
-
-        last: tuple[int, ...] | None = None
-        while not scan_task.done():
-            await self._poll()
-            sig = tuple(
-                v
-                for s in self.per_scanner.values()
-                for v in sorted(s.items())  # type: ignore[misc]
-            )
-            if sig != last:
-                last = sig
-                self._update()
-            await asyncio.sleep(self._poll_interval)
-        await self._poll()
-        self.finished = True
-        self.total = self.total or self.n_done
-        if scan_task.cancelled():
-            self.error = "cancelled"
-        elif (exc := scan_task.exception()) is not None:
-            self.error = f"{type(exc).__name__}: {exc}"
-        elif self._location is None:
-            # ``scan_async`` returned a Status; take its location.
-            self._location = scan_task.result().location
-        if self._location is not None and self.error is None:
-            self._results = await scan_results_df_async(self._location)
-        self._update()
+    # -- hooks ------------------------------------------------------------
 
     async def _poll(self) -> None:
         from inspect_scout.aio import scan_list_async, scan_status_async  # noqa: PLC0415
@@ -511,15 +475,20 @@ class ScanHandle:
             for name, s in status.summary.scanners.items()
         }
 
-    def _update(self) -> None:
-        if self._dh is not None:
-            self._dh.update(self)
+    def _signature(self) -> tuple[Any, ...]:
+        return tuple(v for s in self.per_scanner.values() for v in sorted(s.items()))
 
-    def _start(self, coro: Any) -> "ScanHandle":
-        self._dh = display(self, display_id=self.id)
-        self._task = asyncio.create_task(coro)
-        self._watcher = asyncio.create_task(self._watch(self._task))
-        return self
+    async def _settle(self, task: asyncio.Task[Any]) -> None:
+        from inspect_scout.aio import scan_results_df_async  # noqa: PLC0415
+
+        self.total = self.total or self.n_done
+        if self.error is None and self._location is None:
+            # ``scan_async`` returned a Status; take its location.
+            self._location = task.result().location
+        if self._location is not None and self.error is None:
+            self._results = await scan_results_df_async(self._location)
+
+    # -- repr -------------------------------------------------------------
 
     def _repr_mimebundle_(
         self, include: Any = None, exclude: Any = None
@@ -548,7 +517,7 @@ class ScanHandle:
         }
 
 
-@dataclass
+@dataclass(kw_only=True)
 class AuditRunHandle(RunHandle):
     """``run_audits`` handle — per-audit rows are ``wb://audit/{id}`` links;
     ``.audits`` returns a per-dimension-scored DataFrame when done."""
@@ -566,35 +535,3 @@ class AuditRunHandle(RunHandle):
         from inspect_petri import audits_df  # noqa: PLC0415
 
         return audits_df(self.log_dir)
-
-
-# -- launcher -----------------------------------------------------------------
-
-
-async def _launch(
-    task: Task,
-    *,
-    handle_cls: type[RunHandle] = RunHandle,
-    handle_id: str | None = None,
-    log_dir: str | None = None,
-    total: int,
-    description: str = "",
-    **eval_kw: Any,
-) -> RunHandle:
-    """Common backend for ``run_audits`` / ``run_eval`` (M1-RUN-AUDITS.md).
-
-    ``display(h, display_id=h.id)`` first so the card appears before the
-    first ``await``; then spawn ``eval_async`` and a poller. Returns
-    immediately — callers ``await h.wait()`` if they want the result inline.
-    Each call gets its own ``log_dir`` (concurrent-``eval_async`` safety).
-    """
-    log_dir = log_dir or tempfile.mkdtemp(prefix="wb-run-")
-    h = handle_cls(
-        task_name=task.name or "task",
-        log_dir=log_dir,
-        total=total,
-        description=description,
-    )
-    if handle_id is not None:
-        h.id = handle_id
-    return h._start(eval_async(task, log_dir=log_dir, log_buffer=1, **eval_kw))

@@ -187,6 +187,12 @@ class Session:
                 await t
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        if self.orchestrator is not None and self.orchestrator.task is not None:
+            self.orchestrator.task.cancel()
+            try:
+                await self.orchestrator.task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         self._closed.set()
         if self._run_task is not None:
             await self._run_task
@@ -419,11 +425,58 @@ class Session:
         """Push the current branch's status as a lightweight `status` message."""
         self.version += 1
         await self.broadcast(
-            {"t": "status", "v": self.version, "status": self.current_status()}
+            {
+                "t": "status",
+                "v": self.version,
+                "status": self.current_status(),
+                "orch_status": self.orchestrator.status if self.orchestrator else None,
+            }
         )
 
     async def push_full_state(self, conn: Connection) -> None:
         await conn.send_json({"t": "state", "v": self.version, **self.view()})
+
+    # -- orchestrator (M1) ----------------------------------------------------
+
+    async def start_orchestrator(
+        self,
+        *,
+        model: str,
+        system_prompt: str = "",
+        model_args: dict[str, Any] | None = None,
+        max_turns: int = 10_000,
+    ) -> None:
+        """Construct the M1 `Orchestrator`, spawn its `run()`, broadcast state."""
+        from workbench.m1.orchestrator import Orchestrator  # noqa: PLC0415
+
+        orch = Orchestrator(
+            self,
+            model=model,
+            system_prompt=system_prompt,
+            model_args=model_args,
+            max_turns=max_turns,
+        )
+        self.orchestrator = orch
+        orch.task = asyncio.create_task(orch.run())
+        await self.broadcast({"t": "state", "v": self.version, **self.view()})
+
+    def notify(self, text: str) -> None:
+        """Ship a lightweight `{"t":"notify"}` sys-chip to connected clients."""
+        self.version += 1
+        self._enqueue({"t": "notify", "v": self.version, "text": text})
+
+    def emit(self, ev: Event, *, update: bool = False) -> None:
+        """Emit an event onto the session's transcript (M0 pipe).
+
+        Uses the session's transcript directly rather than the
+        ``transcript()`` contextvar — an emit from a foreign context (WS
+        handler, thread) would otherwise land on a fresh unsubscribed
+        ``Transcript`` and be silently lost.
+        """
+        if update:
+            self.transcript._event_updated(ev)  # noqa: SLF001
+        else:
+            self.transcript._event(ev)  # noqa: SLF001
 
     # -- persistence (#4) -----------------------------------------------------
 
