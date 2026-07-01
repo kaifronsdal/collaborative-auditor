@@ -31,6 +31,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 import anyio
+from inspect_ai._util.json import jsonable_python  # noqa: PLC2701
 from inspect_ai.agent import Agent, AgentState, agent
 from inspect_ai.event import InfoEvent
 from inspect_ai.log._transcript import init_transcript  # noqa: PLC2701
@@ -43,9 +44,11 @@ from inspect_ai.model import (
     get_model,
 )
 from inspect_ai.tool import Tool, tool
+from inspect_ai.tool._tools._execute import code_viewer  # noqa: PLC2701
 from inspect_ai.util import span
 from shortuuid import uuid
 
+from workbench.gate import StepGated
 from workbench.m1.kernel import DisplayEvent, OrchestratorKernel
 from workbench.m1.run import prewarm
 from workbench.m1.wb import Workbench
@@ -65,31 +68,27 @@ ORCH_SOURCE = "orchestrator"
 #: (M1-PLOTTING.md); this is the safety net for anything else.
 _WIRE_MIME_CAP = 128 * 1024
 
-#: Types ``InfoEvent.data: JsonValue`` accepts. Anything else in a
-#: ``_repr_mimebundle_`` (raw ``bytes`` for ``image/png``, ``numpy.int64``,
-#: ``set``) would raise ``ValidationError`` at ``InfoEvent(...)`` and fail
-#: the whole cell — degrade instead.
-_JSON_LEAF = (str, int, float, bool, type(None), dict, list)
-
 
 def _wire_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
-    """Cap oversize MIME strings and coerce non-JSON leaves to ``str``."""
-    out: dict[str, Any] = {}
-    for mime, v in bundle.items():
+    """Cap oversize MIME strings and coerce to JSON-safe.
+
+    ``jsonable_python`` recurses (so a ``numpy.int64`` *inside* the vendor-
+    MIME dict is coerced too — a top-level ``isinstance`` check would let it
+    through and ``InfoEvent(data=…)`` would ``ValidationError``).
+    """
+    out: dict[str, Any] = jsonable_python(bundle) or {}
+    for mime, v in list(out.items()):
         if isinstance(v, str) and len(v) > _WIRE_MIME_CAP:
             out[mime] = v[:_WIRE_MIME_CAP] + f"\n<!-- truncated {len(v)} bytes -->"
-        elif isinstance(v, _JSON_LEAF):
-            out[mime] = v
-        else:
-            out[mime] = repr(v)
     return out
+
 
 #: Process-wide guard (M1-KERNEL-NOTES.md §3): the ``InteractiveShell``
 #: singleton and ``sys.stdout`` tee mean at most one live kernel per process.
 _LIVE: "Orchestrator | None" = None
 
 
-class Orchestrator:
+class Orchestrator(StepGated):
     """One M1 orchestrator: kernel + agent loop + span, owned by a `Session`."""
 
     def __init__(
@@ -124,13 +123,8 @@ class Orchestrator:
         self.kernel = OrchestratorKernel(
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
-        # Replace the kernel's stub ``wb`` with the session-aware one now
-        # that both kernel and session exist.
         self.kernel.shell.user_ns["wb"] = Workbench(self.kernel, session)
-        # Step gate — same shape as `Branch._gate`: the agent loop awaits it
-        # each turn, `play()` self-re-arms.
-        self._gate = anyio.Event()
-        self._free_running = False
+        self._init_gate()
         self.status: Status = "idle"
         self.queued: list[ChatMessage] = []
 
@@ -148,7 +142,11 @@ class Orchestrator:
         if ev.meta.get("sys"):
             self.session.version += 1
             self.session._enqueue(  # noqa: SLF001
-                {"t": "notify", "v": self.session.version, "text": ev.bundle["text/plain"]}
+                {
+                    "t": "notify",
+                    "v": self.session.version,
+                    "text": ev.bundle["text/plain"],
+                }
             )
             return
         ie = InfoEvent(
@@ -174,24 +172,6 @@ class Orchestrator:
             self.session.transcript._event_updated(ie)  # noqa: SLF001
         else:
             self.session.transcript._event(ie)  # noqa: SLF001
-
-    # -- step gate (identical shape to Branch) --------------------------------
-
-    def step(self) -> None:
-        if self.status != "ended":
-            self.status = "running"
-        self._gate.set()
-
-    def play(self) -> None:
-        self._free_running = True
-        if self.status != "ended":
-            self.status = "running"
-        self._gate.set()
-
-    def pause(self) -> None:
-        self._free_running = False
-        if self.status != "ended":
-            self.status = "paused"
 
     # -- run ------------------------------------------------------------------
 
@@ -248,7 +228,7 @@ class Orchestrator:
 
 
 def python_tool(orch: Orchestrator) -> Tool:
-    @tool
+    @tool(viewer=code_viewer("python", "code"))
     def python() -> Tool:
         async def execute(code: str, background: bool = False) -> str:
             """Run a Python cell in the orchestrator kernel.
@@ -282,15 +262,13 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
     def _factory() -> Agent:
         async def execute(state: AgentState) -> AgentState:
             for _ in range(orch.max_turns):
-                await orch._gate.wait()  # noqa: SLF001
-                orch._gate = anyio.Event()  # noqa: SLF001
+                await orch._await_gate()  # noqa: SLF001
                 state.messages.extend(orch.queued)
                 orch.queued.clear()
 
                 state.output = await model.generate(input=state.messages, tools=tools)
                 state.messages.append(state.output.message)
-                if orch._free_running:  # noqa: SLF001
-                    orch._gate.set()  # noqa: SLF001
+                orch._rearm_if_playing()  # noqa: SLF001
 
                 if state.output.message.tool_calls:
                     messages, _ = await execute_tools(
@@ -300,8 +278,7 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
                 elif not orch.queued:
                     # No tool call and nothing queued — park until the human
                     # sends something (composer → `orch_send`).
-                    orch.status = "paused"
-                    orch._free_running = False  # noqa: SLF001
+                    orch.pause()
             return state
 
         return execute

@@ -695,6 +695,7 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
                 logger.warning("%r before start_orchestrator — dropping", cmd)
                 return
             getattr(session.orchestrator, cmd.removeprefix("orch_"))()
+            await session.broadcast_status()
 
         case "orch_send":
             if session.orchestrator is None:

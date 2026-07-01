@@ -15,7 +15,6 @@ from inspect_ai import Task
 from workbench.m1.kernel import Prompt
 from workbench.m1.run import (
     AuditRunHandle,
-    Denied,
     RunHandle,
     RunProposal,
     _launch,
@@ -45,8 +44,8 @@ class Workbench:
 
     def __repr__(self) -> str:
         return (
-            "<wb · run_audits run_eval steer stop pin ask_human scan cite "
-            "excerpt transcript read_transcript plots ctl>"
+            "<wb · run_audits run_eval steer stop pin ask_human "
+            "scan cite excerpt transcript>"
         )
 
     # -- gated launchers --------------------------------------------------
@@ -77,10 +76,20 @@ class Workbench:
         prop = RunProposal(seed_list, cfg, description, n_per_seed)
 
         if prop.n > GATE_THRESHOLD:
-            await self._k._gate(prop)
+            await self._k.gate(prop)
             if prop.denied:
-                raise Denied(
-                    prop.verdict.get("reason", "denied") if prop.verdict else "denied"
+                # A human clicking "deny" is expected control flow, not an
+                # exception — hand back a settled handle so the model reads
+                # one line, not a traceback.
+                reason = (prop.verdict or {}).get("reason", "denied")
+                return AuditRunHandle(
+                    task_name="audit",
+                    log_dir="",
+                    total=prop.n,
+                    id=prop.id,
+                    description=description,
+                    finished=True,
+                    error=f"denied: {reason}",
                 )
 
         task = audit(
@@ -124,7 +133,7 @@ class Workbench:
         )
 
     async def ask_human(self, question: str, options: list[str] | None = None) -> str:
-        return str(await self._k._gate(Prompt(question, options)))
+        return str(await self._k.gate(Prompt(question, options)))
 
     # -- mutate running samples ------------------------------------------
 

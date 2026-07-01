@@ -71,7 +71,7 @@ async def _amain() -> None:  # noqa: PLR0915
     assert r.success, r.error
     h = k.shell.user_ns["h"]
     assert isinstance(h, RunHandle)
-    assert h.finished and h.done == 4 and h.total == 4, (h.finished, h.done, h.total)
+    assert h.finished and h.n_done == 4 and h.total == 4, (h.finished, h.n_done, h.total)
     assert h.location and h.location.endswith(".eval")
     # dh.update fired ≥2× (initial + ≥1 tick + final); model text = final line
     stable_evs = [ev for ev in r.outputs if ev.stable and ev.id == h.id]
@@ -83,7 +83,7 @@ async def _amain() -> None:  # noqa: PLR0915
         f"prewarm() didn't suppress display: {[e.text for e in streams]}"
     )
     print(
-        f"✓ run_eval: {h.done}/{h.total}, {len(stable_evs)} ticks, .eval @ {h.location.split('/')[-1][:30]}"
+        f"✓ run_eval: {h.n_done}/{h.total}, {len(stable_evs)} ticks, .eval @ {h.location.split('/')[-1][:30]}"
     )
 
     # ---- 2. steer + stop via CONTROL reach the solver ---------------------
@@ -117,16 +117,16 @@ async def _amain() -> None:  # noqa: PLR0915
         "    wb.run_eval(make_task('y', 3), model='mockllm/model'),\n"
         ")\n"
         "await asyncio.gather(hx.wait(), hy.wait())\n"
-        "(hx.done, hy.done)"
+        "(hx.n_done, hy.n_done)"
     )
     assert r.success, r.text
     hx, hy = k.shell.user_ns["hx"], k.shell.user_ns["hy"]
-    assert hx.done == 3 and hy.done == 3, (hx.done, hy.done)
+    assert hx.n_done == 3 and hy.n_done == 3, (hx.n_done, hy.n_done)
     assert hx.log_dir != hy.log_dir
     # both cards ticked independently under the same turn
     assert any(ev.id == hx.id and ev.update for ev in r.outputs)
     assert any(ev.id == hy.id and ev.update for ev in r.outputs)
-    print(f"✓ concurrent run_eval: hx {hx.done}/3, hy {hy.done}/3, distinct log_dirs")
+    print(f"✓ concurrent run_eval: hx {hx.n_done}/3, hy {hy.n_done}/3, distinct log_dirs")
 
     # ---- 4. cancel mid-run ------------------------------------------------
     r = await k.run_turn(
@@ -145,7 +145,7 @@ async def _amain() -> None:  # noqa: PLR0915
     assert hc.finished and hc.error == "cancelled", (hc.finished, hc.error)
     assert "cancelled" in r.text
     print(
-        f"✓ cancel: handle finished with error='cancelled', {hc.done}/{hc.total} landed"
+        f"✓ cancel: handle finished with error='cancelled', {hc.n_done}/{hc.total} landed"
     )
 
     # ---- 5. RunProposal gate → deny raises Denied -------------------------
@@ -165,8 +165,9 @@ async def _amain() -> None:  # noqa: PLR0915
     assert prop_ev.bundle[WB_MIME]["n"] == 12
     k.resolve(pid, {"denied": True, "reason": "too many"})
     r = await turn
-    assert not r.success and "Denied" in r.text, r.text
-    print("✓ run_audits gates at n>8; deny → Denied raised")
+    assert r.success, r.text  # deny is control flow, not an exception
+    assert "denied: too many" in r.text, r.text
+    print("✓ run_audits gates at n>8; deny → settled handle (no traceback)")
 
     k.restore_streams()
     print("\n✓ all M1.2 run smoke checks passed")

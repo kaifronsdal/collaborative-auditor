@@ -30,11 +30,13 @@ from workbench.m1.kernel import (
     DisplayEvent,
     OrchestratorKernel,
 )
+from workbench.m1.wb import Workbench
 
 
 async def _amain() -> None:  # noqa: PLR0915
     wire: list[DisplayEvent] = []
     k = OrchestratorKernel(on_display=wire.append)
+    k.shell.user_ns["wb"] = Workbench(k, session=None)
 
     # ---- 1. last-expr auto-display via displayhook -------------------------
     r = await k.run_turn("x = 41\nx + 1")

@@ -7,11 +7,11 @@ backgrounding is stopping the await. Gated helpers are ``display(proposal)``
 + ``await Future`` (resolved by the WS handler) + ``dh.update(resolved)`` on
 IPython's native ``display_id`` machinery.
 
-This module is self-contained: it does **not** yet register ``DisplayEvent``
-in inspect's ``Event`` union or call ``transcript()._event()``. Instead the
-kernel appends events to ``outputs[turn_id]`` and forwards each one through
-an ``on_display`` callback — the ``Session`` can hook that to ``_enqueue`` a
-wire message. Upstreaming ``DisplayEvent`` into inspect is a follow-up.
+The kernel is transport-agnostic: it appends events to ``outputs[turn_id]``
+and forwards each through an ``on_display`` callback. ``Orchestrator``
+hooks that to ``session.transcript._event(InfoEvent(...))`` so kernel
+outputs ride the M0 event pipe (reconnect/persistence for free) — see
+``m1/orchestrator.py``.
 
 What we don't get from ``InteractiveShell`` and have to supply:
 
@@ -100,16 +100,6 @@ class DisplayEvent:
                 return _truncate(str(t), _MODEL_TEXT_CAP)
         return ""
 
-    def wire(self) -> dict[str, Any]:
-        return {
-            "t": "display",
-            "id": self.id,
-            "turn": self.turn_id,
-            "bundle": self.bundle,
-            "meta": self.meta,
-            "update": self.update,
-        }
-
 
 @dataclass(slots=True)
 class TurnResult:
@@ -184,7 +174,7 @@ class WorkbenchDisplayHook(DisplayHook):
         # need ``;``-suppression; disable it.
         return False
 
-    def write_output_prompt(self) -> None:  # ``Out[N]: `` → nothing
+    def write_output_prompt(self) -> None:
         pass
 
     def write_format_data(  # type: ignore[override]
@@ -240,7 +230,7 @@ class _CellStream(io.TextIOBase):
         self._kernel = kernel
         self._name = name
         self._real = real
-        self._buf: dict[int, str] = {}  # turn_id → partial line
+        self._buf: dict[int, str] = {}
 
     def write(self, s: str) -> int:
         turn = self._kernel._current_turn.get()
@@ -370,7 +360,6 @@ class OrchestratorKernel:
         sys.stderr = _CellStream(self, "stderr", self._real_stderr)  # type: ignore[assignment,arg-type]
 
         seeded: dict[str, Any] = dict(
-            wb=_WbNamespace(self),
             KERNEL=self,
             asyncio=asyncio,
             display=display,
@@ -379,8 +368,6 @@ class OrchestratorKernel:
             **(extra_ns or {}),
         )
         self.shell.user_ns.update(seeded)
-        #: names present before any turn — never reported in ``new_names``.
-        self._ns_baseline: frozenset[str] = frozenset(self.shell.user_ns)
 
     def _install_hooks(self) -> None:
         """Repoint the shell's output hooks at our publisher.
@@ -490,7 +477,9 @@ class OrchestratorKernel:
         self.bg[turn_id] = cell_task
         self._bg_code[turn_id] = code
 
-        cell_task.add_done_callback(functools.partial(self._on_cell_done, turn_id, code))
+        cell_task.add_done_callback(
+            functools.partial(self._on_cell_done, turn_id, code)
+        )
 
         if background:
             self._detached.add(turn_id)
@@ -685,7 +674,12 @@ class OrchestratorKernel:
 
     # -- gating (M1-NOTEBOOK.md §Gating) --------------------------------------
 
-    async def _gate(self, proposal: Proposal) -> Any:
+    async def gate(self, proposal: Proposal) -> Any:
+        """Display ``proposal``, await a WS ``resolve()``, update in place.
+
+        Public because ``Workbench`` (which lives in a different module and
+        holds only the kernel, not its internals) is the primary caller.
+        """
         dh = display(proposal, display_id=proposal.id)
         fut: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self.pending[proposal.id] = fut
@@ -702,20 +696,6 @@ class OrchestratorKernel:
     def restore_streams(self) -> None:
         sys.stdout = self._real_stdout
         sys.stderr = self._real_stderr
-
-
-# -- wb namespace stub --------------------------------------------------------
-
-
-class _WbNamespace:
-    """The spike's ``wb.*`` — just enough to exercise gating from user code."""
-
-    def __init__(self, kernel: OrchestratorKernel) -> None:
-        self._k = kernel
-
-    async def ask_human(self, question: str, options: list[str] | None = None) -> str:
-        p = Prompt(question, options)
-        return str(await self._k._gate(p))
 
 
 # -- helpers ------------------------------------------------------------------

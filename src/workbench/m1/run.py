@@ -22,7 +22,7 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from inspect_ai import Task, eval_async
-from inspect_ai.log import EvalSampleSummary, list_eval_logs
+from inspect_ai.log import EvalSampleSummary
 from inspect_ai.log._file import (  # noqa: PLC2701
     read_eval_log_sample_summaries_async,
 )
@@ -213,10 +213,10 @@ class RunHandle:
     _log_file: str | None = field(default=None, repr=False)
     _poll_interval: float = field(default=0.25, repr=False)
 
-    kind: str = "eval"  # WB_MIME dispatch key
+    kind: str = "eval_run"  # WB_MIME dispatch key
 
     @property
-    def done(self) -> int:
+    def n_done(self) -> int:
         return sum(1 for r in self.rows.values() if r.status == "done")
 
     @property
@@ -246,7 +246,7 @@ class RunHandle:
         last: tuple[int, ...] | None = None
         while not eval_task.done():
             await self._poll()
-            sig = (len(self.rows), self.done)
+            sig = (len(self.rows), self.n_done)
             if sig != last:
                 last = sig
                 self._update()
@@ -259,12 +259,25 @@ class RunHandle:
         elif (exc := eval_task.exception()) is not None:
             self.error = f"{type(exc).__name__}: {exc}"
         self._update()
+        # Drop this run's control entries — sample ids can collide across
+        # runs, and ``_row`` reads ``CONTROL[id].stop`` to distinguish
+        # stopped from errored.
+        for sid in self.rows:
+            CONTROL.pop(sid, None)
 
     async def _poll(self) -> None:
         if self._log_file is None:
-            for info in list_eval_logs(self.log_dir):
-                self._log_file = info.name
-                break
+            # Resolve from the in-process registry — set the moment the
+            # first sample enters its context, earlier than the ``.eval``
+            # header is flushed to disk.
+            self._log_file = next(
+                (
+                    s.log_location
+                    for s in active_samples()
+                    if s.log_location.startswith(self.log_dir)
+                ),
+                None,
+            )
             if self._log_file is None:
                 return
         summaries = await read_eval_log_sample_summaries_async(self._log_file)
@@ -288,6 +301,15 @@ class RunHandle:
         if self._dh is not None:
             self._dh.update(self)
 
+    def _start(self, coro: Any) -> "RunHandle":
+        """Display the card, spawn the eval + watcher. Owns the field wiring
+        so the ``display → task → watcher`` invariant lives with the class,
+        not scattered across ``_launch``."""
+        self._dh = display(self, display_id=self.id)
+        self._task = asyncio.create_task(coro)
+        self._watcher = asyncio.create_task(self._watch(self._task))
+        return self
+
     # -- repr -------------------------------------------------------------
 
     def _repr_mimebundle_(
@@ -299,7 +321,7 @@ class RunHandle:
         return {
             "text/plain": (
                 f"<{type(self).__name__} {self.task_name} · "
-                f"{self.done}/{self.total} · {state}>"
+                f"{self.n_done}/{self.total} · {state}>"
             ),
             WB_MIME: {
                 "kind": self.kind,
@@ -309,7 +331,7 @@ class RunHandle:
                 "log_dir": self.log_dir,
                 "log": self._log_file,
                 "total": self.total,
-                "done": self.done,
+                "done": self.n_done,
                 "finished": self.finished,
                 "error": self.error,
                 "rows": [vars(r) for r in self.rows.values()],
@@ -322,7 +344,7 @@ class AuditRunHandle(RunHandle):
     """``run_audits`` handle — per-audit rows are ``wb://audit/{id}`` links;
     ``.audits`` returns ``samples_df(log_dir)`` when done."""
 
-    kind: str = "run"
+    kind: str = "audit_run"
 
     @property
     def audits(self) -> Any:
@@ -361,9 +383,4 @@ async def _launch(
     )
     if handle_id is not None:
         h.id = handle_id
-    h._dh = display(h, display_id=h.id)
-    h._task = asyncio.create_task(
-        eval_async(task, log_dir=log_dir, log_buffer=1, **eval_kw)
-    )
-    h._watcher = asyncio.create_task(h._watch(h._task))
-    return h
+    return h._start(eval_async(task, log_dir=log_dir, log_buffer=1, **eval_kw))
