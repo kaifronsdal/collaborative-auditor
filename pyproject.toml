@@ -10,6 +10,7 @@ dependencies = [
     "fastapi>=0.132.0",
     "inspect-ai>=0.3.180",
     "inspect-petri",
+    "ipython>=9.14.1",
     "jsonpatch>=1.33",
     "openai>=2.24.0",
     "pydantic>=2.12.5",
