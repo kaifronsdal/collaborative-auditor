@@ -166,6 +166,16 @@ async def _amain() -> None:  # noqa: PLR0915
             await asyncio.sleep(0.15)
             await _shot(page, "02-turn1-outputs", clip=await orch_col.bounding_box())
 
+            # ── 02b: hover the prose → BlockActions row (copy + rewind) ─────
+            await orch_col.locator(
+                ".turn[data-turn='1'] .asst-prose"
+            ).first.hover()
+            await asyncio.sleep(0.15)
+            await _shot(
+                page, "02b-block-actions", clip=await orch_col.bounding_box()
+            )
+            await page.mouse.move(0, 0)  # un-hover so later shots are clean
+
             # ── turn 2: gate pending (do NOT resolve yet) ───────────────────
             orch.step()
             await _wait_for(lambda: orch.kernel.gate.pending)
@@ -225,6 +235,7 @@ async def _amain() -> None:  # noqa: PLR0915
                 ".orch-col .cc-head[role='button']"
             ).all():
                 await head.click()
+            await page.mouse.move(0, 0)
             await asyncio.sleep(0.1)
             await orch_col.locator(".column").evaluate("(el) => { el.scrollTop = 0; }")
             await _shot(page, "07-full-column", full=True)

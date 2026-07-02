@@ -12,6 +12,7 @@ import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { marked } from "marked";
 
 import { useSession } from "../../store/session";
+import { BlockActions, CopyBtn, tableToTsv } from "./BlockActions";
 import { cards } from "./cards";
 import {
   STREAM_MIME,
@@ -33,6 +34,21 @@ export type OutputProps = {
 /** Kinds whose fallback shell gets the gate treatment. */
 const GATED = new Set(["run_proposal", "cite_proposal", "prompt"]);
 
+/** §6: pick the most useful clipboard representation of a bundle. Thunked so
+ *  DataFrame TSV / JSON.stringify only run on click. */
+function bundleCopyText(bundle: DisplayBundle): () => string {
+  return () => {
+    const html = bundle["text/html"];
+    if (html != null && html.includes('class="dataframe"')) return tableToTsv(html);
+    if (bundle["text/markdown"] != null) return bundle["text/markdown"];
+    if (bundle[STREAM_MIME] != null) return bundle[STREAM_MIME].text;
+    if (bundle["text/plain"] != null) return bundle["text/plain"];
+    if (bundle[WB_MIME] != null) return JSON.stringify(bundle[WB_MIME], null, 2);
+    if (html != null) return html;
+    return JSON.stringify(bundle, null, 2);
+  };
+}
+
 export function Output({ id, bundle, meta, stable, settled }: OutputProps): JSX.Element | null {
   const send = useSession((s) => s.send);
   void meta;
@@ -50,17 +66,31 @@ export function Output({ id, bundle, meta, stable, settled }: OutputProps): JSX.
 
   const inner = renderBundle(id, bundle, send);
   if (inner == null) return null;
-  // Gated cards have interactive controls → self-evidently live; no badge.
+  // Gated cards have interactive controls → self-evidently live; no icon row
+  // (its bottom-right is the approve/deny bar) and no `live` badge.
   if (bundle[WB_MIME]?.pending) return inner;
+  const actions = (
+    <BlockActions>
+      <CopyBtn text={bundleCopyText(bundle)} />
+    </BlockActions>
+  );
   // UI-AUDIT §C: only badge stable outputs while their cell is still running;
   // once settled, no more updates can land, so drop the badge entirely.
-  if (!stable || settled) return inner;
+  if (!stable || settled) {
+    return (
+      <div className="ba-host">
+        {inner}
+        {actions}
+      </div>
+    );
+  }
   return (
-    <div className="out-wrap" data-stable data-updates={updates.current}>
+    <div className="out-wrap ba-host" data-stable data-updates={updates.current}>
       {inner}
       <span className="out-live" title={`live — updated ${updates.current}×`}>
         live
       </span>
+      {actions}
     </div>
   );
 }

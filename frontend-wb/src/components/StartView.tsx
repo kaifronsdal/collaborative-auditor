@@ -71,8 +71,9 @@ function OrchStartCard(): JSX.Element {
         onChange={(e) => setSystemPrompt(e.target.value)}
       />
       <div className="start-controls">
+        {/* The tab already says "Orchestrator" — the role chip was redundant. */}
         <label className="mp-field">
-          <span className="mp-role">orchestrator</span>
+          <span className="mp-role">model</span>
           <select
             className="mp-select"
             value={model}

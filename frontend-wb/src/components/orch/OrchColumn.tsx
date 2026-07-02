@@ -26,7 +26,7 @@ import type { Status } from "../../lib/wire";
 import { useSession } from "../../store/session";
 import { IconPause, IconPlay, IconSend, IconStep, IconStop } from "../icons";
 import { ShimmerBubble } from "../ShimmerBubble";
-import { OrchTurn } from "./OrchTurn";
+import { OrchTurn, type NsSummary } from "./OrchTurn";
 import {
   ORCH_SOURCE,
   WB_MIME,
@@ -67,9 +67,10 @@ function shortModel(name: string | undefined): string {
 export function OrchColumn(): JSX.Element {
   const send = useSession((s) => s.send);
   const orch = useSession((s) => s.orchestrator);
+  const rewound = useSession((s) => s.rewound);
   const events = useEvents(ORCH, ORCH);
 
-  const turns = useMemo(() => eventsToOrchTurns(events), [events]);
+  const turns = useMemo(() => eventsToOrchTurns(events, rewound), [events, rewound]);
   const status = orch?.status ?? "idle";
   const isRunning = status === "running" || status === "waiting";
   const bgCells = orch?.bg_cells ?? EMPTY_BG;
@@ -116,22 +117,58 @@ export function OrchColumn(): JSX.Element {
     return m;
   }, [notifications]);
 
+  // §7: accumulate the `ns` snapshot from every settled cell's `cell_done`
+  // output — later cells win on rebind. Passed to every `<OrchTurn>` so the
+  // collapsed `.cc-gist` can decorate identifiers with a `type · repr` tooltip.
+  const ns = useMemo<NsSummary>(() => {
+    const acc: Record<string, string> = {};
+    for (const t of turns) {
+      for (const o of t.outputs) {
+        const wb = o.data.bundle[WB_MIME];
+        if (wb?.kind !== "cell_done") continue;
+        const snap = wb.ns as Record<string, string> | undefined;
+        if (snap) Object.assign(acc, snap);
+      }
+    }
+    return acc;
+  }, [turns]);
+
   // Follow the live tail (same policy as M0 `LinearColumn`).
   const scrollRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  // §4: while the user has scrolled away from the tail, count new turns that
+  // land and offer a floating `↓ N new` pill to jump back.
+  const [unseen, setUnseen] = useState(0);
+  const prevTurnCount = useRef(turns.length);
   const onScroll = (): void => {
     const el = scrollRef.current;
     if (!el) return;
-    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const atTail = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    stick.current = atTail;
+    if (atTail) setUnseen(0);
   };
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   });
   useEffect(() => {
+    const grew = turns.length - prevTurnCount.current;
+    prevTurnCount.current = turns.length;
+    // Only count arrivals while scrolled away — the layout effect above already
+    // followed the tail otherwise. `grew < 0` after a rewind → clear.
+    if (grew > 0 && !stick.current) setUnseen((n) => n + grew);
+    else if (grew < 0) setUnseen(0);
+  }, [turns.length]);
+  useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, []);
+  const scrollToTail = (): void => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    stick.current = true;
+    setUnseen(0);
+  };
 
   const jumpToGate = (id: string): void => {
     const el = scrollRef.current?.querySelector<HTMLElement>(
@@ -152,6 +189,15 @@ export function OrchColumn(): JSX.Element {
     // "send now" while a cell is running: background it, then deliver.
     send({ t: "detach_cell" });
     sendText();
+  };
+  // §11: kill the running cell (partial output preserved as the tool result)
+  // and inject `text` into the *same* generate that reads that result — the
+  // Cursor/Claude-Code Escape pattern. Distinct from `sendNow` (backgrounds
+  // the cell; message reads *after* it settles).
+  const interruptAndSend = (): void => {
+    if (!hasText || !last) return;
+    send({ t: "interrupt_and_send", turn: last.turn, text });
+    setText("");
   };
 
   const meta = [
@@ -175,12 +221,18 @@ export function OrchColumn(): JSX.Element {
         {turns.map((t, i) => (
           <Fragment key={t.model.uuid ?? t.turn}>
             {i > 0 && <div className="turn-sep" />}
-            <OrchTurn data={t} bgCells={bgCells} settledBg={settledBg.get(t.turn)} />
+            <OrchTurn data={t} bgCells={bgCells} settledBg={settledBg.get(t.turn)} ns={ns} />
           </Fragment>
         ))}
 
         {isRunning && !last?.model.pending && <ShimmerBubble />}
       </div>
+
+      {unseen > 0 && (
+        <button type="button" className="scroll-new" onClick={scrollToTail}>
+          <i className="bi bi-arrow-down" /> {unseen} new
+        </button>
+      )}
 
       <div className="composer">
         <textarea
@@ -196,7 +248,8 @@ export function OrchColumn(): JSX.Element {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              sendText();
+              if (cellRunning) interruptAndSend();
+              else sendText();
             }
           }}
           placeholder="Instruct the orchestrator…"
@@ -209,7 +262,7 @@ export function OrchColumn(): JSX.Element {
                 title="interrupt cell"
                 onClick={() => send({ t: "cancel_cell", turn: turns.length })}
               >
-                <IconStop />
+                <IconStop size={14} />
               </button>
             )}
             <button
@@ -218,33 +271,43 @@ export function OrchColumn(): JSX.Element {
               disabled={isRunning}
               onClick={() => send({ t: "step", target: ORCH })}
             >
-              <IconStep />
+              <IconStep size={14} />
             </button>
             <button
               type="button"
               title={isRunning ? "pause after this turn" : "run"}
               onClick={() => send({ t: isRunning ? "pause" : "play", target: ORCH })}
             >
-              {isRunning ? <IconPause /> : <IconPlay />}
+              {isRunning ? <IconPause size={14} /> : <IconPlay size={15} />}
             </button>
           </div>
           {cellRunning && hasText ? (
             <span className="composer-hint composer-hint-running">
-              reads after turn {turns.length} · <a onClick={sendNow}>send now</a>
+              or queue · <a onClick={sendNow}>send now (background)</a>
             </span>
           ) : (
             <span className="composer-hint">
               enter to send · shift+enter newline
             </span>
           )}
-          <button
-            className="primary primary-send"
-            onClick={sendText}
-            disabled={!hasText}
-            title="Send to orchestrator"
-          >
-            <IconSend size={16} />
-          </button>
+          {cellRunning && hasText ? (
+            <button
+              className="primary primary-send primary-interrupt"
+              onClick={interruptAndSend}
+              title="Interrupt the running cell and send now"
+            >
+              <i className="bi bi-send" style={{ fontSize: 13 }} />
+            </button>
+          ) : (
+            <button
+              className="primary primary-send"
+              onClick={sendText}
+              disabled={!hasText}
+              title="Send to orchestrator"
+            >
+              <IconSend size={16} />
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -369,13 +432,23 @@ function OrchHeader({
  * The user "ask" for turn N is the delta between turn N's `ModelEvent.input`
  * and turn N-1's — i.e. the trailing user messages the composer / `orch_send`
  * appended before this generate.
+ *
+ * §2 rewind: events whose uuid is in `rewound` (live `{t:"rewound"}` push) or
+ * that carry a top-level `rewound: true` flag (reconnect snapshot —
+ * `session.mark_rewound` writes it directly onto the stored event dict) are
+ * dropped — they belong to a turn the user restarted from.
  */
-export function eventsToOrchTurns(events: readonly Event[]): OrchTurnData[] {
+export function eventsToOrchTurns(
+  events: readonly Event[],
+  rewound: ReadonlySet<string> = EMPTY_REWOUND
+): OrchTurnData[] {
   const turns: OrchTurnData[] = [];
   const byTurn = new Map<number, OrchTurnData>();
   let prevInputLen = 0;
 
   for (const ev of events) {
+    if (ev.uuid != null && rewound.has(ev.uuid)) continue;
+    if ((ev as { rewound?: unknown }).rewound === true) continue;
     if (ev.event === "model") {
       const turn = turns.length + 1;
       // Trailing non-assistant messages since the previous generate.
@@ -405,3 +478,4 @@ export function eventsToOrchTurns(events: readonly Event[]): OrchTurnData[] {
 const EMPTY_BG: readonly number[] = [];
 const GATE_KINDS = new Set(["prompt", "run_proposal", "cite_proposal"]);
 const EMPTY_NOTIF: readonly string[] = [];
+const EMPTY_REWOUND: ReadonlySet<string> = new Set();

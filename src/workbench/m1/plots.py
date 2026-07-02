@@ -29,6 +29,146 @@ INK: dict[str, Any] = dict(
 ACCENT, OK, DANGER = "#2f76da", "#479e76", "#b33232"
 
 
+# -- model → color (M1-PLOTTING.md §Model palette) ---------------------------
+#
+# One hue per provider (brand-adjacent, ≥30° apart so provider is the
+# dominant visual grouping); lightness varies by tier within a provider
+# (flagship = darker/saturated, small = lighter), then a small nudge by
+# version so e.g. opus-4-8 vs opus-4-6 are distinguishable side-by-side.
+# The explicit ``MODEL_COLORS`` dict pins common ids to stable hexes;
+# ``model_color()`` falls through to the hue/tier heuristic for anything
+# not listed. Update the dict as new models ship.
+
+_PROVIDER_HUE: dict[str, tuple[int, int]] = {
+    # provider → (H°, S%). Anthropic clay-orange ≈ H24; Gemini gradient
+    # ≈ H270; user spec: openai=blue, google=purple.
+    "anthropic": (24, 68),
+    "openai": (210, 62),
+    "google": (270, 55),
+    "x-ai": (0, 0),  # grok — greyscale
+    "meta-llama": (195, 55),  # cyan (dodge openai-blue)
+    "meta": (195, 55),
+    "mistral": (45, 70),  # amber (dodge anthropic-orange)
+    "deepseek": (245, 60),
+    "moonshotai": (330, 55),  # kimi — magenta
+    "z-ai": (165, 50),  # glm — teal
+    "cohere": (300, 50),
+    "together": (150, 45),
+    "mockllm": (0, 0),
+}
+
+#: Tier keywords → lightness delta from L=50%. Flagship darker; distilled
+#: lighter. Matched as substrings against the model id (first hit wins).
+_TIER_L: tuple[tuple[str, int], ...] = (
+    ("deep-think", -14), ("ultra", -14),
+    ("opus", -10), ("pro", -8), ("o3", -8), ("o1", -6), ("large", -8),
+    ("mythos", -4), ("grok-4", -4),
+    ("sonnet", 0), ("gpt-5", 0), ("gpt-4", 6), ("medium", 0), ("chat", 4),
+    ("gemini", 0), ("glm", 0), ("kimi", 0), ("llama", 0), ("grok", 0),
+    ("flash", 10), ("haiku", 12), ("mini", 14), ("small", 12),
+    ("nano", 18), ("lite", 16), ("oss", 8),
+)
+
+
+def _hsl(h: int, s: int, lightness: int) -> str:
+    """HSL → ``#rrggbb``. Clamps L to [15, 85] so nothing goes near-black/white."""
+    import colorsys  # noqa: PLC0415
+
+    lightness = max(15, min(85, lightness))
+    r, g, b = colorsys.hls_to_rgb(h / 360, lightness / 100, s / 100)
+    return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
+
+
+def _version_nudge(name: str) -> int:
+    """Small L offset from the trailing version number so adjacent
+    releases within a tier are distinguishable (newer → slightly darker)."""
+    import re  # noqa: PLC0415
+
+    if m := re.search(r"(\d+)[.\-]?(\d+)?", name.rsplit("/", 1)[-1]):
+        major = int(m.group(1))
+        minor = int(m.group(2) or 0)
+        # Clamp so a runaway version number doesn't blow past the tier band.
+        return -min(8, major + minor // 2)
+    return 0
+
+
+def model_color(model_id: str) -> str:
+    """Deterministic hex color for a model id.
+
+    Provider decides hue; tier keyword decides lightness band; version
+    number nudges within the band. Unknown providers hash to a hue so
+    every id gets *something* stable. Prefer the explicit
+    ``MODEL_COLORS`` entry when present.
+    """
+    if (c := MODEL_COLORS.get(model_id)) is not None:
+        return c
+    provider, _, name = model_id.partition("/")
+    if not name:
+        name, provider = provider, ""
+    # Normalise a few aliases inspect uses.
+    provider = {"vertex": "google", "azure": "openai", "bedrock": "anthropic"}.get(
+        provider, provider
+    )
+    if provider in _PROVIDER_HUE:
+        h, s = _PROVIDER_HUE[provider]
+    else:
+        # Try to infer from the name (e.g. bare ``claude-opus-4-8``).
+        for key, (h, s) in _PROVIDER_HUE.items():
+            if key in name or name.startswith(
+                {"anthropic": "claude", "openai": "gpt", "google": "gemini",
+                 "x-ai": "grok", "moonshotai": "kimi", "z-ai": "glm"}.get(key, key)
+            ):
+                break
+        else:
+            h, s = (hash(provider or name) % 360, 45)
+    tier_l = next((dl for kw, dl in _TIER_L if kw in name.lower()), 0)
+    return _hsl(h, s, 50 + tier_l + _version_nudge(name))
+
+
+def model_colormap(models: Sequence[str]) -> dict[str, str]:
+    """``{model_id: hex}`` — pass as ``color_discrete_map=`` to ``px.*``."""
+    return {m: model_color(m) for m in models}
+
+
+#: Explicit pins for models we know about today (CLAUDE.md §Recent
+#: Frontier Models). Everything else falls through to ``model_color``'s
+#: heuristic. Update as new models ship.
+MODEL_COLORS: dict[str, str] = {
+    # Anthropic — clay orange, opus darkest → haiku lightest
+    "anthropic/claude-opus-4-8": "#c85a2e",
+    "anthropic/claude-opus-4-7": "#cf6236",
+    "anthropic/claude-opus-4-6": "#d56a3f",
+    "anthropic/claude-mythos-preview": "#d9744b",
+    "anthropic/claude-sonnet-5": "#df7d54",
+    "anthropic/claude-sonnet-4-6": "#e4885f",
+    "anthropic/claude-haiku-4-5-20251001": "#eda57f",
+    # OpenAI — blue
+    "openai/gpt-5.4-pro": "#2a5f9e",
+    "openai/gpt-5.4": "#3a6fad",
+    "openai/gpt-5.3-codex": "#4278b4",
+    "openai/gpt-5.3-chat-latest": "#4f84bd",
+    "openai/gpt-5.2": "#5b8fc5",
+    "openai/gpt-5-mini": "#7fa9d4",
+    "openai/gpt-oss-120b": "#94b7dc",
+    # Google — purple
+    "google/gemini-3.1-deep-think": "#5d3fa8",
+    "google/gemini-3.1-pro": "#6d50b5",
+    "google/gemini-3.5-flash": "#9a80d1",
+    "google/gemini-3-flash-preview": "#a892d9",
+    # xAI — greyscale
+    "x-ai/grok-4.3": "#3a3a3a",
+    "x-ai/grok-4.1": "#525252",
+    "x-ai/grok-4": "#6b6b6b",
+    # Zhipu — teal
+    "z-ai/glm-5.1": "#3f9e8a",
+    "z-ai/glm-5": "#52ab98",
+    # Moonshot — magenta
+    "moonshotai/kimi-k2.6": "#b84a8f",
+    "moonshotai/kimi-k2.5": "#c25e9c",
+    "moonshotai/kimi-k2-0905": "#cc72a9",
+}
+
+
 def install_template() -> None:
     """Register ``pio.templates["workbench"]`` and layer it on ``plotly_white``.
 
@@ -61,7 +201,12 @@ def install_template() -> None:
     pio.templates["workbench"] = go.layout.Template(
         layout=dict(
             font=dict(
-                family="Inter, -apple-system, Segoe UI, Roboto, sans-serif",
+                # Match ``frontend-wb/src/styles.css`` ``--sans`` exactly so
+                # in-column figures use the same face as the surrounding UI.
+                family=(
+                    "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, "
+                    "Inter, sans-serif"
+                ),
                 size=12,
                 color=INK["mid"],
             ),
@@ -251,12 +396,18 @@ class Plots:
     """The ``wb.plots.*`` surface — thin wrappers over ``px``."""
 
     INK, ACCENT, OK, DANGER = INK, ACCENT, OK, DANGER
+    MODEL_COLORS = MODEL_COLORS
 
     link = staticmethod(link)
     annotate_top = staticmethod(annotate_top)
     paired_slope = staticmethod(paired_slope)
     replicate_grid = staticmethod(replicate_grid)
     survival = staticmethod(survival)
+    model_color = staticmethod(model_color)
+    model_colormap = staticmethod(model_colormap)
 
     def __repr__(self) -> str:
-        return "<wb.plots · link annotate_top paired_slope replicate_grid survival>"
+        return (
+            "<wb.plots · link annotate_top paired_slope replicate_grid "
+            "survival model_color model_colormap>"
+        )

@@ -4,12 +4,13 @@
  * Layout: assistant prose (where `wb.report` content went) → the `python`
  * code cell → outputs in emission order → traceback if the cell raised.
  */
-import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import { marked } from "marked";
 
 import type { ChatMessage, ToolCallError } from "@tsmono/inspect-common";
 
 import { useSession } from "../../store/session";
+import { BlockActions, CopyBtn } from "./BlockActions";
 import { Output } from "./Output";
 import {
   STREAM_MIME,
@@ -19,6 +20,10 @@ import {
   type OrchTurnData,
 } from "./types";
 
+/** §7: `{name: "TypeName · repr…"}` snapshot of `user_ns` shipped in the
+ *  `cell_done` output; used to decorate identifiers in the collapsed gist. */
+export type NsSummary = Readonly<Record<string, string>>;
+
 type Props = {
   data: OrchTurnData;
   /** Turn ids of cells still running detached — draws the `bg` accent. */
@@ -27,9 +32,13 @@ type Props = {
    *  parses `orch.notifications` for `cell-{N} … bound: <name>` and threads
    *  the map down so the origin cell's `.cc-bg-chip` reads `done · <name>`. */
   settledBg?: string;
+  /** Accumulated `ns_summary` across all settled cells — every name currently
+   *  bound in the kernel. Collapsed `.cc-gist` wraps matching tokens with a
+   *  native-tooltip span. */
+  ns: NsSummary;
 };
 
-export function OrchTurn({ data, bgCells, settledBg }: Props): JSX.Element {
+export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
   const { turn, model, userInput, py, outputs } = data;
   const asst = model.output?.choices?.[0]?.message;
   const code = typeof py?.arguments.code === "string" ? py.arguments.code : "";
@@ -44,6 +53,14 @@ export function OrchTurn({ data, bgCells, settledBg }: Props): JSX.Element {
     (o) => o.data.bundle[WB_MIME]?.kind === "traceback"
   );
   const errored = py?.error != null || hasTbCard;
+  // §5: `kernel._settle` emits a `{kind:"cell_done", turn, duration, ns, …}`
+  // display once the cell finishes. It's metadata, not a visible output —
+  // pull `duration` for the `.cc-head` chip and drop it from `displays`.
+  const cellDone = outputs.find(
+    (o) => o.data.bundle[WB_MIME]?.kind === "cell_done"
+  )?.data.bundle[WB_MIME];
+  const duration =
+    typeof cellDone?.duration === "number" ? cellDone.duration : undefined;
 
   // Dedupe (§16) then coalesce adjacent stdout/stderr chunks (UI-AUDIT §C).
   // Coalescing builds fresh event objects (never mutate store state); memoise
@@ -61,8 +78,9 @@ export function OrchTurn({ data, bgCells, settledBg }: Props): JSX.Element {
     );
     const deduped = outputs.filter(
       (o) =>
-        o.data.stable ||
-        !stableWbIds.has(o.data.bundle[WB_MIME]?.id as string | undefined ?? "")
+        o.data.bundle[WB_MIME]?.kind !== "cell_done" &&
+        (o.data.stable ||
+          !stableWbIds.has(o.data.bundle[WB_MIME]?.id as string | undefined ?? ""))
     );
     // Fold adjacent stream events of the same channel into one — the kernel
     // flushes stdout in small chunks, which otherwise render as N grey rails.
@@ -96,7 +114,11 @@ export function OrchTurn({ data, bgCells, settledBg }: Props): JSX.Element {
       {userInput.map((m) => (
         <UserAsk key={m.id ?? `${turn}-u`} msg={m} />
       ))}
-      <AssistantProse content={asst?.content ?? ""} pending={!!model.pending} />
+      <AssistantProse
+        content={asst?.content ?? ""}
+        pending={!!model.pending}
+        turn={turn}
+      />
       {py && (
         <CodeCell
           turn={turn}
@@ -106,6 +128,8 @@ export function OrchTurn({ data, bgCells, settledBg }: Props): JSX.Element {
           errored={errored}
           background={py.arguments.background === true}
           settledBg={settledBg}
+          duration={duration}
+          ns={ns}
         />
       )}
       {displays.map((ev) => (
@@ -149,10 +173,13 @@ function contentText(content: ChatMessage["content"]): string {
 function AssistantProse({
   content,
   pending,
+  turn,
 }: {
   content: ChatMessage["content"];
   pending: boolean;
+  turn: number;
 }): JSX.Element | null {
+  const send = useSession((s) => s.send);
   const md = contentText(content);
   const html = useMemo(
     () => (md ? linkifyRefs(marked.parse(md, { async: false })) : ""),
@@ -160,8 +187,33 @@ function AssistantProse({
   );
   if (!md && !pending) return null;
   const body = pending ? html + '<span class="cursor"></span>' : html;
+  // §6: prose is `dangerouslySetInnerHTML`, so the icon row can't be a child of
+  // it — wrap both in a `.ba-host` so `:hover` reveals the row over the prose.
   return (
-    <div className="asst-prose md" dangerouslySetInnerHTML={{ __html: body }} />
+    <div className="ba-host">
+      <div className="asst-prose md" dangerouslySetInnerHTML={{ __html: body }} />
+      {!pending && (
+        <BlockActions>
+          <CopyBtn text={md} title="copy markdown" />
+          <button
+            type="button"
+            title={`rewind to before turn ${turn}`}
+            onClick={() => {
+              if (
+                confirm(
+                  `Restart from turn ${turn}? Later turns will be discarded. ` +
+                    `Kernel bindings are kept.`
+                )
+              ) {
+                send({ t: "rewind", turn });
+              }
+            }}
+          >
+            <i className="bi bi-arrow-counterclockwise" />
+          </button>
+        </BlockActions>
+      )}
+    </div>
   );
 }
 
@@ -183,6 +235,23 @@ function firstNonBlankLine(code: string): string {
   return "";
 }
 
+/** §7: split on identifier boundaries (the regex is capturing, so `split`
+ *  interleaves separators and tokens); wrap tokens that are live `user_ns`
+ *  keys with a native-tooltip span showing `type · repr`. */
+function tokenizeGist(line: string, ns: NsSummary): ReactNode {
+  if (!line) return line;
+  return line.split(/(\b[A-Za-z_]\w*\b)/).map((tok, i) => {
+    const summary = ns[tok];
+    return summary != null ? (
+      <span key={i} className="cc-var" title={summary}>
+        {tok}
+      </span>
+    ) : (
+      tok
+    );
+  });
+}
+
 function CodeCell({
   turn,
   code,
@@ -191,6 +260,8 @@ function CodeCell({
   errored,
   background,
   settledBg,
+  duration,
+  ns,
 }: {
   turn: number;
   code: string;
@@ -199,6 +270,8 @@ function CodeCell({
   errored: boolean;
   background: boolean;
   settledBg: string | undefined;
+  duration: number | undefined;
+  ns: NsSummary;
 }): JSX.Element {
   const send = useSession((s) => s.send);
   // UI-AUDIT §C: collapsed-first. A settled, non-erroring cell is noise —
@@ -226,9 +299,9 @@ function CodeCell({
   // When expanded the body already shows line 1, so the head gist would just
   // duplicate it — swap for a faint `python · N lines` label instead.
   const loc = code.trimEnd().split("\n").length;
-  const gist = open
+  const gist: ReactNode = open
     ? `python · ${loc} line${loc === 1 ? "" : "s"}`
-    : firstNonBlankLine(code);
+    : tokenizeGist(firstNonBlankLine(code), ns);
   const toggle = (): void => {
     if (forceOpen) return;
     userToggled.current = true;
@@ -276,12 +349,25 @@ function CodeCell({
             <i className="bi bi-layer-backward" /> run in background
           </button>
         )}
+        {duration != null && (
+          <span className="cc-dur" title={`cell ran for ${duration.toFixed(2)}s`}>
+            {duration.toFixed(1)}s
+          </span>
+        )}
         <span className="turn-no">turn {turn}</span>
       </div>
       {open && (
         <pre>
           <code>{code}</code>
         </pre>
+      )}
+      {/* Only when expanded — the collapsed head is a single ~28px row where an
+          absolute button would collide with `.turn-no`, and copying a one-line
+          gist isn't worth the affordance. */}
+      {open && (
+        <BlockActions>
+          <CopyBtn text={code} title="copy code" />
+        </BlockActions>
       )}
     </div>
   );

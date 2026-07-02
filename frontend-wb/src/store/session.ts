@@ -139,6 +139,11 @@ export type SessionState = {
   /** M1 orchestrator column state (M1-NOTEBOOK.md). Null until
    *  `start_orchestrator` — DeskView keeps its M0 two-column layout. */
   orchestrator: OrchestratorState | null;
+  /** Orch event uuids invalidated by a `{t:"rewind"}` (M1-FEATURES §2). Events
+   *  aren't removed from `byRole` (wire monotonicity); `eventsToOrchTurns`
+   *  filters them. Cleared on the next full `state` (which carries per-event
+   *  `data.rewound` flags instead). */
+  rewound: ReadonlySet<string>;
   ws: WebSocket | null;
   /** Id of the session the current socket is for; guards idempotent connect. */
   sessionId: string | null;
@@ -357,6 +362,7 @@ export const useSession = create<SessionState>((set, get) => ({
   pendingNewAudit: false,
   status: null,
   orchestrator: null,
+  rewound: new Set(),
   ws: null,
   sessionId: null,
   sessionsList: [],
@@ -453,6 +459,9 @@ export const useSession = create<SessionState>((set, get) => ({
             branches: msg.branches ?? {},
             candidateBatches: msg.candidate_batches ?? {},
             orchestrator: msg.orchestrator ?? null,
+            // Full snapshot supersedes the live rewound-uuid set — the backend
+            // now carries per-event `data.rewound` flags for the same effect.
+            rewound: new Set(),
             prevCurrent: null,
           };
         }
@@ -474,6 +483,21 @@ export const useSession = create<SessionState>((set, get) => ({
               ? { orchestrator: { ...state.orchestrator, status: msg.orch_status ?? "idle" } }
               : {}),
           };
+        }
+
+        case "rewound": {
+          // §2: mark every orch event at/after `from_uuid` as rewound. The
+          // events stay in `byRole["orch"]["orch"]` (removing would break the
+          // uuid-keyed update path); `eventsToOrchTurns` filters by this set.
+          const orchEvents = state.byRole.orch?.orch ?? [];
+          const idx = orchEvents.findIndex((e) => e.uuid === msg.from_uuid);
+          if (idx < 0) return { version: msg.v };
+          const next = new Set(state.rewound);
+          for (let i = idx; i < orchEvents.length; i++) {
+            const u = orchEvents[i].uuid;
+            if (u != null) next.add(u);
+          }
+          return { rewound: next, version: msg.v };
         }
 
         case "notify": {

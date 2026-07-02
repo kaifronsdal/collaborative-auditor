@@ -229,16 +229,26 @@ body {
 }
 .start-tab {
   flex: 1; display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
-  padding: 8px 16px 9px; border: 1px solid var(--border); border-bottom: none;
-  background: var(--bg-100); font: 13px var(--sans); cursor: pointer;
+  padding: 10px 16px 9px; border: 1px solid var(--border); border-bottom: none;
+  background: var(--bg-100); color: var(--ink-dim);
+  font: 13px var(--sans); cursor: pointer;
   border-radius: 6px 6px 0 0; text-align: left;
 }
-.start-tab-sub { font-size: var(--fs-xs); color: var(--ink-dim); font-weight: 400; }
+/* Fixed subtitle height so both tabs sit level regardless of wrap count. */
+.start-tab-sub {
+  font-size: var(--fs-xs); color: var(--ink-faint); font-weight: 400;
+  min-height: 2.4em; line-height: 1.35;
+}
 .start-tab + .start-tab { border-left: none; }
+/* Active: white bg to blend into the card + 2px accent inset so the selection
+   is unambiguous (bg-100 vs bg-000 alone barely reads). */
 .start-tab.on {
-  background: var(--bg-000); border-bottom: 1px solid var(--bg-000);
+  background: var(--bg-000); color: var(--ink);
+  border-bottom: 1px solid var(--bg-000);
+  box-shadow: inset 0 2px 0 var(--accent);
   position: relative; z-index: 1;
 }
+.start-tab.on .start-tab-sub { color: var(--ink-dim); }
 /* tabs sit flush on the card — square its top corners so the 14px radius
    doesn't peek out past the tabs' straight bottom edge */
 .start-tabs + .start-card { border-top-left-radius: 0; border-top-right-radius: 0; }

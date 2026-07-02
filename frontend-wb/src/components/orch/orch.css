@@ -9,7 +9,7 @@
 }
 
 /* ---- column shell ---- */
-.orch-col-wrap { border-left: 1px solid var(--border); }
+.orch-col-wrap { border-left: 1px solid var(--border); position: relative; }
 .orch-col { padding-bottom: 24px; }
 .orch-head {
   display: flex; align-items: center; gap: 10px;
@@ -64,8 +64,8 @@
 }
 
 /* ---- one turn ---- */
-.orch-col .turn { margin: 0 0 18px; }
-.turn-sep { height: 1px; background: var(--border); margin: 26px -8px 22px; }
+.orch-col .turn { margin: 0 0 22px; }
+.turn-sep { height: 1px; background: var(--border); margin: 34px -8px 28px; }
 
 /* ---- user ask bubble ---- */
 .ask-wrap { display: flex; flex-direction: column; align-items: flex-end; margin: 8px 0 20px; }
@@ -80,10 +80,12 @@
 }
 
 /* ---- assistant prose ---- */
+/* Full-contrast ink at 15px so the model's narration reads as the primary
+   voice — outputs (`.out-plain`, `.out-stream`) sit at ink-mid/ink-dim. */
 .asst-prose {
-  margin: 18px 2px 10px;
-  font: var(--fs-md)/1.55 var(--sans);
-  color: var(--ink-mid);
+  margin: 18px 2px 20px;
+  font: 15px/1.55 var(--sans);
+  color: var(--ink);
 }
 .asst-prose.md > :first-child { margin-top: 0; }
 .asst-prose.md > :last-child { margin-bottom: 0; }
@@ -100,8 +102,9 @@
 
 /* ---- code cell ---- */
 .code-cell {
+  position: relative;
   border: 1px solid var(--border); border-radius: var(--r-md);
-  background: var(--bg-000); overflow: hidden; margin-bottom: var(--sp-2);
+  background: var(--bg-000); overflow: hidden; margin-bottom: 14px;
 }
 /* background/detached cells are labeled by `.cc-bg-chip`, no left rail */
 .code-cell .cc-head {
@@ -509,35 +512,55 @@
 .head-gate-jump .rl-dot { margin: 0; flex-shrink: 0; }
 
 /* Composer transport cluster (⏹ ⏭ ▶/⏸) — relocated from the header per
-   "location follows interaction". Sizing/gap match M0's `.composer-lower`
-   (32px primary, var(--sp-2) row gap; controls sit as a tight sub-group). */
-.composer-controls { display: inline-flex; gap: 4px; }
+   "location follows interaction". Borderless 28px circles so they read as the
+   same species as M0's `.primary` (32px filled circle), just secondary:
+   ink-faint icon, bg-200 hover pill. */
+.composer-controls { display: inline-flex; gap: 2px; }
 .composer-controls button {
-  width: 26px; height: 26px; padding: 0;
+  width: 28px; height: 28px; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-000); cursor: pointer;
-  color: var(--ink-faint);
+  border: none; border-radius: 50%;
+  background: none; cursor: pointer;
+  color: var(--ink-dim); line-height: 1;
 }
 .composer-controls button:hover:not(:disabled) {
-  background: var(--bg-200); color: var(--ink-mid);
+  background: var(--bg-200); color: var(--ink);
 }
-.composer-controls button:disabled { opacity: .4; cursor: default; }
+.composer-controls button:disabled { opacity: .35; cursor: default; }
 /* orch composer send button: darker disabled treatment (default `.primary`
    fades accent to near-invisible pale blue). Hint text ellipsises at narrow
    widths so the transport cluster doesn't collide with it. */
 .orch-col-wrap .primary-send:disabled { opacity: .35; background: var(--ink-faint); }
+/* §11 interrupt-and-send: same circle, but the danger tint signals "this
+   kills the running cell". */
+.orch-col-wrap .primary-interrupt { background: var(--danger); }
 .orch-col-wrap .composer-hint {
   flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
+/* §4: floating `↓ N new` pill. Absolute to `.orch-col-wrap` (which also hosts
+   the composer) so it hovers just above the composer regardless of the
+   textarea's auto-grow height. */
+.scroll-new {
+  position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
+  z-index: 4;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 14px; border: none; border-radius: var(--r-pill);
+  background: hsl(0 0% 18%); color: #fff;
+  font: 12px var(--sans); cursor: pointer;
+  box-shadow: 0 4px 14px hsl(0 0% 0% / .18);
+}
+.scroll-new:hover { filter: brightness(1.15); }
+.scroll-new i { font-size: 12px; }
+
 /* -- turn/output additions -- */
 
 /* CodeCell collapsed-first (UI-AUDIT §C): head is the toggle; when collapsed
-   the head is the whole cell, so drop its bottom border via `:only-child`. */
+   the head is the whole cell (no `<pre>` sibling — only the hover icon row),
+   so drop its bottom border. */
 .cc-head[role="button"] { cursor: pointer; user-select: none; }
-.cc-head:only-child { border-bottom: none; }
+.code-cell.collapsed .cc-head { border-bottom: none; }
 .cc-chev { font-size: 10px; color: var(--ink-faint); flex-shrink: 0; width: 10px; }
 .cc-gist {
   flex: 1; min-width: 0;
@@ -545,10 +568,20 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .cc-gist.cc-lang { font: 11px var(--sans); }
+/* §7: identifiers in the collapsed gist that are live in `user_ns`. Native
+   `title=` tooltip carries `type · repr`. */
+.cc-var {
+  color: var(--ink-dim); cursor: help;
+  text-decoration: underline dotted var(--border);
+  text-underline-offset: 2px;
+}
 .cc-head .cc-bg-chip,
 .cc-head .cc-bg-btn,
 .cc-head .cell-status,
+.cc-head .cc-dur,
 .cc-head .turn-no { flex-shrink: 0; margin-left: 8px; }
+/* §5: `{duration.toFixed(1)}s` — faint mono, sits just left of `turn N`. */
+.cc-dur { font: 10.5px var(--mono); color: var(--ink-faint); }
 
 /* Traceback summary card — ename inherits danger to match icon + evalue
    (base `.out-kind` forces ink-dim, which read as grey next to a red icon). */
@@ -573,6 +606,51 @@
 }
 .tb-toggle:hover { color: var(--ink-mid); }
 .out.traceback .tb-body + .out-plain { border-top: 1px solid var(--border); }
+
+/* ---- §6 BlockActions: hover-reveal icon row (claude.ai idiom) ---- */
+/* `.ba-host` is a layout-transparent wrapper around any block that offers
+   hover actions (prose, code cell, each output). The row sits absolute
+   bottom-right so it works on both bordered cards and bare outputs. */
+.ba-host { position: relative; }
+.block-actions {
+  position: absolute; right: 4px; bottom: 4px; z-index: 3;
+  display: flex; gap: 2px;
+  opacity: 0; transition: opacity .12s; pointer-events: none;
+}
+.ba-host:hover > .block-actions,
+.code-cell:hover > .block-actions { opacity: 1; pointer-events: auto; }
+.block-actions button {
+  width: 24px; height: 24px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-000); color: var(--ink-faint);
+  font-size: 12px; line-height: 1; cursor: pointer;
+}
+.block-actions button:hover { background: var(--bg-200); color: var(--ink-mid); }
+/* `.ba-host` wraps every `<Output>`, so `.out + .out` sibling margins no
+   longer match; the wrapper takes over vertical rhythm. Scoped to
+   `.code-cell ~` so the prose wrapper (which precedes the cell and carries
+   its own margins via `.asst-prose`) isn't double-spaced. */
+.code-cell ~ .ba-host { margin-top: 10px; }
+.code-cell ~ .ba-host > .out,
+.code-cell ~ .ba-host > .out-wrap,
+.code-cell ~ .ba-host > .out-stream { margin-top: 0; }
+/* Prose is often one line — an absolute overlay would sit on the text. Match
+   the M0 `.actions` idiom instead: a bare-icon row under the prose,
+   left-aligned. Absolute at `bottom: 0` so it takes no layout height (no jump
+   on hover, no permanent empty row); `flow-root` on the host contains the
+   prose's 14px bottom margin, giving the row that space to sit in. */
+.ba-host:has(> .asst-prose) { display: flow-root; }
+.ba-host:has(> .asst-prose) > .block-actions {
+  bottom: 0; left: 2px; right: auto; gap: 10px;
+}
+.ba-host:has(> .asst-prose) > .block-actions button {
+  width: auto; height: auto; border: none; background: none;
+  font-size: var(--fs-md);
+}
+.ba-host:has(> .asst-prose) > .block-actions button:hover {
+  background: none; color: var(--ink-mid);
+}
 
 /* Plotly click-to-open affordance — only shown when a trace has customdata. */
 .plotly-host .scatterlayer .points path,
