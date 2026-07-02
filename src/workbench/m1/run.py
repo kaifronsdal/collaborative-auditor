@@ -217,6 +217,8 @@ class RunProposal:
     config: dict[str, Any]
     description: str
     n_per_seed: int = 1
+    #: Target-model id for the config line on the gate card (UI-AUDIT §A).
+    model: str | None = None
     id: str = field(default_factory=lambda: uuid4().hex)
     verdict: dict[str, Any] | None = None
 
@@ -269,7 +271,11 @@ class RunProposal:
                 # ``model`` isn't carried on the proposal (only on the
                 # ``run_audits`` call); ``max_turns`` comes through
                 # ``self.config`` if set.
-                "config": {"n_per_seed": self.n_per_seed, **self.config},
+                "config": {
+                    "model": self.model,
+                    "n_per_seed": self.n_per_seed,
+                    **self.config,
+                },
                 "pending": pending,
                 "verdict": self.verdict,
             },

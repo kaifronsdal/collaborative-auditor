@@ -101,7 +101,7 @@ class Workbench:
 
         seed_list = [seeds] if isinstance(seeds, str) else list(seeds)
         cfg = dict(config or {})
-        prop = RunProposal(seed_list, cfg, description, n_per_seed)
+        prop = RunProposal(seed_list, cfg, description, n_per_seed, model=model)
 
         if prop.n > GATE_THRESHOLD:
             await self._gate(prop)
