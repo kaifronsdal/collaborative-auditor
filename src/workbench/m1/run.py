@@ -86,9 +86,14 @@ async def snapshot_running(sample_id: str) -> tuple[Any, Any]:
     s = next((s for s in active_samples() if str(s.sample.id) == str(sample_id)), None)
     if s is None:
         raise ValueError(f"sample {sample_id!r} not running")
-    if s.store is None:
+    # ``ActiveSample.store`` is a fork addition (@536002a8) that a later
+    # upstream merge dropped the ``self.store = store`` line for while
+    # keeping the kwarg — ``getattr`` so we fall through to adopt rather
+    # than ``AttributeError`` on a fork revision without it.
+    store = getattr(s, "store", None)
+    if store is None:
         return await adopt_running(sample_id)
-    tape = AuditTape(store=s.store)
+    tape = AuditTape(store=store)
     if not tape.trajectories:
         return await adopt_running(sample_id)
     history = History.load(tape.trajectories)
@@ -123,10 +128,15 @@ async def adopt_running(sample_id: str, *, timeout: float = 5.0) -> tuple[Any, A
         raise ValueError(f"sample {sample_id!r} not running")
     log = s.log_location
     s.interrupt("score")
-    # Wait for the recorder to flush this sample.
+    # Wait for the recorder to flush this sample. The recorder copies its
+    # temp zip to ``log`` per flush; a read that races that copy hits an
+    # incomplete zip (``EOCD not found``) — same guard as ``RunHandle._poll``.
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
-        summaries = await read_eval_log_sample_summaries_async(log)
+        try:
+            summaries = await read_eval_log_sample_summaries_async(log)
+        except (zipfile.BadZipFile, ValueError):
+            summaries = []
         if any(str(x.id) == str(sample_id) for x in summaries):
             break
         await asyncio.sleep(0.1)
