@@ -237,11 +237,21 @@ function firstNonBlankLine(code: string): string {
 
 /** §7: split on identifier boundaries (the regex is capturing, so `split`
  *  interleaves separators and tokens); wrap tokens that are live `user_ns`
- *  keys with a native-tooltip span showing `type · repr`. */
+ *  keys with a native-tooltip span showing `type · repr`.
+ *
+ *  False-positive guard: keywords (`for`, `in`) and builtins (`len`, `print`)
+ *  are never in `ns` — the former can't be bound, the latter live under
+ *  `__builtins__` and are excluded by `_seeded`. Attribute access is the one
+ *  real hazard: `df.head` would highlight `head` if the user also has a var
+ *  `head`, so skip any token whose preceding separator ends in `.`. */
 function tokenizeGist(line: string, ns: NsSummary): ReactNode {
   if (!line) return line;
-  return line.split(/(\b[A-Za-z_]\w*\b)/).map((tok, i) => {
-    const summary = ns[tok];
+  const parts = line.split(/(\b[A-Za-z_]\w*\b)/);
+  return parts.map((tok, i) => {
+    // Odd indices are the captured identifiers; even are separators.
+    if (i % 2 === 0) return tok;
+    const afterDot = (parts[i - 1] ?? "").endsWith(".");
+    const summary = afterDot ? undefined : ns[tok];
     return summary != null ? (
       <span key={i} className="cc-var" title={summary}>
         {tok}

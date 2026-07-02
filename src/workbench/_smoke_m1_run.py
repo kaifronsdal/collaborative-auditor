@@ -88,7 +88,7 @@ async def _run(k: OrchestratorKernel) -> None:  # noqa: PLR0915
     final_wb = stable_evs[-1].bundle[WB_MIME]
     assert final_wb["scores"] == [None] * 4, final_wb.get("scores")
     # §7: ns_summary special-cases the handle.
-    assert k._ns_summary()["h"].endswith("4/4 done"), k._ns_summary()["h"]
+    assert "4/4 done" in k._ns_summary()["h"], k._ns_summary()["h"]
     # no inspect progress spew leaked into stream events
     streams = [ev for ev in r.outputs if STREAM_MIME in ev.bundle]
     assert not streams, (

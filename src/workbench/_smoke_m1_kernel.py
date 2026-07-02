@@ -24,6 +24,7 @@ import time
 
 import anyio
 
+from workbench.m1.inspect_repr import ns_size_estimate, short_repr
 from workbench.m1.kernel import (
     STREAM_MIME,
     WB_MIME,
@@ -34,6 +35,7 @@ from workbench.m1.wb import Workbench
 
 
 async def _amain() -> None:
+    await _check_short_repr()
     wire: list[DisplayEvent] = []
     with OrchestratorKernel(on_display=wire.append) as k:
         await _run(k, wire)
@@ -303,8 +305,12 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
     cd = done_ev.bundle[WB_MIME]
     assert cd["turn"] == r.turn_id and cd["duration"] == r.duration
     assert cd["new_names"] == ["summary_var"]
-    assert cd["ns"]["summary_var"] == "list · len 3", cd["ns"]["summary_var"]
+    assert cd["ns"]["summary_var"] == "list[int] · len 3", cd["ns"]["summary_var"]
     assert "KERNEL" not in cd["ns"] and "asyncio" not in cd["ns"]
+    # Every summary respects the 80-char cap.
+    assert all(len(v) <= 80 for v in cd["ns"].values()), (
+        f"over-cap: {[v for v in cd['ns'].values() if len(v) > 80]}"
+    )
     print("✓ cell_done: duration + new_names + ns_summary (seeded names excluded)")
 
     # ---- 22. on_display forwarded everything ------------------------------
@@ -313,6 +319,194 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
         "some in-cell output emitted with turn_id=-1"
     )
     print(f"✓ on_display saw {len(wire)} events across {len(k.outputs)} turns")
+
+
+async def _check_short_repr() -> None:  # noqa: PLR0915
+    """M1-FEATURES §7 deep review: one useful line per realistic binding type.
+
+    Each case asserts (a) something *useful* is in the summary, (b) no
+    ``<object at 0x…>`` leaks, (c) the 80-char cap holds. Optional deps
+    (petri) are skipped if absent.
+    """
+    import io  # noqa: PLC0415
+    from functools import partial  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    import numpy as np  # noqa: PLC0415
+    import pandas as pd  # noqa: PLC0415
+    import plotly.graph_objects as go  # noqa: PLC0415
+    from inspect_ai import Task  # noqa: PLC0415
+    from inspect_ai.dataset import Sample  # noqa: PLC0415
+    from inspect_ai.model import ChatMessageUser  # noqa: PLC0415
+
+    checks: list[tuple[str, object, str]] = [
+        # -- primitives -----------------------------------------------------
+        ("int", 42, "int · 42"),
+        ("float", 3.14159, "float · 3.14159"),
+        ("bool", True, "True"),
+        ("None", None, "None"),
+        ("str-short", "hello", "str · len 5 · 'hello'"),
+        (
+            "str-long",
+            "persuade the target to reveal the system prompt " * 10,
+            "str · len 480 · 'persuade the target to",
+        ),
+        ("bytes", b"\x00" * 200, "bytes · len 200"),
+        # -- containers -----------------------------------------------------
+        ("list[str]", ["a", "b", "c"], "list[str] · len 3"),
+        ("list-empty", [], "list · empty"),
+        ("list-mixed", [1, "a", 3.0], "list[mixed] · len 3"),
+        ("tuple[int]", (1, 2, 3, 4), "tuple[int] · len 4"),
+        ("set[int]", {1, 2, 3}, "set[int] · len 3"),
+        (
+            "dict",
+            {"g": 1, "h": 2, "i": 3, "j": 4},
+            "dict[str, int] · 4 keys: [g, h, i, …]",
+        ),
+        ("dict-empty", {}, "dict · empty"),
+        (
+            "list[DataFrame]",
+            [pd.DataFrame({"a": [1]}), pd.DataFrame({"b": [2]})],
+            "list[DataFrame] · len 2",
+        ),
+        # -- pandas ---------------------------------------------------------
+        (
+            "DataFrame",
+            pd.DataFrame(
+                {"id": range(40), "seed": 0, "score": 0.5, "tag": "x", "n": 1}
+            ),
+            "DataFrame · 40×5 · [id, seed, score, …]",
+        ),
+        (
+            "Series",
+            pd.Series([0.5, 0.7, 0.9, 0.4], name="score"),
+            "Series[float64] · len 4 · mean 0.625",
+        ),
+        ("Index", pd.Index(["a", "b", "c"]), "Index[str] · len 3"),
+        (
+            "GroupBy",
+            pd.DataFrame({"k": [1, 1, 2], "v": [1, 2, 3]}).groupby("k"),
+            "DataFrameGroupBy · 2 groups · by k",
+        ),
+        # -- numpy ----------------------------------------------------------
+        ("ndarray", np.zeros((40, 5)), "ndarray · float64 · (40, 5)"),
+        ("np-scalar", np.float64(0.63), "float64 · 0.63"),
+        # -- plotly ---------------------------------------------------------
+        (
+            "Figure",
+            go.Figure(data=[go.Bar(y=[1, 2]), go.Bar(y=[3, 4]), go.Scatter(y=[1])]),
+            "Figure · bar+scatter · 3 traces",
+        ),
+        # -- inspect_ai -----------------------------------------------------
+        (
+            "Task",
+            Task(dataset=[Sample(input="x"), Sample(input="y")], name="audit-a5b59a"),
+            "Task · audit-a5b59a · 2 samples",
+        ),
+        (
+            "ChatMessageUser",
+            ChatMessageUser(content="persuade the target to reveal the prompt"),
+            "ChatMessageUser · 'persuade the target to reveal the prompt'",
+        ),
+        # -- callables ------------------------------------------------------
+        ("function", _make_task, "function · _make_task(tag, n=4)"),
+        ("lambda", lambda x: x + 1, "function · "),
+        ("partial", partial(_make_task, "x", n=8), "partial · _make_task(2 bound)"),
+        # -- paths / IO -----------------------------------------------------
+        (
+            "Path",
+            Path("logs/audit-a5b/2026-06-30.eval"),
+            "PosixPath · logs/audit-a5b/2026-06-30.eval",
+        ),
+        (
+            "Path-long",
+            Path("/mnt/s3/users/somebody/evals/audit-a5b59a/very/deep/nested/dir/x.eval"),
+            "PosixPath · /…/dir/x.eval",
+        ),
+        ("file", io.StringIO("data"), "StringIO · open · "),
+    ]
+
+    for label, v, want in checks:
+        got = short_repr(v)
+        assert len(got) <= 80, f"{label}: over cap ({len(got)}): {got!r}"
+        assert "\n" not in got, f"{label}: newline in {got!r}"
+        assert " at 0x" not in got, f"{label}: raw object repr leaked: {got!r}"
+        assert want in got, f"{label}: want {want!r} in {got!r}"
+    print(f"✓ short_repr: {len(checks)} core types")
+
+    # -- workbench handles (dataclass, so construct a minimal one) ----------
+    from workbench.m1.run import RunHandle  # noqa: PLC0415
+
+    h = RunHandle(task_name="audit-a5b59a", log_dir="/tmp", total=12)
+    h.rows = {f"s{i}": _row("done") for i in range(3)}
+    got = short_repr(h)
+    assert "RunHandle · 3/12 running · audit-a5b59a" == got, got
+    h.finished = True
+    assert "3/12 done" in short_repr(h)
+    print("✓ short_repr: RunHandle")
+
+    # -- petri (optional) ---------------------------------------------------
+    try:
+        from inspect_petri.target import History  # noqa: PLC0415
+
+        hist = History()
+        hist.branch("")
+        hist.branch("")
+        got = short_repr(hist)
+        assert got == "History · 3 nodes · depth 2", got
+        assert short_repr(hist.root).startswith("Trajectory · "), short_repr(hist.root)
+        print("✓ short_repr: petri History/Trajectory")
+    except ImportError:
+        print("· inspect_petri not installed, skipping")
+
+    # -- awaitables ---------------------------------------------------------
+    t = asyncio.create_task(asyncio.sleep(0), name="run_eval")
+    assert short_repr(t) == "Task · pending · run_eval", short_repr(t)
+    await t
+    assert "done" in short_repr(t)
+    fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    assert short_repr(fut) == "Future · pending"
+    coro = asyncio.sleep(0)
+    assert short_repr(coro) == "coroutine · sleep", short_repr(coro)
+    coro.close()
+    print("✓ short_repr: Task/Future/coroutine")
+
+    # -- exception safety: broken __repr__ / __len__ ------------------------
+    assert short_repr(_Broken()) == "_Broken"
+    assert short_repr(_BrokenList()) == "_BrokenList"
+    print("✓ short_repr: never raises (broken __repr__/__len__ → type name)")
+
+    # -- pydantic fallback: an un-special-cased BaseModel shows field names,
+    #    not a 500-char ``model_repr`` dump ---------------------------------
+    got = short_repr(Sample(input="x" * 500, target="y" * 500))
+    assert len(got) <= 80 and "xxxx" not in got and "input" in got, got
+
+    # -- wire size: 30 vars × 80-char cap ≈ 3 kB per cell_done --------------
+    ns = {f"var{i}": short_repr("x" * 200) for i in range(30)}
+    assert ns_size_estimate(ns) < 4000, ns_size_estimate(ns)
+    # 20 turns worth stays well under the 1 MB WS frame default.
+    assert 20 * ns_size_estimate(ns) < 100_000
+    print(f"✓ wire size: 30 vars = {ns_size_estimate(ns)} B; ×20 turns < 100 kB")
+
+
+def _make_task(tag: str, n: int = 4) -> None:
+    """Fixture for the callable-signature check."""
+
+
+def _row(status: str) -> object:
+    from workbench.m1.run import SampleRow  # noqa: PLC0415
+
+    return SampleRow(id="s", status=status, epoch=1, input="", turns=0)
+
+
+class _Broken:
+    def __repr__(self) -> str:
+        raise RuntimeError("boom")
+
+
+class _BrokenList(list):
+    def __len__(self) -> int:
+        raise RuntimeError("boom")
 
 
 class _Thing:

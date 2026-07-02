@@ -36,6 +36,8 @@ from uuid import uuid4
 from IPython.core.interactiveshell import ExecutionResult, InteractiveShell
 from IPython.display import HTML, Markdown, display
 
+from workbench.m1.inspect_repr import short_repr
+
 WB_MIME = "application/vnd.workbench.v1+json"
 STREAM_MIME = "application/vnd.jupyter.stream+json"
 
@@ -600,9 +602,15 @@ class OrchestratorKernel:
         self._forward(ev)
 
     def _ns_summary(self) -> dict[str, str]:
-        """``{name: "TypeName · short repr"}`` for user-bound names (§7)."""
+        """``{name: "TypeName · short repr"}`` for user-bound names (§7).
+
+        Ships the *full* user namespace (not just this cell's ``new_names``):
+        the tooltip must resolve any identifier in any collapsed gist, and
+        rebinds (``df = df.head()``) need the fresh shape. At the 80-char cap
+        a 30-var session is ~3 kB per ``cell_done`` — negligible on the WS.
+        """
         return {
-            name: f"{type(v).__name__} · {_short_repr(v)}"
+            name: short_repr(v)
             for name, v in self.shell.user_ns.items()
             if not name.startswith("_") and name not in self._seeded
         }
@@ -710,31 +718,6 @@ def _bound_names(code: str, ns: dict[str, Any]) -> list[str]:
 
 def _truncate(s: str, n: int = 60) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
-
-
-#: Type names whose ``_short_repr`` is ``{n_done}/{total}`` (M1-FEATURES §7).
-_HANDLE_TYPES = {"RunHandle", "AuditRunHandle", "ScanHandle"}
-
-
-def _short_repr(v: Any) -> str:
-    """Compact one-line summary for the variable-inspector tooltip (§7).
-
-    Guarded because ``user_ns`` holds arbitrary user objects — a broken
-    ``__repr__`` or unexpected attribute must not crash ``_settle``.
-    """
-    tn = type(v).__name__
-    try:
-        if tn in _HANDLE_TYPES:
-            state = "done" if v.finished else "running"
-            return f"{v.n_done}/{v.total} {state}"
-        if tn == "DataFrame":
-            r, c = v.shape
-            return f"{r}×{c}"
-        if isinstance(v, (list, tuple, set, dict)):
-            return f"len {len(v)}"
-        return _truncate(repr(v), 50)
-    except Exception:  # noqa: BLE001
-        return "<unrepr>"
 
 
 def _assign_targets(code: str) -> set[str]:
