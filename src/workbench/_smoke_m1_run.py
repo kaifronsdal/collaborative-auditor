@@ -20,10 +20,12 @@ Run:  ``uv run python -m workbench._smoke_m1_run``
 from __future__ import annotations
 
 import asyncio
+import random
 
 import anyio
 from inspect_ai import Task
 from inspect_ai.dataset import Sample
+from inspect_ai.scorer import Score, Target, mean, scorer
 from inspect_ai.solver import Generate, TaskState, solver
 
 from workbench.m1.kernel import STREAM_MIME, WB_MIME, OrchestratorKernel
@@ -54,6 +56,51 @@ def make_task(tag: str, n: int = 4) -> Task:
     return Task(
         dataset=[Sample(input=f"{tag}-{i}", id=f"{tag}-{i}") for i in range(n)],
         solver=cooperating(),
+        name=f"t-{tag}",
+    )
+
+
+@solver
+def slow_cooperating(turn_sleep: float):
+    """``cooperating()`` with a configurable per-turn sleep — keeps samples in
+    ``running`` long enough for the ``ProgressCard`` mid-run screenshot."""
+
+    async def solve(state: TaskState, generate: Generate) -> TaskState:
+        for turn in range(3):
+            await asyncio.sleep(turn_sleep)
+            injected, stop_now = drain_control(state.sample_id)
+            state.messages.extend(injected)
+            if stop_now:
+                state.metadata["stopped_at"] = turn
+                return state
+            state = await generate(state)
+        return state
+
+    return solve
+
+
+@scorer(metrics=[mean()])
+def rand_score():
+    """Deterministic-per-id float in ``[0,1)`` so ``.pc-hist`` has bins to draw."""
+
+    async def score(state: TaskState, target: Target) -> Score:
+        return Score(value=random.Random(str(state.sample_id)).random())
+
+    return score
+
+
+def make_scored_task(tag: str, n: int = 12, turn_sleep: float = 1.0) -> Task:
+    """``make_task`` + a numeric scorer + slow turns.
+
+    Drives the M1-FEATURES §3/§8/§9 ``ProgressCard`` states the screenshot
+    harness needs: ``total > 8`` gates the ``.pc-filter``/``.pc-cols`` row,
+    ``turn_sleep`` holds rows at ``running`` for the ``.ar-stop`` hover, and
+    ``rand_score`` populates ``payload.scores`` for the ``.pc-hist`` sparkline.
+    """
+    return Task(
+        dataset=[Sample(input=f"{tag}-{i}", id=f"{tag}-{i}") for i in range(n)],
+        solver=slow_cooperating(turn_sleep),
+        scorer=rand_score(),
         name=f"t-{tag}",
     )
 

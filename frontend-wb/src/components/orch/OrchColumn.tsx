@@ -468,6 +468,10 @@ export function eventsToOrchTurns(
       if (cur) cur.py = ev;
     } else if (ev.event === "info" && ev.source === ORCH_SOURCE) {
       const de = ev as DisplayInfoEvent;
+      // Not every orch InfoEvent is a display — `rewind_marker` (§2) carries
+      // `{kind, to_turn}` with no `bundle` and would crash `<OrchTurn>`'s
+      // `bundle[WB_MIME]` reads. It has no card; drop it.
+      if (de.data?.bundle == null) continue;
       const owner = byTurn.get(de.data.turn) ?? turns[turns.length - 1];
       if (owner) owner.outputs.push(de);
     }
