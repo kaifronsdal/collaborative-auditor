@@ -170,9 +170,13 @@ async def _test_rewind_and_persist() -> None:  # noqa: PLR0915
         elif t == 1:
             assert not e.get("rewound"), f"turn-1 InfoEvent wrongly flagged: {e}"
 
-    # ModelEvents #2.. are flagged; #1 is not
-    orch_models = [e for e in _orch_events(session) if e["event"] == "model"]
-    orch_models.sort(key=lambda e: e.get("timestamp", ""))
+    # ModelEvents: turn-1's is unflagged; every other one is. Ordered by
+    # ``_by_role`` (emission order — mockllm timestamps collide at ms res).
+    orch_models = [
+        session.events[u]
+        for u in session._by_role.get(("orch", "orch"), [])  # noqa: SLF001
+        if session.events[u]["event"] == "model"
+    ]
     assert not orch_models[0].get("rewound"), "turn-1 ModelEvent flagged"
     assert all(e.get("rewound") for e in orch_models[1:]), (
         "some post-turn-1 ModelEvents not flagged"
