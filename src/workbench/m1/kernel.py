@@ -464,12 +464,25 @@ class OrchestratorKernel:
     def _settle(self, turn_id: int, code: str, r: ExecutionResult) -> TurnResult:
         err = r.error_before_exec or r.error_in_exec
         new = _bound_names(code, self.shell.user_ns)
-        text = self._render_outputs(turn_id)
         if err is not None:
-            text += ("\n" if text else "") + "".join(
-                traceback.format_exception(type(err), err, err.__traceback__)
+            # Emit the traceback as a display card so the frontend renders
+            # it under this turn (otherwise it only reaches the model via
+            # ``text`` and the human sees a code cell with zero output).
+            # Not via ``_emit`` — that reads ``_current_turn`` which isn't
+            # set in ``run_turn``'s context (only inside the cell task).
+            tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
+            ev = DisplayEvent(
+                id=uuid4().hex,
+                bundle={
+                    "text/plain": tb,
+                    WB_MIME: {"kind": "traceback", "ename": type(err).__name__, "text": tb},
+                },
             )
-        elif not text:
+            ev.turn_id = turn_id
+            self.outputs[turn_id].append(ev)
+            self._forward(ev)
+        text = self._render_outputs(turn_id)
+        if not text:
             text = f"<ok · bound: {', '.join(new)}>" if new else "<no output>"
         return TurnResult(
             turn_id=turn_id,
