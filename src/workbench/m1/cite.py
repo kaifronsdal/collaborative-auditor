@@ -150,9 +150,10 @@ async def cite(
     """Propose a finding, block on the human's signature, return it.
 
     Always gates (M1-NOTEBOOK.md: ``cite`` and ``ask_human`` are the
-    always-block cases). The returned ``Finding`` reuses the proposal's
-    ``id`` so a later ``display(finding, display_id=finding.id)`` updates
-    the same card slot.
+    always-block cases). The returned ``Finding`` gets its own ``id`` —
+    the proposal's ``id`` is its ``display_id`` (stable slot, updates in
+    place on resolve); reusing it here would make ``OrchTurn``'s payload-id
+    dedup drop the last-expr ``FindingCard``.
     """
     quotes = [_as_quote(q) for q in quotes]
     prop = CiteProposal(
@@ -169,5 +170,4 @@ async def cite(
         claim=prop.claim,
         quotes=prop.quotes,
         signed_by=signed_by,
-        id=prop.id,
     )

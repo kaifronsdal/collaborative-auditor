@@ -15,6 +15,7 @@ without cooperation.
 from __future__ import annotations
 
 import asyncio
+import math
 import tempfile
 import time
 import zipfile
@@ -297,11 +298,25 @@ class RunProposal:
 SampleStatus = Literal["running", "done", "error", "stopped"]
 
 
+def _finite_or_none(v: Any) -> Any:
+    """Map non-finite floats (``nan`` / ``inf``) to ``None``.
+
+    ``jsonable_python`` leaves them as-is and stdlib ``json.dumps`` then emits
+    bare ``NaN`` / ``Infinity`` — invalid JSON that breaks the frontend's
+    ``JSON.parse``. Applied to score values before they reach the WB_MIME
+    payload (mockllm + petri judge yields ``float('nan')``).
+    """
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    return v
+
+
 def _first_numeric(scores: dict[str, Any]) -> float | None:
     """First numeric score value in ``scores`` (M1-FEATURES §8 histogram)."""
     for v in scores.values():
         if isinstance(v, (int, float)) and not isinstance(v, bool):
-            return float(v)
+            f = float(v)
+            return f if math.isfinite(f) else None
     return None
 
 
@@ -536,7 +551,7 @@ class RunHandle(_PollingHandle):
             epoch=s.epoch,
             input=str(s.input)[:80],
             turns=turns,
-            scores={k: v.value for k, v in (s.scores or {}).items()},
+            scores={k: _finite_or_none(v.value) for k, v in (s.scores or {}).items()},
             error=s.error,
         )
 

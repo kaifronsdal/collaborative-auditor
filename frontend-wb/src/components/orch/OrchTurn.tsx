@@ -61,6 +61,7 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
   )?.data.bundle[WB_MIME];
   const duration =
     typeof cellDone?.duration === "number" ? cellDone.duration : undefined;
+  const interrupted = cellDone?.interrupted === true;
 
   // Dedupe (§16) then coalesce adjacent stdout/stderr chunks (UI-AUDIT §C).
   // Coalescing builds fresh event objects (never mutate store state); memoise
@@ -126,6 +127,7 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
           running={running}
           detached={detached}
           errored={errored}
+          interrupted={interrupted}
           background={py.arguments.background === true}
           settledBg={settledBg}
           duration={duration}
@@ -268,6 +270,7 @@ function CodeCell({
   running,
   detached,
   errored,
+  interrupted,
   background,
   settledBg,
   duration,
@@ -278,6 +281,7 @@ function CodeCell({
   running: boolean;
   detached: boolean;
   errored: boolean;
+  interrupted: boolean;
   background: boolean;
   settledBg: string | undefined;
   duration: number | undefined;
@@ -329,9 +333,14 @@ function CodeCell({
         ) : (
           <code className="cc-gist">{gist}</code>
         )}
-        {errored && !running && (
+        {errored && !running && !interrupted && (
           <span className="cell-status err" title="cell raised">
             <i className="bi bi-exclamation-triangle-fill" /> error
+          </span>
+        )}
+        {interrupted && (
+          <span className="cell-status interrupted" title="interrupted by user">
+            interrupted
           </span>
         )}
         {showBgChip && (

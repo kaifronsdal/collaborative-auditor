@@ -381,6 +381,13 @@
   background: hsl(0 70% 96%); border: 1px solid hsl(0 40% 82%);
 }
 .cell-status.err i { font-size: 10px; }
+/* cc-head interrupted chip — user hit ^C intentionally, so warn (not danger). */
+.cell-status.interrupted {
+  display: inline-flex; align-items: center; gap: 4px;
+  font: 10.5px var(--sans); color: var(--ink-dim);
+  padding: 1px 8px; border-radius: var(--r-pill);
+  background: hsl(38 70% 96%); border: 1px solid hsl(38 40% 82%);
+}
 
 /* PromptCard (§9) */
 .gate-waiting { animation: gate-breathe 2.4s ease-in-out infinite; }
