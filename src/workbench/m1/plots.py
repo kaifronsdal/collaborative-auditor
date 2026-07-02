@@ -65,10 +65,19 @@ def install_template() -> None:
                 size=12,
                 color=INK["mid"],
             ),
-            title=dict(font=dict(color=INK["ink"], size=14), x=0, xanchor="left"),
+            # Title pinned to container-top so the horizontal legend
+            # (paper-relative, ``y=1.02``) sits below it without overlap.
+            title=dict(
+                font=dict(color=INK["ink"], size=14),
+                x=0,
+                xanchor="left",
+                yref="container",
+                y=0.97,
+                yanchor="top",
+            ),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=40, r=20, t=30, b=40),
+            margin=dict(l=40, r=20, t=52, b=40),
             height=320,
             # Okabe-Ito (Wong 2011, Nature Methods) with app ACCENT
             # substituted for O-I blue #0072B2 so single-series charts
