@@ -89,18 +89,13 @@ export function Output({ id, bundle, meta, stable }: OutputProps): JSX.Element |
  *  §Open question — frontend regex for M1.0). */
 const AUDIT_ID_RE = />(a-[0-9a-f]{4,})</g;
 
-/** plotly.js attaches `.on(event, cb)` to the graph div; `window.Plotly` is
- *  loaded from CDN by the first `notebook_connected` output's script tag. */
+/** plotly.js attaches `.on(event, cb)` to the graph div once `Plotly.newPlot`
+ *  has run on it. `window.Plotly` is bundled in main.tsx. */
 type PlotlyDiv = HTMLDivElement & {
   on: (ev: string, cb: (d: PlotlyClick) => void) => void;
   removeAllListeners?: (ev: string) => void;
 };
 type PlotlyClick = { points: Array<{ customdata?: unknown[] }> };
-declare global {
-  interface Window {
-    Plotly?: { react: (el: Element, ...a: unknown[]) => void };
-  }
-}
 
 function HtmlOutput({ html, stable }: { html: string; stable: boolean }): JSX.Element {
   const send = useSession((s) => s.send);
@@ -117,48 +112,47 @@ function HtmlOutput({ html, stable }: { html: string; stable: boolean }): JSX.El
     [html, isPlotly]
   );
 
-  // M1-PLOTTING: `dangerouslySetInnerHTML` inserts plotly's `<script>` tags
-  // inertly, so the figure never mounts. Re-execute them (this runs
-  // `Plotly.newPlot(divId, data, layout, config)` — or the CDN loader on the
-  // first plot), then wire `plotly_click` so `customdata[0]` (the audit id
-  // the workbench styler stashes per-point) navigates the desk.
+  // M1-PLOTTING: for plotly we own `innerHTML` (not `dangerouslySetInnerHTML`)
+  // so React never wipes the mounted chart on a parent re-render, and so
+  // scripts execute — innerHTML'd `<script>` tags are inert, so we clone each
+  // into a fresh node. Skip remote `src` scripts (the plotly CDN loader,
+  // MathJax): we bundle `plotly.js-basic-dist-min` in main.tsx and mount it on
+  // `window`, so the inline `Plotly.newPlot(divId, …)` script resolves without
+  // the network fetch the screenshot harness can't make. Then wire
+  // `plotly_click` → `customdata[0]` (the audit id the workbench styler
+  // stashes per-point) navigates the desk.
   useEffect(() => {
     if (!isPlotly) return;
     const host = hostRef.current;
     if (!host) return;
-    // Run each embedded script by cloning it into a fresh <script> node —
-    // browsers only execute scripts that are *created*, not innerHTML'd.
-    let cdn: HTMLScriptElement | null = null;
+    host.innerHTML = html;
     for (const s of Array.from(host.querySelectorAll("script"))) {
+      if (s.src) continue;
       const live = document.createElement("script");
-      for (const { name, value } of Array.from(s.attributes)) live.setAttribute(name, value);
       live.textContent = s.textContent;
       s.replaceWith(live);
-      if (live.src.includes("plotly")) cdn = live;
     }
     const gd = host.querySelector<PlotlyDiv>(".plotly-graph-div");
-    const attachClick = (): void => {
-      if (!gd) return;
+    // `.on` is only patched onto the div after `Plotly.newPlot` runs (which
+    // the inline script above does synchronously) — guard in case the bundle
+    // hasn't attached it yet.
+    if (gd && typeof gd.on === "function") {
       gd.on("plotly_click", (d) => {
         const raw = String(d.points[0]?.customdata?.[0] ?? "");
         const bare = raw.replace(/^wb:\/\/[^/]+\//, "");
         if (!bare) return;
         send({ t: "import_running", sample_id: bare });
       });
-    };
-    if (window.Plotly == null) {
-      // CDN not loaded yet — wire the click once it lands.
-      if (cdn) cdn.onload = () => attachClick();
-    } else {
-      attachClick();
     }
     return () => gd?.removeAllListeners?.("plotly_click");
   }, [isPlotly, html, send]);
 
+  if (isPlotly) {
+    return <div ref={hostRef} className="out bare plotly-host" />;
+  }
   return (
     <div
-      ref={hostRef}
-      className={`out ${isPlotly ? "bare plotly-host" : "html"}`}
+      className="out html"
       {...(stable ? { "data-display-id": "stable" } : {})}
       dangerouslySetInnerHTML={{ __html: processed }}
     />

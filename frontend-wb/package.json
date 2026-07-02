@@ -14,8 +14,11 @@
     "@tsmono/inspect-common": "workspace:*",
     "@tsmono/inspect-components": "workspace:*",
     "@tsmono/react": "workspace:*",
+    "@tsmono/tsconfig": "workspace:*",
+    "@tsmono/util": "workspace:*",
     "bootstrap-icons": "^1.13.1",
     "marked": "^18.0.5",
+    "plotly.js-basic-dist-min": "^3.1.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "zustand": "^5.0.8"

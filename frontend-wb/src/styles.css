@@ -219,6 +219,38 @@ body {
   overflow-y: auto;
 }
 
+.start-tabs {
+  display: flex; gap: 0;
+  width: 100%; max-width: 640px;
+  /* eat .start-view's 24px flex gap + 1px so the active tab's bottom border
+     overlaps the card's top border */
+  margin-bottom: -25px; position: relative; z-index: 2;
+}
+.start-tab {
+  padding: 8px 16px; border: 1px solid var(--border); border-bottom: none;
+  background: var(--bg-100); font: 13px var(--sans); cursor: pointer;
+  border-radius: 6px 6px 0 0;
+}
+.start-tab + .start-tab { border-left: none; }
+.start-tab.on {
+  background: var(--bg-000); border-bottom: 1px solid var(--bg-000);
+  position: relative; z-index: 1;
+}
+
+.mp-field {
+  display: inline-flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-radius: var(--r-pill);
+  padding: 3px 4px 3px 10px; background: var(--bg-000);
+}
+.mp-field .mp-role {
+  font: 10.5px var(--mono); color: var(--ink-faint); letter-spacing: .04em;
+}
+.mp-select {
+  border: none; outline: none; background: none; cursor: pointer;
+  font: 12px var(--sans); color: var(--ink-mid);
+  padding: 2px 4px;
+}
+
 .start-card {
   width: 100%; max-width: 640px;
   background: var(--bg-000); border: 1px solid var(--border);

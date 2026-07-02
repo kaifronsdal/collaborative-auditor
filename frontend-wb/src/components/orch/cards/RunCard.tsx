@@ -34,7 +34,8 @@ export type RunPayload = {
   done: number;
   finished: boolean;
   error: string | null;
-  rows: SampleRow[];
+  /** `RunHandle._repr_mimebundle_` ships `{running: [...], done: [...]}`. */
+  rows: { running: SampleRow[]; done: SampleRow[] };
 };
 
 type Props = {
@@ -56,7 +57,8 @@ const ROW_CAP = 3;
 
 export default function RunCard({ payload, send }: Props): JSX.Element {
   const [showAll, setShowAll] = useState(false);
-  const running = payload.total - payload.rows.length;
+  const allRows = [...(payload.rows.running ?? []), ...(payload.rows.done ?? [])];
+  const running = payload.rows.running?.length ?? 0;
   const isAudit = payload.kind === "audit_run";
 
   const onRowClick = (row: SampleRow): void => {
@@ -67,8 +69,8 @@ export default function RunCard({ payload, send }: Props): JSX.Element {
     }
   };
 
-  const rows = showAll ? payload.rows : payload.rows.slice(0, ROW_CAP);
-  const hidden = payload.rows.length - rows.length;
+  const rows = showAll ? allRows : allRows.slice(0, ROW_CAP);
+  const hidden = allRows.length - rows.length;
 
   return (
     <div className="out">
@@ -105,7 +107,7 @@ export default function RunCard({ payload, send }: Props): JSX.Element {
         )}
       </div>
 
-      {payload.rows.length > 0 && (
+      {allRows.length > 0 && (
         <div className={isAudit ? "audit-rows" : "eval-rows"}>
           {rows.map((row) =>
             isAudit ? (
