@@ -216,8 +216,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
       markOpened(row.id);
     };
     const onStop = (row: SampleRow): void => {
-      // wire type owned by the kernel/backend agent (M1-FEATURES §9)
-      send({ t: "stop_sample", id: row.id } as unknown as Up);
+      send({ t: "stop_sample", id: row.id });
       stopping.current.add(row.id);
       rerender();
     };

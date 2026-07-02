@@ -1,0 +1,67 @@
+Give `ActiveSample` a `.store` reference to the running sample's `Store`.
+
+Lets an in-process caller (the workbench's `{t:"import_running"}`
+snapshot) read a running sample's `Store` — where petri's `AuditTape`
+lives — from `active_samples()` without waiting for the sample to flush
+to `.eval`. `ActiveSample` already carries `transcript` for the same
+reason.
+
+Apply on `inspect_ai` `model-event-output-streaming` (upstream candidate).
+Rationale: `collaborative-auditor` `src/workbench/m1/M1-RUN-AUDITS.md` §Desk.
+
+diff --git a/src/inspect_ai/_eval/task/run.py b/src/inspect_ai/_eval/task/run.py
+index 062b82a0..fe141435 100644
+--- a/src/inspect_ai/_eval/task/run.py
++++ b/src/inspect_ai/_eval/task/run.py
+@@ -1205,6 +1205,7 @@ async def task_run_sample(
+             working_limit=working_limit,
+             fails_on_error=fails_on_error or (retry_on_error > 0),
+             transcript=sample_transcript,
++            store=state.store,
+             checkpoint=resolved_checkpoint,
+             resume_checkpoint=resume_checkpoint,
+             eval_set_id=eval_set_id,
+diff --git a/src/inspect_ai/log/_samples.py b/src/inspect_ai/log/_samples.py
+index f56cf8ad..3ee68eb9 100644
+--- a/src/inspect_ai/log/_samples.py
++++ b/src/inspect_ai/log/_samples.py
+@@ -36,6 +36,7 @@ from inspect_ai.util._sandbox import SandboxConnection
+ from inspect_ai.util._sandbox.context import sandbox_connections
+ 
+ from ..event._model import ModelEvent
++from ..util._store import Store
+ from ._transcript import Transcript
+ 
+ logger = getLogger(__name__)
+@@ -57,6 +58,7 @@ class ActiveSample:
+         working_limit: int | None,
+         fails_on_error: bool,
+         transcript: Transcript,
++        store: Store | None = None,
+         sandboxes: dict[str, SandboxConnection],
+         checkpointer: CheckpointerSetup,
+         eval_id: str,
+@@ -92,6 +94,7 @@ class ActiveSample:
+         self.total_cost: float | None = None
+         self.fallback_models: list[str] = []
+         self.transcript = transcript
++        self.store = store
+         self.sandboxes = sandboxes
+         self.checkpointer = checkpointer
+         self.eval_set_id = eval_set_id
+@@ -271,6 +274,7 @@ async def active_sample(
+     working_limit: int | None,
+     fails_on_error: bool,
+     transcript: Transcript,
++    store: Store | None = None,
+     eval_id: str,
+     checkpoint: ResolvedCheckpointConfig | None = None,
+     resume_checkpoint: ResumeCheckpoint | None = None,
+@@ -297,6 +301,7 @@ async def active_sample(
+         sandboxes=await sandbox_connections(),
+         fails_on_error=fails_on_error,
+         transcript=transcript,
++        store=store,
+         checkpointer=create_checkpointer(
+             config=checkpoint,
+             log_location=log_location,
