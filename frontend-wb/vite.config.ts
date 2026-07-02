@@ -73,10 +73,15 @@ export default defineConfig({
     ],
   },
   server: {
-    // Proxy /ws/* to the backend so only the Vite port needs forwarding.
+    // Proxy /ws/* + /sessions to the backend so only the Vite port needs
+    // forwarding. ``VITE_BACKEND`` lets ``_screenshot_m1``/smoke fixtures
+    // run the backend on a free port without 500ing the sidebar fetch.
     proxy: {
-      "/ws": { target: "ws://127.0.0.1:8765", ws: true },
-      "/sessions": "http://127.0.0.1:8765",
+      "/ws": {
+        target: process.env.VITE_BACKEND?.replace(/^http/, "ws") ?? "ws://127.0.0.1:8765",
+        ws: true,
+      },
+      "/sessions": process.env.VITE_BACKEND ?? "http://127.0.0.1:8765",
     },
   },
   test: {

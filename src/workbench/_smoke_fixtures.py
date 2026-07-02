@@ -121,7 +121,13 @@ async def _backend(port: int):
 @asynccontextmanager
 async def _vite(ws_port: int, ui_port: int):
     """Start the Vite dev server pointing its WS at our in-process backend."""
-    env = {**os.environ, "VITE_WS_URL": f"ws://127.0.0.1:{ws_port}"}
+    env = {
+        **os.environ,
+        "VITE_WS_URL": f"ws://127.0.0.1:{ws_port}",
+        # ``vite.config.ts`` proxies ``/sessions`` to this — without it the
+        # sidebar Recents fetch 500s (backend runs on a free port, not 8765).
+        "VITE_BACKEND": f"http://127.0.0.1:{ws_port}",
+    }
     proc = subprocess.Popen(  # noqa: S603
         [
             "npx", "--yes", "pnpm@10.29.3", "dev",

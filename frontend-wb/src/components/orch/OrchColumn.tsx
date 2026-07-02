@@ -73,31 +73,36 @@ export function OrchColumn(): JSX.Element {
   const status = orch?.status ?? "idle";
   const isRunning = status === "running" || status === "waiting";
   const bgCells = orch?.bg_cells ?? EMPTY_BG;
-  const pendingGates = orch?.pending_gates ?? EMPTY_GATES;
   const notifications = orch?.notifications ?? EMPTY_NOTIF;
   const last = turns.at(-1);
   const cellRunning = last?.py?.pending === true;
   const statusText = STATUS_TEXT[status];
 
-  // Resolve each pending gate's card payload so the header popover can show
-  // its `.gate-desc` and per-row approve. `display_id === InfoEvent.uuid`
-  // for stable cards, so index outputs across all turns once.
+  // Header pill: derive pending gates from the live event stream, not
+  // ``orch.pending_gates`` — that field only ships in the full ``{t:"state"}``
+  // push, so it's stale between reconnects. Gate cards land as
+  // ``InfoEvent`` s with ``bundle[WB_MIME].pending === true`` and flip to
+  // ``false`` on ``dh.update()`` when resolved, so scanning ``turns`` is
+  // always current.
   const gateInfo = useMemo(() => {
-    if (pendingGates.length === 0) return [];
-    const byId = new Map<string, DisplayInfoEvent>();
-    for (const t of turns) for (const o of t.outputs) byId.set(o.data.id, o);
-    return pendingGates.map((id) => {
-      const wb = byId.get(id)?.data.bundle[WB_MIME];
-      return {
-        id,
-        kind: (wb?.kind as string | undefined) ?? "gate",
-        desc:
-          (typeof wb?.description === "string" && wb.description) ||
-          (wb?.kind === "prompt" && typeof wb.question === "string" && wb.question) ||
-          id.slice(0, 8),
-      };
-    });
-  }, [pendingGates, turns]);
+    const out: { id: string; kind: string; desc: string }[] = [];
+    for (const t of turns) {
+      for (const o of t.outputs) {
+        const wb = o.data.bundle[WB_MIME];
+        if (!wb || wb.pending !== true || !GATE_KINDS.has(wb.kind as string)) continue;
+        out.push({
+          id: o.data.id,
+          kind: wb.kind as string,
+          desc:
+            (typeof wb.description === "string" && wb.description) ||
+            (typeof wb.question === "string" && wb.question) ||
+            (typeof wb.claim === "string" && wb.claim) ||
+            o.data.id.slice(0, 8),
+        });
+      }
+    }
+    return out;
+  }, [turns]);
 
   // §C sys-chip → origin-cell badge: parse `notifications` for
   // `cell-{N} … bound: {name}` and thread the settled binding into the turn
@@ -398,5 +403,5 @@ export function eventsToOrchTurns(events: readonly Event[]): OrchTurnData[] {
 }
 
 const EMPTY_BG: readonly number[] = [];
-const EMPTY_GATES: readonly string[] = [];
+const GATE_KINDS = new Set(["prompt", "run_proposal", "cite_proposal"]);
 const EMPTY_NOTIF: readonly string[] = [];
