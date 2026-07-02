@@ -153,7 +153,8 @@ async def _amain() -> None:  # noqa: PLR0915
             # ── turn 1: display/update/print/DataFrame ──────────────────────
             orch.step()
             await page.wait_for_selector(
-                ".orch-col .turn[data-turn='1'] .out.html", timeout=15_000
+                ".orch-col .turn[data-turn='1'] .out.bare table.dataframe",
+                timeout=15_000,
             )
             await orch_col.locator(".column").evaluate("(el) => { el.scrollTop = 0; }")
             await asyncio.sleep(0.15)
@@ -212,11 +213,13 @@ async def _amain() -> None:  # noqa: PLR0915
             await _shot(page, "06-traceback", clip=await orch_col.bounding_box())
 
             # ── 07 full column (all turns) ──────────────────────────────────
-            # Reveal any collapsed code cells so the full-page shot shows
-            # everything.
-            for btn in await page.locator(".orch-col .cc-more").all():
-                if "show" in ((await btn.text_content()) or ""):
-                    await btn.click()
+            # Code cells are collapsed-first (UI-AUDIT §C); click each head
+            # to expand for the full-page shot.
+            for head in await page.locator(
+                ".orch-col .cc-head[role='button']"
+            ).all():
+                await head.click()
+            await asyncio.sleep(0.1)
             await orch_col.locator(".column").evaluate("(el) => { el.scrollTop = 0; }")
             await _shot(page, "07-full-column", full=True)
 
