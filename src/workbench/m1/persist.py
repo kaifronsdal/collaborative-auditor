@@ -1,21 +1,23 @@
 """M1.3 — orchestrator persistence across ``Session.save()``/``load()``.
 
-Two files under ``{store_dir}/{session_id}/``:
+One file under ``{store_dir}/{session_id}/``:
 
 - ``orchestrator.eval`` — a one-sample `.eval` whose ``EvalSample.messages`` is
-  the orchestrator agent's chat history (``orch.state.messages``) and whose
-  ``metadata`` carries ``{model, system_prompt, span_id, run_log_dirs}``. This
-  is the *resume* state: ``Session.load`` passes it back through
-  ``start_orchestrator(resume_messages=…, span_id=…)``.
+  the orchestrator agent's chat history (``orch.state.messages``), whose
+  ``EvalSample.events`` is every event under the ``("orch","orch")`` span
+  (display ``InfoEvent``s, ``ModelEvent``s, ``ToolEvent``s, span markers), and
+  whose ``metadata`` carries ``{model, system_prompt, span_id, run_log_dirs}``.
 
-- ``orchestrator_events.json`` — the already-dumped ``session.events`` entries
-  for ``("orch","orch")``, in wire order. On load these are merged straight
-  back into ``session.events``/``_by_role``/``span_role`` so the M1 display
-  column (``InfoEvent`` cards) survives without replay. Sidecar rather than
-  ``EvalSample.events`` because the dumped ``ModelEvent``s carry ``input_refs``
-  into the (unpersisted) session pool — round-tripping them through
-  ``.eval``'s event union would need pool expansion; the sidecar path ships
-  them frontend-ready as-is (M1.3; pool-backed ``.eval`` is M1.4).
+Why pure ``.eval`` and not a JSON sidecar of ``session.events``: the live
+``session.events`` entries are *condensed* — ``ModelEvent.input_refs`` index
+into ``session.pool``. On ``Session.load`` the pool is rebuilt by M0 branch
+replay with different indices, so persisted refs would dangle or resolve to
+garbage. Instead, ``save_orchestrator`` expands ``input_refs`` against the
+*current* pool back to full ``input`` and lets ``write_eval_log`` do its own
+per-sample pooling; ``read_eval_log`` returns fully-expanded events, and
+``load_orchestrator`` re-interns them into the *new* session's pool via
+``session._condense`` — so the frontend's ``expandEvents`` sees consistent
+refs regardless of load order.
 
 The kernel's ``user_ns`` is *not* persisted (arbitrary Python objects — same
 limitation as a Jupyter kernel restart). The resumed agent gets a
@@ -25,11 +27,12 @@ the pre-save event stream so it can re-read results via ``audits_df``.
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from inspect_ai.event import Event, SpanBeginEvent
+from inspect_ai.event._pool import _expand_refs  # noqa: PLC2701
 from inspect_ai.log import (
     EvalConfig,
     EvalDataset,
@@ -39,6 +42,7 @@ from inspect_ai.log import (
     read_eval_log,
     write_eval_log,
 )
+from pydantic import TypeAdapter
 
 from workbench.m1.kernel import WB_MIME
 from workbench.m1.orchestrator import ORCH_SOURCE
@@ -49,9 +53,9 @@ if TYPE_CHECKING:
 
 
 ORCH_EVAL = "orchestrator.eval"
-ORCH_EVENTS = "orchestrator_events.json"
 
 _RUN_KINDS = frozenset({"audit_run", "eval_run"})
+_EVENTS = TypeAdapter(list[Event])
 
 
 def _collect_run_log_dirs(session: "Session") -> list[str]:
@@ -62,16 +66,32 @@ def _collect_run_log_dirs(session: "Session") -> list[str]:
             continue
         wb = (ev.get("data") or {}).get("bundle", {}).get(WB_MIME)
         if wb and wb.get("kind") in _RUN_KINDS:
-            d = wb.get("log_dir")
-            if d and d not in out:
-                out.append(d)
+            log_dir = wb.get("log_dir")
+            if log_dir and log_dir not in out:
+                out.append(log_dir)
     return out
 
 
 def save_orchestrator(orch: "Orchestrator", session: "Session", d: Path) -> None:
-    """Write ``{d}/orchestrator.eval`` + ``{d}/orchestrator_events.json``."""
+    """Write ``{d}/orchestrator.eval`` — messages + expanded events + metadata."""
     messages = list(orch.state.messages) if orch.state is not None else []
     run_log_dirs = _collect_run_log_dirs(session)
+
+    # Expand condensed ModelEvent.input_refs against the CURRENT pool so the
+    # events are self-contained; write_eval_log then re-pools them per-sample.
+    dumped: list[dict[str, Any]] = []
+    for u in session._by_role.get(("orch", "orch"), []):  # noqa: SLF001
+        if u not in session.events:
+            continue
+        ev = dict(session.events[u])
+        if ev.get("event") == "model" and ev.get("input_refs"):
+            ev["input"] = [
+                m.model_dump(mode="json")
+                for m in _expand_refs(ev["input_refs"], session.pool)
+            ]
+            ev["input_refs"] = None
+        dumped.append(ev)
+    events = _EVENTS.validate_python(dumped)
 
     sample = EvalSample(
         id="orch",
@@ -79,6 +99,7 @@ def save_orchestrator(orch: "Orchestrator", session: "Session", d: Path) -> None
         input="",
         target="",
         messages=messages,
+        events=events,
         metadata={
             "model": orch.model_name,
             "system_prompt": orch.system_prompt,
@@ -99,19 +120,15 @@ def save_orchestrator(orch: "Orchestrator", session: "Session", d: Path) -> None
     )
     write_eval_log(log, d / ORCH_EVAL)
 
-    orch_uuids = session._by_role.get(("orch", "orch"), [])  # noqa: SLF001
-    events = [session.events[u] for u in orch_uuids if u in session.events]
-    (d / ORCH_EVENTS).write_text(
-        json.dumps({"span_id": orch.span_id, "events": events})
-    )
-
 
 def load_orchestrator(session: "Session", d: Path) -> dict[str, Any]:
-    """Read both files, merge events into ``session``, return resume kwargs.
+    """Read ``orchestrator.eval``, merge events into ``session``, return resume kwargs.
 
-    The returned dict is passed as ``**meta`` to
-    ``Session.start_orchestrator`` — ``{model, system_prompt, span_id,
-    resume_messages, run_log_dirs}``.
+    ``read_eval_log`` returns events with fully-expanded ``ModelEvent.input``
+    (inspect resolves ``events_data`` on read); ``session._condense`` then
+    re-interns each into *this* session's pool so ``input_refs`` point at
+    valid indices post-load. The returned dict is passed as ``**meta`` to
+    ``Session.start_orchestrator``.
     """
     log = read_eval_log(d / ORCH_EVAL)
     assert log.samples, f"{ORCH_EVAL} has no samples"
@@ -119,13 +136,16 @@ def load_orchestrator(session: "Session", d: Path) -> dict[str, Any]:
     md = sample.metadata or {}
     span_id: str = md["span_id"]
 
-    sidecar = json.loads((d / ORCH_EVENTS).read_text())
     role_key = ("orch", "orch")
     session.span_role[span_id] = role_key
+    session.span_parent[span_id] = None
     by_role = session._by_role.setdefault(role_key, [])  # noqa: SLF001
-    for ev in sidecar["events"]:
-        session.events[ev["uuid"]] = ev
-        by_role.append(ev["uuid"])
+    for ev in sample.events or []:
+        assert ev.uuid is not None
+        if isinstance(ev, SpanBeginEvent):
+            session.span_parent[ev.id] = ev.parent_id
+        session.events[ev.uuid] = session._condense(ev)  # noqa: SLF001
+        by_role.append(ev.uuid)
     session.version += 1
 
     return {

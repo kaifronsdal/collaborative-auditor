@@ -169,20 +169,22 @@ async def _amain() -> None:  # noqa: PLR0915
     await _settle()
     assert orch.status == "paused"
 
-    # ---- M1.3 persistence: save() writes .eval + sidecar -------------------
+    # ---- M1.3 persistence: save() writes pure .eval (no sidecar) -----------
     tmpdir = Path(tempfile.mkdtemp(prefix="wb-orch-persist-"))
     session.store_dir = tmpdir
     session.session_id = "t"
     session.save()
     d = tmpdir / "t"
     assert (d / "orchestrator.eval").exists(), list(d.iterdir())
-    assert (d / "orchestrator_events.json").exists(), list(d.iterdir())
+    assert not (d / "orchestrator_events.json").exists(), (
+        "sidecar written — should be pure .eval"
+    )
     saved_msgs = list(orch.state.messages)
     saved_orch_events = len(_orch_events(session))
     assert saved_msgs and saved_orch_events, "nothing to save"
     print(
-        f"✓ save(): {len(saved_msgs)} messages → orchestrator.eval, "
-        f"{saved_orch_events} events → sidecar"
+        f"✓ save(): {len(saved_msgs)} messages + {saved_orch_events} display "
+        f"events → orchestrator.eval (no sidecar)"
     )
 
     await session.close()
@@ -195,12 +197,20 @@ async def _amain() -> None:  # noqa: PLR0915
     assert orch2 is not None, "load() didn't resume orchestrator"
     assert orch2.span_id == orch.span_id, "resumed span_id mismatch"
 
-    # display InfoEvents merged into sess2.events
+    # display InfoEvents merged into sess2.events (via _condense — same shape)
     loaded_orch_events = len(_orch_events(sess2))
     assert loaded_orch_events >= saved_orch_events, (
         f"lost display events on load: {loaded_orch_events} < {saved_orch_events}"
     )
     assert sess2.events["job"]["data"]["bundle"]["text/plain"] == "'v2'"
+
+    # loaded ModelEvents were re-interned into THIS session's pool: every
+    # input_refs range is in-bounds (the sidecar bug this design avoids).
+    for e in sess2.events.values():
+        if e["event"] == "model" and e.get("input_refs"):
+            for start, end in e["input_refs"]:
+                assert 0 <= start < end <= len(sess2.pool), (start, end, len(sess2.pool))
+    assert len(sess2.pool) > 0, "orch ModelEvents not re-interned into pool"
 
     # resumed agent history = saved messages + [kernel restarted …] note
     assert orch2.state is not None
