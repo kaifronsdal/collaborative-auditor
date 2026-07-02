@@ -42,4 +42,6 @@ dev = [
 ]
 
 [tool.uv]
-exclude-newer-package = { aisitools = false, anthropic = false, inspect-ai = false, openai = false }
+# exclude-newer-package overrides removed — orphaned without a global
+# ``exclude-newer`` and forced a re-resolve that failed against the
+# editable inspect_ai fork's ``0.1.dev1+…`` version (e2e worker).
