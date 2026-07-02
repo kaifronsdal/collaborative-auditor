@@ -99,6 +99,14 @@ async def _run(k: OrchestratorKernel) -> None:  # noqa: PLR0915
         "await asyncio.sleep(0.05)\n"
         "wb.steer(['b-1'], 'STEERED')\n"
         "wb.stop(['b-2'])\n"
+        # running_ids depends on the watcher's _poll (~0.25s tick); poll it
+        # separately so the steer above still lands before b-1's 3rd turn.
+        "seen_running = []\n"
+        "for _ in range(20):\n"
+        "    if h2.running_ids:\n"
+        "        seen_running = list(h2.running_ids)\n"
+        "        break\n"
+        "    await asyncio.sleep(0.05)\n"
         "logs = await h2._task\n"
         "smp = {s.id: s for s in logs[0].samples}\n"
         "(any('STEERED' in str(m.content) for m in smp['b-1'].messages),\n"
@@ -106,6 +114,10 @@ async def _run(k: OrchestratorKernel) -> None:  # noqa: PLR0915
         " len(smp['b-0'].messages))"
     )
     assert r.success, r.text
+    # running_ids populated while samples were in flight (M1-E2E-FINDINGS §1)
+    seen_running = k.shell.user_ns["seen_running"]
+    assert seen_running, "h2.running_ids never populated during run"
+    assert set(seen_running) <= {"b-0", "b-1", "b-2", "b-3"}, seen_running
     # ``_`` is disabled under concurrent cells; read from user_ns directly.
     steered_ok = any(
         "STEERED" in str(m.content) for m in k.shell.user_ns["smp"]["b-1"].messages
@@ -114,8 +126,13 @@ async def _run(k: OrchestratorKernel) -> None:  # noqa: PLR0915
     assert steered_ok, "steer message not in b-1's conversation"
     assert stopped_ok, "stop flag not honoured by b-2"
     assert len(k.shell.user_ns["smp"]["b-0"].messages) >= 4, "control sample ran short"
+    # wb.steer emits a visible receipt regardless of match (M1-E2E-FINDINGS §3)
+    assert "→ steered" in r.text, f"no steer receipt in cell output: {r.text!r}"
     CONTROL.clear()
-    print("✓ steer/stop via CONTROL reach cooperating solver")
+    print(
+        f"✓ steer/stop via CONTROL reach cooperating solver "
+        f"(running_ids={len(seen_running)}, receipt shown)"
+    )
 
     # ---- 3. two concurrent run_eval (guard lifted) ------------------------
     r = await k.run_turn(

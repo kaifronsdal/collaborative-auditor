@@ -15,7 +15,6 @@ without cooperation.
 from __future__ import annotations
 
 import asyncio
-import os
 import tempfile
 import time
 import zipfile
@@ -468,8 +467,15 @@ class RunHandle(_PollingHandle):
             for s in summaries:
                 self.rows[f"{s.id}#{s.epoch}"] = self._row(s)
         # In-flight samples (not yet flushed) come from the process-local
-        # registry; filter to this run's log_dir and skip any that already
-        # landed in ``self.rows`` (brief overlap at completion).
+        # registry; filter to this run and skip any that already landed in
+        # ``self.rows`` (brief overlap at completion). Match on ``task``
+        # (unique per handle for ``run_audits`` — ``audit-{uuid6}``) rather
+        # than ``log_location`` prefix: inspect may relativise
+        # ``ActiveSample.log_location`` against CWD (see
+        # ``_eval/task/run.py:profile.log_location``), so a caller-passed
+        # ``log_dir`` won't reliably prefix it. Keep the path check as an OR
+        # for concurrent ``run_eval`` calls that share a task name.
+        log_dir = self.log_dir.rstrip("/")
         self._running = [
             SampleRow(
                 id=str(s.sample.id),
@@ -479,7 +485,7 @@ class RunHandle(_PollingHandle):
                 turns=s.total_messages // 2,
             )
             for s in active_samples()
-            if s.log_location.startswith(self.log_dir + os.sep)
+            if (s.task == self.task_name or s.log_location.startswith(log_dir + "/"))
             and f"{s.sample.id}#{s.epoch}" not in self.rows
         ]
 

@@ -11,6 +11,8 @@ from collections.abc import Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from inspect_ai import Task
+from inspect_ai.log._samples import active_samples  # noqa: PLC2701
+from IPython.display import Markdown, display
 
 from workbench.m1.cite import Finding, Quote, cite
 from workbench.m1.kernel import Prompt
@@ -134,7 +136,14 @@ class Workbench:
             viewer=audit_viewer(cfg.get("judge_dimensions")),
             name=f"audit-{prop.id[:6]}",
         )
-        model_roles = {"target": model, "auditor": auditor_model or model}
+        # ``audit_judge`` resolves ``get_model(role="judge", required=True)``
+        # whenever an ``auditor`` role is present — omit it and every sample
+        # errors at scoring with ``Model role 'judge' is required``.
+        model_roles = {
+            "target": model,
+            "auditor": auditor_model or model,
+            "judge": auditor_model or model,
+        }
         return AuditRunHandle.launch(
             task,
             id=prop.id,
@@ -191,8 +200,18 @@ class Workbench:
     # -- mutate running samples ------------------------------------------
 
     def steer(self, ids: str | Iterable[str], message: str) -> None:
-        """Queue an operator message for each sample's next turn."""
-        steer([ids] if isinstance(ids, str) else ids, message)
+        """Queue an operator message for each sample's next turn.
+
+        Always emits a receipt. Writes to ``CONTROL`` for *every* id (a
+        sample may not have started yet); the running count is advisory.
+        """
+        want = [ids] if isinstance(ids, str) else [str(i) for i in ids]
+        running = {str(s.sample.id) for s in active_samples()}
+        n_matched = sum(1 for i in want if i in running)
+        n_missed = len(want) - n_matched
+        steer(want, message)
+        note = f" ({n_missed} not running)" if n_missed else ""
+        display(Markdown(f"→ steered {n_matched}/{len(want)} running samples{note}"))
 
     def stop(self, ids: str | Iterable[str], *, hard: bool = False) -> None:
         """Ask each sample to end (``hard=True`` interrupts immediately)."""
