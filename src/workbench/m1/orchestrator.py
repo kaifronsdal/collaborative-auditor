@@ -345,6 +345,14 @@ def _seed_analysis_ns() -> dict[str, Any]:
         import plotly.express as px  # noqa: PLC0415
         import plotly.graph_objects as go  # noqa: PLC0415
 
+        # Bound the model-facing text/plain (a 50-col DataFrame's default
+        # repr is multi-KB) and the frontend's ``text/html`` width. The
+        # ``show_dimensions`` footer tells the auditor the true shape when
+        # elided; ``max_colwidth`` matches M1's per-row seed truncation.
+        pd.set_option("display.max_columns", 12)
+        pd.set_option("display.max_rows", 20)
+        pd.set_option("display.max_colwidth", 80)
+        pd.set_option("display.show_dimensions", True)
         ns.update(pd=pd, np=np, px=px, go=go)
     except ImportError:
         pass
