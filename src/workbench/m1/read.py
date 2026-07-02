@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from inspect_ai.log import read_eval_log_sample
+from inspect_ai.log import EvalSample, read_eval_log, read_eval_log_sample
 from inspect_ai.model import ChatMessage
 from inspect_scout import MessagesPreprocessor, messages_as_str, span_messages
 
@@ -38,15 +38,34 @@ def _resolve_log(log: str | RunHandle) -> str:
     return log
 
 
+def _resolve_sample(log: str, sample_id: str) -> EvalSample:
+    """Look up a sample by seed ``id`` *or* inspect's per-sample ``uuid``.
+
+    ``read_eval_log_sample(log, id=…)`` keys on the seed id; the orchestrator
+    often holds ``df.iloc[...]["sample_id"]`` (the sample UUID) instead. Try
+    the fast path first, then fall back to a full-log scan matching either
+    ``s.uuid`` or ``str(s.id)``.
+    """
+    try:
+        return read_eval_log_sample(log, id=sample_id, resolve_attachments=True)
+    except (KeyError, IndexError, LookupError):
+        pass
+    for s in read_eval_log(log, resolve_attachments=True).samples or []:
+        if s.uuid == sample_id or str(s.id) == sample_id:
+            return s
+    raise KeyError(f"no sample with id or uuid {sample_id!r} in {log}")
+
+
 def _load_messages(log: str, sample_id: str) -> list[ChatMessage]:
     """One sample's messages, via the timeline where available.
 
-    ``span_messages`` walks the event tree (handles compaction, nested
-    agents) — that's the same source ``audit_judge``'s ``render_target_timeline``
-    reads, so indices line up. Falls back to the flat ``.messages`` list for
-    logs without events.
+    ``sample_id`` may be either the seed ``id`` or the sample ``uuid`` (see
+    ``_resolve_sample``). ``span_messages`` walks the event tree (handles
+    compaction, nested agents) — that's the same source ``audit_judge``'s
+    ``render_target_timeline`` reads, so indices line up. Falls back to the
+    flat ``.messages`` list for logs without events.
     """
-    sample = read_eval_log_sample(log, id=sample_id, resolve_attachments=True)
+    sample = _resolve_sample(log, sample_id)
     if sample.events:
         return cast("list[ChatMessage]", span_messages(sample.events))
     return list(sample.messages)

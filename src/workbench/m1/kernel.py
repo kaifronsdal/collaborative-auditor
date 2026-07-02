@@ -229,11 +229,6 @@ class OrchestratorKernel:
         self._bg_code: dict[int, str] = {}
 
         self.gate = Gate()
-        # Compat shims so existing callers (``server.py``, ``wb.py``,
-        # ``Session.view``) keep working while the ``Gate`` is threaded
-        # through — ``kernel.gate(prop)`` / ``kernel.resolve(id, v)`` /
-        # ``kernel.pending`` all forward.
-        self.resolve = self.gate.resolve
 
         # Refs only — no swap. ``__enter__`` re-captures and swaps; keeping
         # a valid ``_real_stderr`` here means ``_forward``/``_showtraceback``
@@ -251,10 +246,6 @@ class OrchestratorKernel:
             **(extra_ns or {}),
         )
         self.shell.user_ns.update(seeded)
-
-    @property
-    def pending(self) -> dict[str, asyncio.Future[Any]]:
-        return self.gate.pending
 
     # -- context manager ------------------------------------------------------
 
@@ -286,18 +277,13 @@ class OrchestratorKernel:
         return self
 
     def __exit__(self, *exc: object) -> None:
-        # No-op if this kernel was never entered (or already exited) — the
-        # compat ``restore_streams()`` alias may be called from
-        # ``Orchestrator.run()`` finally on a resumed kernel that never ran.
+        # No-op if this kernel was never entered (or already exited) — e.g.
+        # a resumed orchestrator that was ``close()``d before running a cell.
         if OrchestratorKernel._instance is not self:
             return
         sys.stdout = self._real_stdout
         sys.stderr = self._real_stderr
         OrchestratorKernel._instance = None
-
-    def restore_streams(self) -> None:
-        """Compat alias; callers migrate to ``with kernel:``."""
-        self.__exit__(None, None, None)
 
     def _showtraceback(
         self, etype: type, evalue: BaseException, stb: list[str]

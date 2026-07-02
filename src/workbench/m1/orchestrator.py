@@ -230,7 +230,7 @@ class Orchestrator(StepGated):
         return {
             "span_id": self.span_id,
             "status": self.status,
-            "pending_gates": list(self.kernel.pending),
+            "pending_gates": list(self.kernel.gate.pending),
             "bg_cells": sorted(self.kernel.bg),
             "notifications": list(self.kernel.notifications),
         }
@@ -286,12 +286,27 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
     @agent
     def _factory() -> Agent:
         async def execute(state: AgentState) -> AgentState:
-            for _ in range(orch.max_turns):
+            for turn in range(orch.max_turns):
                 await orch.await_step()
                 state.messages.extend(orch.queued)
                 orch.queued.clear()
 
-                state.output = await model.generate(input=state.messages, tools=tools)
+                # A transient API error (500, overloaded, connection reset)
+                # during ``generate`` must not tear down ``run()`` — surface it
+                # as a sys chip and park so the human can ``orch_send`` to
+                # retry. Construction-time errors (bad model name, etc.) are
+                # still caught by ``run()``'s outer ``except Exception``.
+                try:
+                    state.output = await model.generate(
+                        input=state.messages, tools=tools
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("orchestrator turn %d failed", turn)
+                    orch.kernel.notify(
+                        f"[orchestrator error at turn {turn}: {exc}]"
+                    )
+                    orch.pause()
+                    continue
                 state.messages.append(state.output.message)
                 orch.rearm()
 

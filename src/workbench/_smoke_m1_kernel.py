@@ -88,15 +88,15 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
     # let the cell reach the await
     for _ in range(50):
         await asyncio.sleep(0)
-        if k.pending:
+        if k.gate.pending:
             break
-    assert len(k.pending) == 1, "gate future not registered"
-    (pid,) = k.pending
+    assert len(k.gate.pending) == 1, "gate future not registered"
+    (pid,) = k.gate.pending
     pending_evs = [ev for ev in k.outputs[k._turn_counter] if ev.id == pid]
     assert len(pending_evs) == 1 and not pending_evs[0].update
     assert pending_evs[0].bundle[WB_MIME]["pending"] is True
     # WS handler resolves it
-    assert k.resolve(pid, "y")
+    assert k.gate.resolve(pid, "y")
     r = await turn
     assert r.success
     assert k.shell.user_ns["ans"] == "y"
@@ -104,7 +104,7 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
     assert len(prompt_evs) == 2
     assert prompt_evs[1].update and prompt_evs[1].bundle[WB_MIME]["pending"] is False
     assert prompt_evs[1].bundle[WB_MIME]["answer"] == "y"
-    assert not k.pending, "gate future not cleaned up"
+    assert not k.gate.pending, "gate future not cleaned up"
     print("✓ _gate: pending → resolve() → update(resolved)")
 
     # ---- 5. background cell + [done] notification -------------------------
@@ -179,18 +179,18 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
     )
     for _ in range(50):
         await asyncio.sleep(0)
-        if len(k.pending) == 2:
+        if len(k.gate.pending) == 2:
             break
-    assert len(k.pending) == 2, (
-        f"both gates should publish before either blocks: {k.pending}"
+    assert len(k.gate.pending) == 2, (
+        f"both gates should publish before either blocks: {k.gate.pending}"
     )
-    for pid in list(k.pending):
+    for pid in list(k.gate.pending):
         q = next(
             ev.bundle[WB_MIME]["question"]
             for ev in k.outputs[k._turn_counter]
             if ev.id == pid and not ev.update
         )
-        k.resolve(pid, q[:-1])  # answer with the question text sans '?'
+        k.gate.resolve(pid, q[:-1])  # answer with the question text sans '?'
     r = await turn
     assert r.success and k.shell.user_ns["a"] == "one" and k.shell.user_ns["b"] == "two"
     print("✓ asyncio.gather: both gates pending simultaneously, resolve independently")
@@ -226,7 +226,7 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
         print("· pandas not installed, skipping DataFrame check")
 
     # ---- 13. resolve unknown id is a no-op --------------------------------
-    assert k.resolve("nope", "x") is False
+    assert k.gate.resolve("nope", "x") is False
 
     # ---- 14. quiet() race: later cell's ';' must not drop earlier's expr --
     ra = await k.run_turn("await asyncio.sleep(0.05)\n'survived'", background=True)

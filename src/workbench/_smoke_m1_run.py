@@ -161,14 +161,14 @@ async def _run(k: OrchestratorKernel) -> None:  # noqa: PLR0915
     )
     for _ in range(200):
         await asyncio.sleep(0)
-        if k.pending:
+        if k.gate.pending:
             break
-    assert k.pending, "run_audits didn't gate at n=12"
-    (pid,) = k.pending
+    assert k.gate.pending, "run_audits didn't gate at n=12"
+    (pid,) = k.gate.pending
     prop_ev = next(ev for ev in k.outputs[k._turn_counter] if ev.id == pid)
     assert prop_ev.bundle[WB_MIME]["kind"] == "run_proposal"
     assert prop_ev.bundle[WB_MIME]["n"] == 12
-    k.resolve(pid, {"denied": True, "reason": "too many"})
+    k.gate.resolve(pid, {"denied": True, "reason": "too many"})
     r = await turn
     assert r.success, r.text  # deny is control flow, not an exception
     assert "denied: too many" in r.text, r.text

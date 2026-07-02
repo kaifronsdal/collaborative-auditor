@@ -10,7 +10,7 @@ calls, and asserts the vertical slice:
   the same ``uuid``, and ``session.events[uuid]`` holds the *latest* bundle.
 - The orchestrator span resolves via ``session._resolve`` → ``("orch","orch")``.
 - A pending gate appears in ``Session.view()["orchestrator"]["pending_gates"]``
-  and ``kernel.resolve()`` clears it.
+  and ``kernel.gate.resolve()`` clears it.
 - Reconnect: ``push_full_state`` on a fresh connection carries every display
   ``InfoEvent`` (the fix the spike's ``on_display → _enqueue`` shortcut broke).
 
@@ -152,7 +152,7 @@ async def _amain() -> None:  # noqa: PLR0915
     )
 
     # resolve → dh.update fires → {"t":"update"} for gid, pending=False
-    assert orch.kernel.resolve(gid, "yes")
+    assert orch.kernel.gate.resolve(gid, "yes")
     await _settle()
     assert (
         session.events[gid]["data"]["bundle"]["application/vnd.workbench.v1+json"][
@@ -160,7 +160,7 @@ async def _amain() -> None:  # noqa: PLR0915
         ]
         is False
     )
-    assert not orch.kernel.pending
+    assert not orch.kernel.gate.pending
     assert session.view()["orchestrator"]["pending_gates"] == []
     print("✓ resolve() → update event, gate cleared")
 
