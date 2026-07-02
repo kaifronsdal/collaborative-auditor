@@ -445,6 +445,9 @@ class Session:
         system_prompt: str = "",
         model_args: dict[str, Any] | None = None,
         max_turns: int = 10_000,
+        resume_messages: list[ChatMessage] | None = None,
+        span_id: str | None = None,
+        run_log_dirs: list[str] | None = None,
     ) -> None:
         """Construct the M1 `Orchestrator`, spawn its `run()`, broadcast state."""
         from workbench.m1.orchestrator import Orchestrator  # noqa: PLC0415
@@ -455,6 +458,9 @@ class Session:
             system_prompt=system_prompt,
             model_args=model_args,
             max_turns=max_turns,
+            resume_messages=resume_messages,
+            span_id=span_id,
+            run_log_dirs=run_log_dirs,
         )
         self.orchestrator = orch
         orch.task = asyncio.create_task(orch.run())
@@ -514,6 +520,10 @@ class Session:
         (d / "history.json").write_text(json.dumps(self.audit_history.dump()))
         for b in [branch] if branch else self.branches.values():
             self._write_branch(d, b)
+        if self.orchestrator is not None:
+            from workbench.m1.persist import save_orchestrator  # noqa: PLC0415
+
+            save_orchestrator(self.orchestrator, self, d)
 
     @staticmethod
     def _write_branch(d: Path, branch: "Branch") -> None:
@@ -582,6 +592,13 @@ class Session:
                 await branch._replayed.wait()  # noqa: SLF001
 
         sess.current = index["current"]
+
+        if (d / "orchestrator.eval").exists():
+            from workbench.m1.persist import load_orchestrator  # noqa: PLC0415
+
+            meta = load_orchestrator(sess, d)
+            await sess.start_orchestrator(**meta)
+
         return sess
 
 

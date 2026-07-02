@@ -87,6 +87,16 @@ def _wire_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
 #: singleton and ``sys.stdout`` tee mean at most one live kernel per process.
 _LIVE: "Orchestrator | None" = None
 
+#: Appended to a resumed agent's history (M1.3 persistence): the kernel's
+#: ``user_ns`` doesn't survive ``Session.save``/``load`` — same as a Jupyter
+#: kernel restart — so any names the pre-save cells bound are gone. The note
+#: points at ``RunHandle.log_dir``s seen in the saved event stream so the
+#: agent can re-read results without re-running the evals.
+KERNEL_RESTART_NOTE = (
+    "[kernel restarted — previous Python bindings lost. RunHandle logs at: "
+    "{dirs}. Re-read via audits_df(log_dir) or wb.run_eval results.]"
+)
+
 
 class Orchestrator(StepGated):
     """One M1 orchestrator: kernel + agent loop + span, owned by a `Session`."""
@@ -99,6 +109,9 @@ class Orchestrator(StepGated):
         system_prompt: str = "",
         model_args: dict[str, Any] | None = None,
         max_turns: int = 10_000,
+        resume_messages: list[ChatMessage] | None = None,
+        span_id: str | None = None,
+        run_log_dirs: list[str] | None = None,
     ) -> None:
         global _LIVE
         if _LIVE is not None:
@@ -112,8 +125,12 @@ class Orchestrator(StepGated):
         self.model_args = model_args or {}
         self.system_prompt = system_prompt
         self.max_turns = max_turns
+        #: Persistence (M1.3): pre-save chat history to prepend on resume,
+        #: and any ``RunHandle.log_dir``s the pre-save cells produced.
+        self._resume_messages = resume_messages
+        self.run_log_dirs: list[str] = list(run_log_dirs or [])
 
-        self.span_id = uuid()
+        self.span_id = span_id or uuid()
         session.span_role[self.span_id] = ("orch", "orch")
 
         # Pay inspect's cold-start cost (display type, hooks banner) once,
@@ -127,6 +144,9 @@ class Orchestrator(StepGated):
         self._init_gate()
         self.status: Status = "idle"
         self.queued: list[ChatMessage] = []
+        #: The live agent state; set once ``run()`` enters its span. Read by
+        #: ``m1.persist.save_orchestrator`` for the resume ``messages``.
+        self.state: AgentState | None = None
         #: The detached ``run()`` task; set by ``Session.start_orchestrator``.
         self.task: asyncio.Task[None] | None = None
 
@@ -179,6 +199,7 @@ class Orchestrator(StepGated):
             agent_fn = orchestrator_agent(self, model)
             async with span(ORCH_SOURCE, type=ORCH_SOURCE, id=self.span_id):
                 state = AgentState(messages=self._initial_messages())
+                self.state = state
                 await agent_fn(state)
         except (asyncio.CancelledError, anyio.get_cancelled_exc_class()):
             pass
@@ -196,6 +217,10 @@ class Orchestrator(StepGated):
                 _LIVE = None
 
     def _initial_messages(self) -> list[ChatMessage]:
+        if self._resume_messages is not None:
+            dirs = ", ".join(self.run_log_dirs) or "(none)"
+            note = ChatMessageUser(content=KERNEL_RESTART_NOTE.format(dirs=dirs))
+            return [*self._resume_messages, note]
         msgs: list[ChatMessage] = []
         if self.system_prompt:
             msgs.append(ChatMessageSystem(content=self.system_prompt))

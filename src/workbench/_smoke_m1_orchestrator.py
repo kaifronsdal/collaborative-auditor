@@ -20,6 +20,8 @@ Run:  ``uv run python -m workbench._smoke_m1_orchestrator``
 from __future__ import annotations
 
 import asyncio
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import anyio
@@ -167,9 +169,54 @@ async def _amain() -> None:  # noqa: PLR0915
     await _settle()
     assert orch.status == "paused"
 
+    # ---- M1.3 persistence: save() writes .eval + sidecar -------------------
+    tmpdir = Path(tempfile.mkdtemp(prefix="wb-orch-persist-"))
+    session.store_dir = tmpdir
+    session.session_id = "t"
+    session.save()
+    d = tmpdir / "t"
+    assert (d / "orchestrator.eval").exists(), list(d.iterdir())
+    assert (d / "orchestrator_events.json").exists(), list(d.iterdir())
+    saved_msgs = list(orch.state.messages)
+    saved_orch_events = len(_orch_events(session))
+    assert saved_msgs and saved_orch_events, "nothing to save"
+    print(
+        f"✓ save(): {len(saved_msgs)} messages → orchestrator.eval, "
+        f"{saved_orch_events} events → sidecar"
+    )
+
     await session.close()
     orch.kernel.restore_streams()
-    print("\n✓ all M1.1 wire smoke checks passed")
+
+    # ---- M1.3 persistence: load() → resumed orchestrator -------------------
+    sess2 = await Session.load("t", tmpdir)
+    await _settle()  # let orch2.run() reach the gate and set .state
+    orch2 = sess2.orchestrator
+    assert orch2 is not None, "load() didn't resume orchestrator"
+    assert orch2.span_id == orch.span_id, "resumed span_id mismatch"
+
+    # display InfoEvents merged into sess2.events
+    loaded_orch_events = len(_orch_events(sess2))
+    assert loaded_orch_events >= saved_orch_events, (
+        f"lost display events on load: {loaded_orch_events} < {saved_orch_events}"
+    )
+    assert sess2.events["job"]["data"]["bundle"]["text/plain"] == "'v2'"
+
+    # resumed agent history = saved messages + [kernel restarted …] note
+    assert orch2.state is not None
+    msgs2 = orch2.state.messages
+    assert len(msgs2) == len(saved_msgs) + 1, (len(msgs2), len(saved_msgs))
+    for a, b in zip(saved_msgs, msgs2, strict=False):
+        assert a.role == b.role and a.text == b.text, (a.role, b.role)
+    assert msgs2[-1].role == "user"
+    assert "[kernel restarted" in msgs2[-1].text, msgs2[-1].text
+    print(
+        f"✓ load(): {loaded_orch_events} display events restored, "
+        f"resume history = {len(saved_msgs)} + kernel-restart note"
+    )
+
+    await sess2.close()
+    print("\n✓ all M1.1 wire + M1.3 persistence smoke checks passed")
 
 
 def _orch_events(session: Session) -> list[dict[str, Any]]:
