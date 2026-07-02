@@ -573,7 +573,7 @@ class ScanHandle(_PollingHandle):
 
     _location: str | None = field(default=None, repr=False)
     _results: Any | None = field(default=None, repr=False)
-    _df_head: dict[str, list[dict[str, Any]]] = field(default_factory=dict, repr=False)
+    _df_head: dict[str, str] = field(default_factory=dict, repr=False)
 
     @property
     def n_done(self) -> int:
@@ -618,8 +618,11 @@ class ScanHandle(_PollingHandle):
             self._location = task.result().location
         if self._location is not None and self.error is None:
             self._results = await scan_results_df_async(self._location)
+            # ProgressCard renders df_head as HTML per scanner (UI-AUDIT §C).
             self._df_head = {
-                name: df.head(3).to_dict("records")
+                name: df.head(3).to_html(
+                    classes="dataframe scan-preview", border=0, index=False
+                )
                 for name, df in self._results.scanners.items()
             }
 
