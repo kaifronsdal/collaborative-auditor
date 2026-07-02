@@ -85,10 +85,6 @@ def _wire_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-#: Process-wide guard (M1-KERNEL-NOTES.md §3): the ``InteractiveShell``
-#: singleton and ``sys.stdout`` tee mean at most one live kernel per process.
-_LIVE: "Orchestrator | None" = None
-
 #: Appended to a resumed agent's history (M1.3 persistence): the kernel's
 #: ``user_ns`` doesn't survive ``Session.save``/``load`` — same as a Jupyter
 #: kernel restart — so any names the pre-save cells bound are gone. The note
@@ -115,13 +111,6 @@ class Orchestrator(StepGated):
         span_id: str | None = None,
         run_log_dirs: list[str] | None = None,
     ) -> None:
-        global _LIVE
-        if _LIVE is not None:
-            raise RuntimeError(
-                "one M1 orchestrator per process (InteractiveShell singleton)"
-            )
-        _LIVE = self
-
         self.session = session
         self.model_name = model
         self.model_args = model_args or {}
@@ -204,27 +193,28 @@ class Orchestrator(StepGated):
         # to paused if we're still at the constructor default.
         if self.status == "idle":
             self.status = "paused"
-        try:
-            model = get_model(self.model_name, **self.model_args)
-            agent_fn = orchestrator_agent(self, model)
-            async with span(ORCH_SOURCE, type=ORCH_SOURCE, id=self.span_id):
-                state = AgentState(messages=self._initial_messages())
-                self.state = state
-                await agent_fn(state)
-        except (asyncio.CancelledError, anyio.get_cancelled_exc_class()):
-            pass
-        except Exception as exc:
-            logger.exception("orchestrator run failed")
-            await self.session.broadcast(
-                {"t": "error", "v": self.session.version, "message": str(exc)}
-            )
-        finally:
-            self.status = "ended"
-            await self.session.broadcast_status()
-            self.kernel.restore_streams()
-            global _LIVE
-            if _LIVE is self:
-                _LIVE = None
+        # Kernel-as-CM: ``__enter__`` seizes the process-global resources
+        # (``InteractiveShell`` hooks, ``sys.stdout/stderr``) and enforces the
+        # one-per-process guard; ``__exit__`` restores + releases. Paired
+        # lexically here so an exception before the agent loop still restores.
+        with self.kernel:
+            try:
+                model = get_model(self.model_name, **self.model_args)
+                agent_fn = orchestrator_agent(self, model)
+                async with span(ORCH_SOURCE, type=ORCH_SOURCE, id=self.span_id):
+                    state = AgentState(messages=self._initial_messages())
+                    self.state = state
+                    await agent_fn(state)
+            except (asyncio.CancelledError, anyio.get_cancelled_exc_class()):
+                pass
+            except Exception as exc:
+                logger.exception("orchestrator run failed")
+                await self.session.broadcast(
+                    {"t": "error", "v": self.session.version, "message": str(exc)}
+                )
+            finally:
+                self.status = "ended"
+                await self.session.broadcast_status()
 
     def _initial_messages(self) -> list[ChatMessage]:
         if self._resume_messages is not None:

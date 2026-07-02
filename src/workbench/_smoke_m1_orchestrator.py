@@ -79,8 +79,6 @@ async def _amain() -> None:  # noqa: PLR0915
     )
     orch = session.orchestrator
     assert orch is not None
-    # TODO(m1-refactor): drop once ``Orchestrator.run()`` wraps ``with self.kernel:``
-    orch.kernel.__enter__()
 
     # ---- turn 1: display/update/print/last-expr → InfoEvents ---------------
     orch.step()

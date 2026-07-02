@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Literal, Self
@@ -368,7 +369,14 @@ class RunHandle(_PollingHandle):
             # only returns files the recorder has actually copied out.
             self._log_file = next((i.name for i in list_eval_logs(self.log_dir)), None)
         if self._log_file is not None:
-            summaries = await read_eval_log_sample_summaries_async(self._log_file)
+            # The recorder copies its temp zip to ``_log_file`` per flush
+            # (``log_buffer=1``); reading during that copy hits an
+            # incomplete zip (``EOCD not found``). Next tick reads the
+            # settled file.
+            try:
+                summaries = await read_eval_log_sample_summaries_async(self._log_file)
+            except (zipfile.BadZipFile, ValueError):
+                summaries = []
             for s in summaries:
                 self.rows[f"{s.id}#{s.epoch}"] = self._row(s)
         # In-flight samples (not yet flushed) come from the process-local

@@ -21,7 +21,7 @@ cells return `<ok · bound: names>`. Tracebacks are returned to you as text.
 
 Seeded in the namespace: `wb`, `SESSION`, `asyncio`, `display`, `Markdown`,
 `HTML`, `pd`, `np`, `px`, `go`, `audit_scanner`, `llm_scanner`, `scanner`,
-`rubrics`, `get_model`, `json`. Import anything else you need.
+`get_model`, `json`. Import anything else you need.
 
 ## `wb.*` — side effects only; everything else is plain Python
 
