@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
-from workbench.m1.kernel import WB_MIME, OrchestratorKernel
+from workbench.m1.kernel import WB_MIME, Gate
 
 
 # -- data ---------------------------------------------------------------------
@@ -134,7 +134,7 @@ class Finding:
 
 
 async def cite(
-    kernel: OrchestratorKernel,
+    gate: "Gate",
     claim: str,
     quotes: list[Quote],
     *,
@@ -155,7 +155,7 @@ async def cite(
         grades_ref=grades_ref,
         description=description,
     )
-    await kernel.gate(prop)
+    await gate(prop)
     # ``gate()`` has already called ``prop.resolve(verdict)`` — claim/quotes
     # now reflect any human edits; read the normalized ``prop.verdict``.
     signed_by = (prop.verdict.get("by") or None) if prop.signed else None

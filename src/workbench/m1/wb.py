@@ -32,7 +32,7 @@ from workbench.m1.run import (
 )
 
 if TYPE_CHECKING:
-    from workbench.m1.kernel import OrchestratorKernel
+    from workbench.m1.kernel import Gate
     from workbench.session import Session
 
 #: Runs with more audits than this are gated on human approval.
@@ -47,9 +47,12 @@ class Workbench:
     ``transcript`` are compute/read helpers with a rich repr.
     """
 
-    def __init__(self, kernel: "OrchestratorKernel", session: "Session | None") -> None:  # noqa: ARG002
-        # ``session`` is unused until ``cite`` (M1.3) needs it.
-        self._k = kernel
+    def __init__(self, gate: "Gate", session: "Session | None") -> None:  # noqa: ARG002
+        # ``gate`` is the only kernel dependency (``run_audits``/``ask_human``/
+        # ``cite`` await it); holding just the ``Gate`` keeps ``wb`` decoupled
+        # from the turn-lifecycle machinery. ``session`` is unused until a
+        # helper needs it.
+        self._gate = gate
 
     def __repr__(self) -> str:
         return (
@@ -101,7 +104,7 @@ class Workbench:
         prop = RunProposal(seed_list, cfg, description, n_per_seed)
 
         if prop.n > GATE_THRESHOLD:
-            await self._k.gate(prop)
+            await self._gate(prop)
             if prop.denied:
                 # A human clicking "deny" is expected control flow, not an
                 # exception — hand back a settled handle so the model reads
@@ -164,7 +167,7 @@ class Workbench:
         )
 
     async def ask_human(self, question: str, options: list[str] | None = None) -> str:
-        return str(await self._k.gate(Prompt(question, options)))
+        return str(await self._gate(Prompt(question, options)))
 
     async def cite(
         self,
@@ -177,7 +180,7 @@ class Workbench:
         """Propose a finding for the human to sign. Always blocks; deny
         returns an unsigned ``Finding`` (no exception)."""
         return await cite(
-            self._k, claim, list(quotes), grades_ref=grades_ref, description=description
+            self._gate, claim, list(quotes), grades_ref=grades_ref, description=description
         )
 
     #: Plot helpers over ``px.*`` — ``link``/``annotate_top``/``paired_slope``/

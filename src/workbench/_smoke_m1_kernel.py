@@ -41,7 +41,7 @@ async def _amain() -> None:
 
 
 async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa: PLR0915
-    k.shell.user_ns["wb"] = Workbench(k, session=None)
+    k.shell.user_ns["wb"] = Workbench(k.gate, session=None)
 
     # ---- 1. last-expr auto-display via displayhook -------------------------
     r = await k.run_turn("x = 41\nx + 1")

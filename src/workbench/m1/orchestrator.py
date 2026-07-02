@@ -134,7 +134,7 @@ class Orchestrator(StepGated):
         self.kernel = OrchestratorKernel(
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
-        self.kernel.shell.user_ns["wb"] = Workbench(self.kernel, session)
+        self.kernel.shell.user_ns["wb"] = Workbench(self.kernel.gate, session)
         self.kernel.shell.user_ns.update(_seed_analysis_ns())
         self._init_gate()
         self.status: Status = "idle"

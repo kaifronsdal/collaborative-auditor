@@ -66,7 +66,7 @@ async def _amain() -> None:
 
 
 async def _run(k: OrchestratorKernel) -> None:  # noqa: PLR0915
-    k.shell.user_ns["wb"] = Workbench(k, session=None)
+    k.shell.user_ns["wb"] = Workbench(k.gate, session=None)
     k.shell.user_ns.update(make_task=make_task, RunHandle=RunHandle)
 
     # ---- 1. run_eval in-cell: card ticks, .eval written, text collapses ----
