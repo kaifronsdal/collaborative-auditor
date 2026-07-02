@@ -8,7 +8,7 @@
  * `payload.kind`; unknown kinds fall through to `WbFallback` so the column
  * stays inspectable.
  */
-import { useEffect, useMemo, useRef, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 
 import { useSession } from "../../store/session";
 import { cards } from "./cards";
@@ -49,16 +49,21 @@ export function Output({ id, bundle, meta, stable, settled }: OutputProps): JSX.
 
   const inner = renderBundle(id, bundle, send);
   if (inner == null) return null;
+  // UI-AUDIT §C: only badge outputs that were meaningfully live. A stable
+  // handle that displayed once and never updated (`updates < 2` at settle)
+  // is just a value — no `updated 1×` noise.
   if (!stable) return inner;
+  if (settled && updates.current < 2) return inner;
   return (
     <div className="out-wrap" data-stable data-updates={updates.current}>
       {inner}
-      <span
-        className={`out-live${settled ? " settled" : ""}`}
-        title={settled ? `updated ${updates.current}×` : `live — updated ${updates.current}×`}
-      >
-        {settled ? `updated ${updates.current}×` : "live"}
-      </span>
+      {settled ? (
+        <span className="out-live settled" title={`updated ${updates.current}×`} />
+      ) : (
+        <span className="out-live" title={`live — updated ${updates.current}×`}>
+          live
+        </span>
+      )}
     </div>
   );
 }
@@ -70,20 +75,7 @@ function renderBundle(
 ): JSX.Element | null {
   const wb = bundle[WB_MIME];
   if (wb != null) {
-    // `kernel._settle` emits `{kind:"traceback", ename, text}` as a display so
-    // the error surfaces before `ToolEvent.error` settles. Render it directly
-    // (no card module for a two-field payload) rather than the JSON fallback.
-    if (wb.kind === "traceback") {
-      return (
-        <div className="out traceback" data-display-id={id}>
-          <div className="out-head">
-            <i className="bi bi-exclamation-triangle" />
-            <span className="out-kind">{String(wb.ename ?? "error")}</span>
-          </div>
-          <pre className="out-plain err">{String(wb.text ?? "")}</pre>
-        </div>
-      );
-    }
+    if (wb.kind === "traceback") return <TracebackCard id={id} wb={wb} />;
     const Card = cards[wb.kind];
     return Card ? (
       <Card payload={wb} displayId={id} send={send} />
@@ -123,9 +115,11 @@ function renderBundle(
 
   const text = bundle["text/plain"];
   if (text != null) {
+    // Last-expr repr — accent left-rail (grey rail = print, red = stderr,
+    // accent = returned value). `.out-result` opts it out of the 20lh cap.
     return (
       <div className="out bare">
-        <pre className="out-plain">{text}</pre>
+        <pre className="out-plain out-result">{text}</pre>
       </div>
     );
   }
@@ -133,16 +127,69 @@ function renderBundle(
   return null;
 }
 
+// ── traceback ───────────────────────────────────────────────────────────────
+
+type TbFrame = { file: string; lineno: number; line: string };
+
+/** `kernel._settle` emits `{kind:"traceback", ename, evalue, frames, text}`
+ *  as a display so the error surfaces before `ToolEvent.error` settles.
+ *  `frames` is `traceback.extract_tb` filtered to user frames; `text` is the
+ *  full formatted traceback for the expandable body. Backend may lag the
+ *  frontend rollout, so fall back to the raw `<pre>` when `evalue`/`frames`
+ *  aren't present yet. */
+function TracebackCard({ id, wb }: { id: string; wb: WbPayload }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const ename = String(wb.ename ?? "error");
+  const text = String(wb.text ?? "");
+  const evalue = typeof wb.evalue === "string" ? wb.evalue : null;
+  const frames = Array.isArray(wb.frames) ? (wb.frames as TbFrame[]) : null;
+  const last = frames?.[frames.length - 1];
+  return (
+    <div className="out traceback" data-display-id={id}>
+      <div className="out-head">
+        <i className="bi bi-exclamation-triangle" />
+        <span className="out-kind">{ename}</span>
+      </div>
+      {evalue != null && last ? (
+        <>
+          <div className="tb-body">
+            <div className="tb-evalue">{evalue}</div>
+            <code className="tb-at">
+              at {last.file}:{last.lineno} · {last.line}
+            </code>
+            <button
+              type="button"
+              className="tb-toggle"
+              onClick={() => setOpen((v) => !v)}
+            >
+              <i className={`bi bi-chevron-${open ? "up" : "down"}`} />{" "}
+              {frames.length} frame{frames.length === 1 ? "" : "s"}
+            </button>
+          </div>
+          {open && <pre className="out-plain err">{text}</pre>}
+        </>
+      ) : (
+        <pre className="out-plain err">{text}</pre>
+      )}
+    </div>
+  );
+}
+
+// ── html (pandas / plotly) ──────────────────────────────────────────────────
+
 /** Post-process pandas/Markdown HTML: linkify bare `a-xxxx` audit ids so any
  *  DataFrame column becomes clickable without a custom styler (M1-NOTEBOOK.md
- *  §Open question — frontend regex for M1.0). */
-const AUDIT_ID_RE = />(a-[0-9a-f]{4,})</g;
+ *  §Open question — frontend regex for M1.0). Match whole `<td>` cells only:
+ *  the `>` is consumed, the closing `<` is a lookahead so `</td>` stays. */
+const AUDIT_ID_RE = />(a-[0-9a-f]{4})(?=<)/g;
 
 /** plotly.js attaches `.on(event, cb)` to the graph div once `Plotly.newPlot`
  *  has run on it. `window.Plotly` is bundled in main.tsx. */
 type PlotlyDiv = HTMLDivElement & {
   on: (ev: string, cb: (d: PlotlyClick) => void) => void;
   removeAllListeners?: (ev: string) => void;
+  /** Trace array `Plotly.newPlot` stores on the div. */
+  data?: Array<{ customdata?: unknown }>;
 };
 type PlotlyClick = { points: Array<{ customdata?: unknown[] }> };
 
@@ -150,13 +197,14 @@ function HtmlOutput({ html }: { html: string }): JSX.Element {
   const send = useSession((s) => s.send);
   const hostRef = useRef<HTMLDivElement>(null);
   const isPlotly = html.includes("plotly-graph-div");
+  const isDF = html.includes('class="dataframe"');
   const processed = useMemo(
     () =>
       isPlotly
         ? html
         : html.replace(
             AUDIT_ID_RE,
-            (_, id: string) => `><a class="qref" href="wb://audit/${id}">${id}</a><`
+            (_, id: string) => `><a class="qref" href="wb://audit/${id}">${id}</a>`
           ),
     [html, isPlotly]
   );
@@ -198,6 +246,14 @@ function HtmlOutput({ html }: { html: string }): JSX.Element {
           if (!bare) return;
           send({ t: "import_running", sample_id: bare });
         });
+        // UI-AUDIT §C: only advertise the click affordance when at least one
+        // trace actually carries `customdata` (i.e. the workbench styler ran).
+        if (gd.data?.some((t) => t.customdata)) {
+          host.insertAdjacentHTML(
+            "beforeend",
+            '<div class="fx-more plotly-hint">click a point to open in desk</div>'
+          );
+        }
       }
     });
     return () => {
@@ -211,12 +267,22 @@ function HtmlOutput({ html }: { html: string }): JSX.Element {
   if (isPlotly) {
     return <div ref={hostRef} className="out bare plotly-host" />;
   }
+  // Pandas tables self-delimit — no `.out.html` box, just horizontal scroll.
+  if (isDF) {
+    return (
+      <div
+        className="out bare"
+        style={{ overflowX: "auto" }}
+        dangerouslySetInnerHTML={{ __html: processed }}
+      />
+    );
+  }
   return (
     <div className="out html" dangerouslySetInnerHTML={{ __html: processed }} />
   );
 }
 
-/** Placeholder for kinds without a card yet — shows gate chrome + raw payload. */
+/** Placeholder for kinds without a card yet — loud so it gets noticed. */
 function WbFallback({ id, payload }: { id: string; payload: WbPayload }): JSX.Element {
   const gated = GATED.has(payload.kind) && payload.pending !== false;
   return (
@@ -225,9 +291,7 @@ function WbFallback({ id, payload }: { id: string; payload: WbPayload }): JSX.El
         <span className="out-kind">{payload.kind}</span>
         {gated && <span className="gate-tag">proposed</span>}
       </div>
-      {typeof payload.description === "string" && (
-        <div className="gate-desc">{payload.description}</div>
-      )}
+      <div className="err">no renderer for kind={payload.kind}</div>
       <pre className="out-plain">{JSON.stringify(payload, null, 2)}</pre>
     </div>
   );

@@ -85,8 +85,8 @@
   font: var(--fs-md)/1.55 var(--sans);
   color: var(--ink-mid);
 }
-.asst-prose .md > :first-child { margin-top: 0; }
-.asst-prose .md > :last-child { margin-bottom: 0; }
+.asst-prose.md > :first-child { margin-top: 0; }
+.asst-prose.md > :last-child { margin-bottom: 0; }
 .asst-prose code {
   font: 12px var(--mono); padding: 1px 5px;
   background: var(--bg-100); border-radius: 4px;
@@ -124,19 +124,7 @@
   white-space: pre; overflow-x: auto;
 }
 .code-cell pre code { font: inherit; background: none; padding: 0; }
-.code-cell.collapsed pre { max-height: 118px; overflow: hidden; }
-.code-cell.collapsed pre::after {
-  content: ""; position: absolute; inset: auto 0 0 0; height: 32px;
-  background: linear-gradient(transparent, var(--bg-000));
-  pointer-events: none;
-}
-.cc-more {
-  border: none; border-top: 1px dashed var(--border);
-  background: var(--bg-100); width: 100%;
-  font: var(--fs-xs) var(--sans); color: var(--ink-faint);
-  padding: 4px 0; cursor: pointer;
-}
-.cc-more:hover { color: var(--ink-mid); }
+/* collapsed cells render no `<pre>` at all (UI-AUDIT §C); the head is the row. */
 .cc-bg-btn {
   border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--bg-000); padding: 2px 9px;
@@ -266,9 +254,7 @@
   font: 10.5px var(--sans); padding: 1px 8px; border-radius: var(--r-pill);
   flex-shrink: 0; min-width: 60px; text-align: center;
 }
-.ar-status.running { background: var(--accent-dim); color: var(--accent-text); }
-.ar-status.queued  { background: var(--bg-200); color: var(--ink-faint); }
-.ar-status.done    { background: hsl(152 38% 94%); color: var(--ok); }
+.ar-status.stopped { background: var(--bg-200); color: var(--ink-faint); }
 .ar-status.error   { background: hsl(0 70% 96%); color: var(--danger); }
 .audit-row .ar-turn {
   font: 10.5px var(--mono); color: var(--ink-faint); flex-shrink: 0;
@@ -317,21 +303,12 @@
   border-bottom: 1px solid var(--bg-100); cursor: pointer;
 }
 .seed-preview .sp-row:hover { background: var(--bg-100); color: var(--ink-mid); }
-.seed-preview .sp-row .sp-id {
-  font: 10.5px var(--mono); color: var(--ink-faint); margin-right: 8px;
-}
 .seed-preview .sp-toggle {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   cursor: pointer; user-select: none;
 }
 .seed-preview .sp-toggle:hover { color: var(--ink-mid); }
-.seed-preview .sp-toggle .sp-edit {
-  margin-left: auto; border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-000); padding: 2px 9px;
-  font: 11px var(--sans); color: var(--ink-mid); cursor: pointer;
-}
-.seed-preview .sp-toggle .sp-edit:hover { background: var(--bg-200); }
 .seed-preview.collapsed .sp-row { display: none; }
 .seed-preview.collapsed .sp-row:nth-child(-n+3) { display: block; }
 
@@ -358,19 +335,11 @@
   color: var(--ink-faint); font-style: italic; cursor: text;
 }
 .ask-opt.own:hover { background: none; }
-.out.answered .ask-q { padding-bottom: var(--sp-2); }
-.ask-answered {
-  padding: 5px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
-  border-top: 1px dashed var(--border);
-}
-.ask-answered b { color: var(--ink-mid); font-weight: 500; }
-
 /* ---- propose-gate bar ---- */
 .gate-bar {
   display: flex; align-items: center; gap: 8px;
   padding: 8px 14px; border-top: 1px solid hsl(265 30% 86%);
 }
-.gate-bar .gate-reason { font: var(--fs-xs) var(--sans); color: var(--ink-dim); flex: 1; }
 .gate-btn {
   border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--bg-000); padding: 4px 12px;
@@ -383,21 +352,16 @@
 .gate-btn.primary:hover { filter: brightness(1.08); }
 .gate-btn.deny { color: var(--danger); }
 
-.fx-approved {
-  padding: 5px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
-  border-top: 1px dashed var(--border);
-}
-.fx-approved i { color: var(--ok); margin-right: 4px; }
-
-/* ---- pandas `.dataframe` HTML output ---- */
-.out.html table.dataframe {
+/* ---- pandas `.dataframe` HTML output (rendered `.out.bare`, UI-AUDIT §C) ---- */
+.out.bare table.dataframe {
   font: 12px/1.5 var(--mono); border-collapse: collapse; width: 100%;
 }
-.out.html th, .out.html td {
+.out.bare table.dataframe th,
+.out.bare table.dataframe td {
   padding: 4px 10px; border: 1px solid var(--border); text-align: left;
 }
-.out.html thead th { background: var(--bg-100); font-weight: 600; }
-.out.html tbody tr:hover { background: var(--bg-100); }
+.out.bare table.dataframe thead th { background: var(--bg-100); font-weight: 600; }
+.out.bare table.dataframe tbody tr:hover { background: var(--bg-100); }
 
 /* ---- round-1 structural-pass classes (UI-ITERATION §New classes) ---- */
 
@@ -414,18 +378,6 @@
   background: hsl(0 70% 96%); border: 1px solid hsl(0 40% 82%);
 }
 .cell-status.err i { font-size: 10px; }
-
-/* prose soft-cap (§19) */
-.asst-prose.prose-capped {
-  max-height: 19em; overflow: hidden; position: relative;
-  mask-image: linear-gradient(#000 85%, transparent);
-  -webkit-mask-image: linear-gradient(#000 85%, transparent);
-}
-.prose-more {
-  display: block; margin: 4px auto 8px; padding: 2px 12px;
-  border: none; background: none; cursor: pointer;
-  font: var(--fs-xs) var(--sans); color: var(--accent-text);
-}
 
 /* PromptCard (§9) */
 .gate-waiting { animation: gate-breathe 2.4s ease-in-out infinite; }
@@ -483,8 +435,8 @@
   position: absolute; top: 4px; right: 6px; z-index: 1; pointer-events: none;
 }
 .out-wrap > .out-live.settled {
-  background: var(--bg-200); color: var(--ink-faint);
-  border-color: var(--border); text-transform: none; letter-spacing: 0;
+  width: 6px; height: 6px; padding: 0; border-radius: 50%;
+  border: none; background: var(--ink-faint); font-size: 0;
 }
 .out-wrap:has(.out-head .out-live) > .out-live { display: none; }
 .fx-bar {
@@ -501,12 +453,6 @@
 .row-dot-done    { color: var(--ok); }
 .row-dot-error   { color: var(--danger); }
 .row-dot-stopped { color: var(--ink-faint); }
-.ar-in-desk {
-  font: 10px var(--sans); color: var(--accent-text);
-  padding: 1px 7px; border-radius: var(--r-pill); background: var(--accent-dim);
-  animation: fade-in-desk .15s ease-out;
-}
-@keyframes fade-in-desk { from { opacity: 0; transform: translateX(-4px); } }
 /* eval-row: `.er-id` wraps a `.qref`; keep it a plain link, not the boxed chip.
    Mockup fixes width at 140px, but real ids (`demo-0`, `a-3f2c`) are short —
    let the id column shrink so `.er-score` doesn't float mid-row. */
@@ -531,19 +477,20 @@
 }
 
 /* pandas' trailing "N rows × M columns" caption — a `<p>` after the table. */
-.out.html table.dataframe + p,
+.out.bare table.dataframe + p,
 .out.html > p:last-child {
   font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   margin: 6px 2px 0;
 }
 
-/* bare text/plain (last-expr repr, `display(obj)`): mockup `.repr` — a quiet
-   inline block so the value doesn't float untethered. Only applies inside
-   `.out.bare` — tracebacks/errors keep the full-width red pre. */
-.out.bare > .out-plain {
-  display: inline-block; margin: 0; padding: 4px 10px;
-  background: var(--bg-200); border-radius: var(--r-sm);
-  color: var(--ink-mid);
+/* bare text/plain (last-expr repr, `display(obj)`): accent left-rail so it
+   reads as the *returned* value alongside grey-rail stdout / red-rail stderr
+   (UI-AUDIT §C — replaces the `.repr` grey pill). `.out-result` marks it so
+   the 20lh soft-cap on other `.out-plain` skips it. */
+.out.bare > .out-plain.out-result {
+  display: block; margin: 0; padding: 2px 0 2px 14px;
+  border-left: 2px solid var(--accent);
+  background: none; color: var(--ink);
 }
 .out.bare { margin-top: 10px; }
 
@@ -581,3 +528,47 @@
   background: var(--bg-200); color: var(--ink-mid);
 }
 .composer-controls button:disabled { opacity: .4; cursor: default; }
+
+/* -- turn/output additions -- */
+
+/* CodeCell collapsed-first (UI-AUDIT §C): head is the toggle; when collapsed
+   the head is the whole cell, so drop its bottom border via `:only-child`. */
+.cc-head[role="button"] { cursor: pointer; user-select: none; }
+.cc-head:only-child { border-bottom: none; }
+.cc-chev { font-size: 10px; color: var(--ink-faint); flex-shrink: 0; width: 10px; }
+.cc-gist {
+  flex: 1; min-width: 0;
+  font: 11.5px var(--mono); color: var(--ink-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cc-head .cc-bg-chip,
+.cc-head .cell-status,
+.cc-head .turn-no { flex-shrink: 0; }
+
+/* Traceback summary card */
+.tb-body { padding: 10px 14px 8px; }
+.tb-evalue {
+  font: 12.5px/1.4 var(--sans); color: var(--danger);
+  margin-bottom: 6px; word-break: break-word;
+}
+.tb-at {
+  display: block; font: 11px var(--mono); color: var(--ink-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tb-toggle {
+  border: none; background: none; padding: 6px 0 0; cursor: pointer;
+  font: var(--fs-xs) var(--sans); color: var(--ink-faint);
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.tb-toggle:hover { color: var(--ink-mid); }
+.out.traceback .tb-body + .out-plain { border-top: 1px solid var(--border); }
+
+/* Plotly click-to-open affordance — only shown when a trace has customdata. */
+.plotly-host .scatterlayer .points path,
+.plotly-host .bars path { cursor: pointer; }
+.plotly-hint { border-top: none; justify-content: center; }
+
+/* Soft-cap moved from prose → raw text outputs (UI-AUDIT §B/§C): long
+   stdout/tracebacks/JSON dumps scroll; the accent-rail result is exempt. */
+.out-stream,
+.out-plain:not(.out-result) { max-height: 20lh; overflow-y: auto; }
