@@ -25,7 +25,7 @@ from __future__ import annotations
 import contextvars
 import io
 from collections.abc import Callable
-from typing import Any
+from typing import Any, override
 from uuid import uuid4
 
 from IPython.core.displayhook import DisplayHook
@@ -40,12 +40,14 @@ class WorkbenchDisplayPublisher(DisplayPublisher):
 
     emit: Callable[[DisplayEvent], None]
 
+    @override
     def clear_output(self, wait: bool = False) -> None:  # noqa: FBT001, FBT002
         # Base writes ``\033[2K\r`` to stdout. Emit a marker instead so
         # ``<Output>`` can drop prior events for this turn; the model-facing
         # render honours it by truncating.
         self.emit(DisplayEvent(id=uuid4().hex, bundle={}, meta={"clear_output": True}))
 
+    @override
     def publish(  # type: ignore[override]
         self,
         data: dict[str, Any],
@@ -81,6 +83,7 @@ class WorkbenchDisplayHook(DisplayHook):
     the concurrent-cell race).
     """
 
+    @override
     def quiet(self) -> bool:
         # Base reads ``history_manager.input_hist_parsed[-1]`` — the most
         # recently *submitted* cell's source, not the currently-executing
@@ -89,9 +92,11 @@ class WorkbenchDisplayHook(DisplayHook):
         # need ``;``-suppression; disable it.
         return False
 
+    @override
     def write_output_prompt(self) -> None:
         pass
 
+    @override
     def write_format_data(  # type: ignore[override]
         self, format_dict: dict[str, Any], md_dict: dict[str, Any] | None = None
     ) -> None:
@@ -102,15 +107,18 @@ class WorkbenchDisplayHook(DisplayHook):
             format_dict, md_dict, transient={"execute_result": True}
         )
 
+    @override
     def log_output(self, *_: Any) -> None:
         pass
 
+    @override
     def update_user_ns(self, result: Any) -> None:
         # Base writes ``_`` / ``_N`` / ``_oh[N]`` keyed on the shared
         # ``execution_count`` — collides under concurrent cells. The agent
         # is told not to rely on ``_`` / ``Out[]``; drop the write.
         pass
 
+    @override
     def finish_displayhook(self) -> None:
         # Skip the base's ``sys.stdout.write("\n")``; keep the
         # ``_is_active`` reset so the flag doesn't stick ``True`` forever.
@@ -130,9 +138,11 @@ class _CellStream(io.TextIOBase):
 
     encoding = "utf-8"
 
+    @override
     def writable(self) -> bool:
         return True
 
+    @override
     def fileno(self) -> int:
         # Subprocess/C-level output writes to the real fd and bypasses
         # capture (M1-KERNEL-NOTES.md); at least don't break callers that
@@ -152,6 +162,7 @@ class _CellStream(io.TextIOBase):
         self._real = real
         self._buf: dict[int, str] = {}
 
+    @override
     def write(self, s: str) -> int:
         turn = self._current_turn.get()
         if turn is None:
@@ -165,6 +176,7 @@ class _CellStream(io.TextIOBase):
             self._buf[turn] = rest
         return len(s)
 
+    @override
     def flush(self) -> None:
         turn = self._current_turn.get()
         if turn is not None and (rest := self._buf.pop(turn, "")):
