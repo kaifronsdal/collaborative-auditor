@@ -33,9 +33,14 @@ from workbench.m1.kernel import (
 from workbench.m1.wb import Workbench
 
 
-async def _amain() -> None:  # noqa: PLR0915
+async def _amain() -> None:
     wire: list[DisplayEvent] = []
-    k = OrchestratorKernel(on_display=wire.append)
+    with OrchestratorKernel(on_display=wire.append) as k:
+        await _run(k, wire)
+    print("\n✓ all M1 kernel smoke checks passed")
+
+
+async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa: PLR0915
     k.shell.user_ns["wb"] = Workbench(k, session=None)
 
     # ---- 1. last-expr auto-display via displayhook -------------------------
@@ -272,9 +277,6 @@ async def _amain() -> None:  # noqa: PLR0915
         "some in-cell output emitted with turn_id=-1"
     )
     print(f"✓ on_display saw {len(wire)} events across {len(k.outputs)} turns")
-
-    k.restore_streams()
-    print("\n✓ all M1 kernel smoke checks passed")
 
 
 class _Thing:

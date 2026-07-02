@@ -13,24 +13,9 @@ hooks that to ``session.transcript._event(InfoEvent(...))`` so kernel
 outputs ride the M0 event pipe (reconnect/persistence for free) — see
 ``m1/orchestrator.py``.
 
-What we don't get from ``InteractiveShell`` and have to supply:
-
-- **Last-expr → display_pub.** IPython routes the last expression through
-  ``sys.displayhook``, not ``display_pub``. ``WorkbenchDisplayHook`` publishes
-  the formatted bundle through ``display_pub`` (same trick ``ipykernel``'s
-  ``ZMQShellDisplayHook`` uses) so *every* output — explicit ``display()``,
-  last-expr, and stdout — arrives as a ``DisplayEvent`` in emission order.
-- **stdout/stderr capture.** ``_CellStream`` tees writes to a stream
-  ``DisplayEvent`` when the write happens inside a cell task (tracked via a
-  ``ContextVar`` so concurrent cells attribute their prints correctly), and
-  passes through to the real stream otherwise.
-
-Known concurrent-cell caveat (M1-NOTEBOOK.md §Background execution accepts
-races): ``displayhook.exec_result`` is a single slot that ``run_cell_async``
-overwrites per call, so ``ExecutionResult.result`` is unreliable when cells
-overlap. We therefore never read ``r.result`` — the last-expr value reaches
-the model via its ``DisplayEvent.bundle["text/plain"]`` instead, emitted
-synchronously under the correct turn's contextvar.
+The IPython-side plumbing (``display_pub`` / ``displayhook`` / stdout tee)
+lives in ``m1/hooks.py``; ``__enter__`` installs it and swaps the process
+streams, ``__exit__`` restores them.
 """
 
 from __future__ import annotations
@@ -39,16 +24,13 @@ import ast
 import asyncio
 import contextvars
 import functools
-import io
 import sys
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol, Self
 from uuid import uuid4
 
-from IPython.core.displayhook import DisplayHook
-from IPython.core.displaypub import DisplayPublisher
 from IPython.core.interactiveshell import ExecutionResult, InteractiveShell
 from IPython.display import HTML, Markdown, display
 
@@ -115,151 +97,6 @@ class TurnResult:
     new_names: list[str] = field(default_factory=list)
 
 
-# -- IPython hooks ------------------------------------------------------------
-
-
-class WorkbenchDisplayPublisher(DisplayPublisher):
-    """Route every ``display()`` / ``dh.update()`` to ``kernel._emit``."""
-
-    kernel: "OrchestratorKernel"
-
-    def clear_output(self, wait: bool = False) -> None:  # noqa: FBT001, FBT002
-        # Base writes ``\033[2K\r`` to stdout. Emit a marker instead so
-        # ``<Output>`` can drop prior events for this turn; the model-facing
-        # render honours it by truncating.
-        self.kernel._emit(
-            DisplayEvent(id=uuid4().hex, bundle={}, meta={"clear_output": True})
-        )
-
-    def publish(  # type: ignore[override]
-        self,
-        data: dict[str, Any],
-        metadata: dict[str, Any] | None = None,
-        source: Any = None,
-        *,
-        transient: dict[str, Any] | None = None,
-        update: bool = False,
-        **_: Any,
-    ) -> None:
-        did = (transient or {}).get("display_id")
-        self.kernel._emit(
-            DisplayEvent(
-                id=str(did or uuid4().hex),
-                bundle=data,
-                meta=metadata or {},
-                update=update,
-                stable=did is not None,
-            )
-        )
-
-
-class WorkbenchDisplayHook(DisplayHook):
-    """Route the last-expression bundle through ``display_pub``.
-
-    ``DisplayHook.__call__`` computes ``format_dict`` via the shell's
-    ``display_formatter`` and then calls the ``write_*`` hooks below, which
-    by default print ``Out[N]: repr`` to stdout. We suppress the print and
-    publish the bundle instead — so last-expr and explicit ``display()``
-    take the same path and land in ``outputs[turn]`` in the right order.
-    ``fill_exec_result`` still runs, so ``ExecutionResult.result`` is
-    populated for a *foreground* cell (but see the module docstring for
-    the concurrent-cell race).
-    """
-
-    def quiet(self) -> bool:
-        # Base reads ``history_manager.input_hist_parsed[-1]`` — the most
-        # recently *submitted* cell's source, not the currently-executing
-        # one — so under concurrent cells a later cell ending in ``;`` would
-        # silently suppress an earlier cell's last-expr. The agent doesn't
-        # need ``;``-suppression; disable it.
-        return False
-
-    def write_output_prompt(self) -> None:
-        pass
-
-    def write_format_data(  # type: ignore[override]
-        self, format_dict: dict[str, Any], md_dict: dict[str, Any] | None = None
-    ) -> None:
-        assert (
-            self.shell is not None
-        )  # set at construction; traitlets types it Optional
-        self.shell.display_pub.publish(
-            format_dict, md_dict, transient={"execute_result": True}
-        )
-
-    def log_output(self, *_: Any) -> None:
-        pass
-
-    def update_user_ns(self, result: Any) -> None:
-        # Base writes ``_`` / ``_N`` / ``_oh[N]`` keyed on the shared
-        # ``execution_count`` — collides under concurrent cells. The agent
-        # is told not to rely on ``_`` / ``Out[]``; drop the write.
-        pass
-
-    def finish_displayhook(self) -> None:
-        # Skip the base's ``sys.stdout.write("\n")``; keep the
-        # ``_is_active`` reset so the flag doesn't stick ``True`` forever.
-        self._is_active = False
-
-
-class _CellStream(io.TextIOBase):
-    """A line-buffered stdout/stderr tee that emits stream ``DisplayEvent`` s.
-
-    Attribution uses ``kernel._current_turn`` (a ``ContextVar``): each cell
-    task sets it before awaiting ``run_cell_async``, so a ``print()`` from
-    concurrent cell A resolves to A's turn even while cell B is also live.
-    Buffering is per-turn so interleaved partial writes from concurrent
-    cells don't concatenate. Writes from outside any cell (server logs,
-    etc.) fall through to the real stream unchanged.
-    """
-
-    encoding = "utf-8"
-
-    def writable(self) -> bool:
-        return True
-
-    def fileno(self) -> int:
-        # Subprocess/C-level output writes to the real fd and bypasses
-        # capture (M1-KERNEL-NOTES.md); at least don't break callers that
-        # probe ``fileno()``.
-        return self._real.fileno()
-
-    def __init__(
-        self, kernel: "OrchestratorKernel", name: str, real: io.TextIOBase
-    ) -> None:
-        self._kernel = kernel
-        self._name = name
-        self._real = real
-        self._buf: dict[int, str] = {}
-
-    def write(self, s: str) -> int:
-        turn = self._kernel._current_turn.get()
-        if turn is None:
-            self._real.write(s)
-            return len(s)
-        buf = self._buf.pop(turn, "") + s
-        *lines, rest = buf.split("\n")
-        for line in lines:
-            self._emit(line + "\n")
-        if rest:
-            self._buf[turn] = rest
-        return len(s)
-
-    def flush(self) -> None:
-        turn = self._kernel._current_turn.get()
-        if turn is not None and (rest := self._buf.pop(turn, "")):
-            self._emit(rest)
-        self._real.flush()
-
-    def _emit(self, text: str) -> None:
-        self._kernel._emit(
-            DisplayEvent(
-                id=uuid4().hex,
-                bundle={STREAM_MIME: {"name": self._name, "text": text}},
-            )
-        )
-
-
 # -- gating -------------------------------------------------------------------
 
 
@@ -308,19 +145,58 @@ class Prompt:
         }
 
 
+class Gate:
+    """``display(proposal)`` → ``await Future`` → ``dh.update(resolved)``.
+
+    The WS handler resolves via ``.resolve()``. Extracted from the kernel so
+    ``Workbench`` can hold the gate directly instead of reaching through
+    ``kernel``.
+    """
+
+    def __init__(self) -> None:
+        self.pending: dict[str, asyncio.Future[Any]] = {}
+
+    async def __call__(self, proposal: Proposal) -> Any:
+        dh = display(proposal, display_id=proposal.id)
+        fut: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        self.pending[proposal.id] = fut
+        try:
+            verdict = await fut
+        finally:
+            self.pending.pop(proposal.id, None)
+        proposal.resolve(verdict)
+        dh.update(proposal)
+        return verdict
+
+    def resolve(self, display_id: str, verdict: Any) -> bool:
+        """Resolve a pending gate. Returns ``False`` if ``display_id`` unknown."""
+        fut = self.pending.get(display_id)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(verdict)
+        return True
+
+
 # -- kernel -------------------------------------------------------------------
 
 
 class OrchestratorKernel:
     """One in-process IPython shell driving the M1 orchestrator turn loop.
 
-    Owns the ``InteractiveShell``, the per-turn output lists, the pending-
-    gate futures, and the background-cell task registry. The ``Session``
-    integration is a single ``on_display`` callback: ``Orchestrator`` hooks
-    it to ``Orchestrator._on_display → session.emit(InfoEvent)`` so every
-    kernel output lands on the wire in emission order alongside the M0
-    event stream.
+    Owns the ``InteractiveShell``, the per-turn output lists, the ``Gate``,
+    and the background-cell task registry. The ``Session`` integration is a
+    single ``on_display`` callback: ``Orchestrator`` hooks it to
+    ``Orchestrator._on_display → session.emit(InfoEvent)`` so every kernel
+    output lands on the wire in emission order alongside the M0 event stream.
+
+    Construction is side-effect-free; the process-global hooks (IPython
+    ``display_pub``/``displayhook``, ``sys.stdout``/``stderr``) are
+    installed on ``__enter__`` and restored on ``__exit__``. The
+    ``InteractiveShell`` singleton is a hard *process* boundary, so at most
+    one kernel may be entered at a time (guarded by ``_instance``).
     """
+
+    _instance: ClassVar["OrchestratorKernel | None"] = None
 
     def __init__(
         self,
@@ -335,11 +211,9 @@ class OrchestratorKernel:
         # boundary (not per-Session as M1-NOTEBOOK.md v4 originally framed
         # it); multi-session M1 means subprocess-per-orchestrator.
         self.shell = InteractiveShell.instance()
-        self._install_hooks()
 
         self.on_display = on_display
         self.outputs: dict[int, list[DisplayEvent]] = {}
-        self.pending: dict[str, asyncio.Future[Any]] = {}
         self.notifications: list[str] = []
         self.bg: dict[int, asyncio.Task[ExecutionResult]] = {}
         #: turns whose ``[done]`` chip should be enqueued (backgrounded or
@@ -354,11 +228,19 @@ class OrchestratorKernel:
         #: source of each still-running cell, for ``shadow_warning``.
         self._bg_code: dict[int, str] = {}
 
-        # stdout/stderr tee — installed once, contextvar-gated per write.
+        self.gate = Gate()
+        # Compat shims so existing callers (``server.py``, ``wb.py``,
+        # ``Session.view``) keep working while the ``Gate`` is threaded
+        # through — ``kernel.gate(prop)`` / ``kernel.resolve(id, v)`` /
+        # ``kernel.pending`` all forward.
+        self.resolve = self.gate.resolve
+
+        # Refs only — no swap. ``__enter__`` re-captures and swaps; keeping
+        # a valid ``_real_stderr`` here means ``_forward``/``_showtraceback``
+        # are safe on a never-entered kernel (e.g. a resumed orchestrator
+        # that never runs a cell before ``close()``).
         self._real_stdout = sys.stdout
         self._real_stderr = sys.stderr
-        sys.stdout = _CellStream(self, "stdout", self._real_stdout)  # type: ignore[assignment,arg-type]
-        sys.stderr = _CellStream(self, "stderr", self._real_stderr)  # type: ignore[assignment,arg-type]
 
         seeded: dict[str, Any] = dict(
             KERNEL=self,
@@ -370,28 +252,24 @@ class OrchestratorKernel:
         )
         self.shell.user_ns.update(seeded)
 
-    def _install_hooks(self) -> None:
-        """Repoint the shell's output hooks at our publisher.
+    @property
+    def pending(self) -> dict[str, asyncio.Future[Any]]:
+        return self.gate.pending
 
-        Done post-hoc rather than via ``config=`` because ``.instance()`` may
-        already exist (e.g. inspect's notebook util imported first) and a
-        second ``instance(config=…)`` call is a no-op. Three places cache the
-        displayhook at init: ``shell.displayhook``, ``shell.display_trap.hook``
-        (entered by ``run_cell_async``), and ``sys.displayhook`` — all must
-        point at the same ``WorkbenchDisplayHook`` instance.
-        """
-        self.shell.display_pub = WorkbenchDisplayPublisher()
-        self.shell.display_pub.kernel = self
-        # ``cache_size=0`` because ``_``/``_oh[N]`` are keyed on the shared
-        # ``execution_count`` and collide under concurrent cells anyway; we
-        # override ``update_user_ns`` to a no-op regardless.
-        self.shell.displayhook = WorkbenchDisplayHook(shell=self.shell, cache_size=0)
-        self.shell.display_trap.hook = self.shell.displayhook
-        # Do NOT also assign ``sys.displayhook`` here — ``display_trap`` is
-        # entered on every cell and installs the hook; if it's *already*
-        # installed, ``DisplayTrap.set()`` skips saving ``old_hook`` and
-        # ``unset()`` then restores ``sys.displayhook = None``.
-        #
+    # -- context manager ------------------------------------------------------
+
+    def __enter__(self) -> Self:
+        if OrchestratorKernel._instance is not None:
+            raise RuntimeError(
+                "an OrchestratorKernel is already active in this process "
+                "(InteractiveShell is a singleton)"
+            )
+        OrchestratorKernel._instance = self
+        # Local import: ``hooks`` imports ``DisplayEvent``/``STREAM_MIME``
+        # from this module, so a top-level import would be circular.
+        from workbench.m1.hooks import _CellStream, install_workbench_hooks  # noqa: PLC0415
+
+        install_workbench_hooks(self.shell, self._emit)
         # Tracebacks: in-cell, suppress IPython's own print — ``_settle``
         # formats ``r.error`` once for the model, ``<Traceback>`` renders it
         # for the human. Out-of-cell (``run_code`` can leak
@@ -399,23 +277,27 @@ class OrchestratorKernel:
         # finish out-of-order — unrefcounted swap), write plain text to the
         # real stderr so uncaught server-side exceptions still surface.
         self.shell._showtraceback = self._showtraceback  # type: ignore[method-assign]
-        # Compact ``text/plain`` for figure types whose default repr is the
-        # full data dict (multi-KB straight into the tool result). Registered
-        # by name so plotly/mpl needn't be importable here.
-        assert self.shell.display_formatter is not None
-        plain = self.shell.display_formatter.formatters["text/plain"]
-        plain.for_type_by_name(
-            "plotly.graph_objs._figure",
-            "Figure",
-            lambda fig, p, cyc: p.text(
-                f"<plotly.Figure · {len(fig.data)} trace(s) · rendered interactive>"
-            ),
-        )
-        plain.for_type_by_name(
-            "matplotlib.figure",
-            "Figure",
-            lambda fig, p, cyc: p.text(f"<matplotlib.Figure · {len(fig.axes)} axes>"),
-        )
+
+        # stdout/stderr tee — contextvar-gated per write.
+        self._real_stdout = sys.stdout
+        self._real_stderr = sys.stderr
+        sys.stdout = _CellStream(self._emit, self._current_turn, "stdout", self._real_stdout)  # type: ignore[assignment,arg-type]
+        sys.stderr = _CellStream(self._emit, self._current_turn, "stderr", self._real_stderr)  # type: ignore[assignment,arg-type]
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        # No-op if this kernel was never entered (or already exited) — the
+        # compat ``restore_streams()`` alias may be called from
+        # ``Orchestrator.run()`` finally on a resumed kernel that never ran.
+        if OrchestratorKernel._instance is not self:
+            return
+        sys.stdout = self._real_stdout
+        sys.stderr = self._real_stderr
+        OrchestratorKernel._instance = None
+
+    def restore_streams(self) -> None:
+        """Compat alias; callers migrate to ``with kernel:``."""
+        self.__exit__(None, None, None)
 
     def _showtraceback(
         self, etype: type, evalue: BaseException, stb: list[str]
@@ -555,6 +437,8 @@ class OrchestratorKernel:
     def _on_cell_done(
         self, turn_id: int, code: str, task: asyncio.Task[ExecutionResult]
     ) -> None:
+        from workbench.m1.hooks import _CellStream  # noqa: PLC0415
+
         self.bg.pop(turn_id, None)
         self._bg_code.pop(turn_id, None)
         # Belt-and-braces buffer drop for the hard-cancel path where
@@ -644,14 +528,6 @@ class OrchestratorKernel:
         if self._current_detach is not None:
             self._current_detach.set()
 
-    def resolve(self, display_id: str, verdict: Any) -> bool:
-        """Resolve a pending gate. Returns ``False`` if ``display_id`` unknown."""
-        fut = self.pending.get(display_id)
-        if fut is None or fut.done():
-            return False
-        fut.set_result(verdict)
-        return True
-
     def cancel(self, turn_id: int) -> bool:
         task = self.bg.get(turn_id)
         if task is None:
@@ -672,31 +548,6 @@ class OrchestratorKernel:
         for src in self._bg_code.values():
             pending |= _assign_targets(src)
         return sorted(_assign_targets(code) & pending)
-
-    # -- gating (M1-NOTEBOOK.md §Gating) --------------------------------------
-
-    async def gate(self, proposal: Proposal) -> Any:
-        """Display ``proposal``, await a WS ``resolve()``, update in place.
-
-        Public because ``Workbench`` (which lives in a different module and
-        holds only the kernel, not its internals) is the primary caller.
-        """
-        dh = display(proposal, display_id=proposal.id)
-        fut: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        self.pending[proposal.id] = fut
-        try:
-            verdict = await fut
-        finally:
-            self.pending.pop(proposal.id, None)
-        proposal.resolve(verdict)
-        dh.update(proposal)
-        return verdict
-
-    # -- teardown -------------------------------------------------------------
-
-    def restore_streams(self) -> None:
-        sys.stdout = self._real_stdout
-        sys.stderr = self._real_stderr
 
 
 # -- helpers ------------------------------------------------------------------

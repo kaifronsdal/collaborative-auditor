@@ -79,6 +79,8 @@ async def _amain() -> None:  # noqa: PLR0915
     )
     orch = session.orchestrator
     assert orch is not None
+    # TODO(m1-refactor): drop once ``Orchestrator.run()`` wraps ``with self.kernel:``
+    orch.kernel.__enter__()
 
     # ---- turn 1: display/update/print/last-expr → InfoEvents ---------------
     orch.step()
@@ -187,8 +189,7 @@ async def _amain() -> None:  # noqa: PLR0915
         f"events → orchestrator.eval (no sidecar)"
     )
 
-    await session.close()
-    orch.kernel.restore_streams()
+    await session.close()  # cancels orch.task → run() finally → kernel.__exit__
 
     # ---- M1.3 persistence: load() → resumed orchestrator -------------------
     sess2 = await Session.load("t", tmpdir)

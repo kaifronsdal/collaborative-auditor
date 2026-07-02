@@ -58,9 +58,14 @@ def make_task(tag: str, n: int = 4) -> Task:
     )
 
 
-async def _amain() -> None:  # noqa: PLR0915
+async def _amain() -> None:
     _prewarm()
-    k = OrchestratorKernel()
+    with OrchestratorKernel() as k:
+        await _run(k)
+    print("\n✓ all M1.2 run smoke checks passed")
+
+
+async def _run(k: OrchestratorKernel) -> None:  # noqa: PLR0915
     k.shell.user_ns["wb"] = Workbench(k, session=None)
     k.shell.user_ns.update(make_task=make_task, RunHandle=RunHandle)
 
@@ -201,9 +206,6 @@ async def _amain() -> None:  # noqa: PLR0915
             f"✓ wb.scan: {sh.n_done}/{sh.total} via grep_scanner, "
             f"df['g'] {len(df)} rows, {len(scan_evs)} ticks"
         )
-
-    k.restore_streams()
-    print("\n✓ all M1.2 run smoke checks passed")
 
 
 if __name__ == "__main__":
