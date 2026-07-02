@@ -57,6 +57,50 @@ def steer(ids: Iterable[str], message: str) -> None:
         CONTROL.setdefault(str(i), SampleControl()).queued.append(message)
 
 
+async def snapshot_running(sample_id: str) -> tuple[Any, Any]:
+    """Read a running sample's ``AuditTape`` directly from its live ``Store``.
+
+    v2 of ``import_running`` (M1-RUN-AUDITS.md §Desk). ``ActiveSample.store``
+    on the inspect fork (@ ``536002a8``) exposes the sample's ``Store``
+    without a flush, so ``AuditTape(store=s.store)`` reads the tape
+    in-process — the batch sample keeps running; the desk gets a fork at
+    the current turn. Same ``(History, BranchMeta)`` shape as
+    ``import_eval``.
+
+    Petri's ``audit_solver`` only writes ``trajectories`` in its
+    ``finally`` — the per-turn checkpoint that makes this readable
+    mid-run comes from ``BatchHooks.post_generate``. If the store is
+    unset or ``trajectories`` is still empty (before the first generate
+    returns, or a non-``BatchHooks`` auditor), fall back to
+    ``adopt_running`` (interrupt + flush + ``import_eval``).
+
+    Model roles: ``ActiveSample`` only carries ``.model`` (the eval's
+    primary model), not ``model_roles``, so both ``BranchMeta`` roles
+    default to it. The desk can retarget on the imported ``Branch``.
+    """
+    from inspect_petri._auditor import AuditTape  # noqa: PLC0415
+    from inspect_petri.target import History  # noqa: PLC0415
+
+    from workbench.run import BranchMeta  # noqa: PLC0415
+
+    s = next((s for s in active_samples() if str(s.sample.id) == str(sample_id)), None)
+    if s is None:
+        raise ValueError(f"sample {sample_id!r} not running")
+    if s.store is None:
+        return await adopt_running(sample_id)
+    tape = AuditTape(store=s.store)
+    if not tape.trajectories:
+        return await adopt_running(sample_id)
+    history = History.load(tape.trajectories)
+    meta = BranchMeta(
+        seed=tape.seed_instructions,
+        auditor_model=s.model,
+        target_model=s.model,
+        max_turns=None,
+    )
+    return history, meta
+
+
 async def adopt_running(sample_id: str, *, timeout: float = 5.0) -> tuple[Any, Any]:
     """Punch down into a running batch sample: stop it, then load its tape.
 
@@ -68,8 +112,9 @@ async def adopt_running(sample_id: str, *, timeout: float = 5.0) -> tuple[Any, A
     ``server._dispatch("import")`` case consumes. Adopt semantics: the batch
     loses this sample; the desk picks it up at the exact turn it was on.
 
-    v2 (snapshot without stopping) needs ``ActiveSample.store`` on the
-    inspect fork — 3-line addition (M1-REFACTOR-NOTES.md).
+    Prefer ``snapshot_running`` (reads the live store without stopping);
+    this remains as the ``snapshot=False`` opt-in and as the fallback when
+    the store's ``trajectories`` haven't been checkpointed yet.
     """
     from workbench.export import import_eval  # noqa: PLC0415
 
@@ -121,7 +166,18 @@ class BatchHooks:
         return drain_control(st.sample_id if st else None)
 
     def post_generate(self) -> None:
-        pass
+        # Checkpoint the L2 tape into the sample's ``Store`` after each
+        # generate so ``snapshot_running`` can read it without
+        # interrupting. Petri's ``audit_solver`` only dumps
+        # ``trajectories`` in its ``finally`` — without this the store's
+        # ``AuditTape.trajectories`` stays empty until the sample ends.
+        # ``dump()`` returns a fresh list, so a concurrent snapshot read
+        # sees a self-consistent value (replaced, never mutated in place).
+        from inspect_petri._auditor import AuditTape, audit_trajectory  # noqa: PLC0415
+        from inspect_petri.target import History  # noqa: PLC0415
+
+        if (t := audit_trajectory()) is not None:
+            AuditTape().trajectories = History().dump(root=t)
 
 
 def drain_control(sample_id: Any) -> tuple[list[ChatMessageUser], bool]:

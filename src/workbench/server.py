@@ -32,7 +32,7 @@ from inspect_petri.target import Step
 from shortuuid import uuid
 
 from workbench.export import export_branch, import_eval
-from workbench.m1.run import adopt_running
+from workbench.m1.run import adopt_running, snapshot_running
 from workbench.run import (
     Branch,
     edited_auditor_step,
@@ -702,12 +702,21 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             )
 
         case "import_running":
-            # Punch down into a running batch sample: adopt it as an M0
-            # `Branch` at its current turn (M1-RUN-AUDITS.md §Desk). If the
-            # sample isn't in ``active_samples()`` (already finished/flushed),
-            # fall back to a plain ``import_eval`` from the provided log.
+            # Punch down into a running batch sample as an M0 `Branch`
+            # at its current turn (M1-RUN-AUDITS.md §Desk). Default v2
+            # ``snapshot`` reads the live ``AuditTape`` from
+            # ``ActiveSample.store`` — the batch sample keeps running,
+            # the desk gets a fork; it falls back to adopt internally
+            # if the tape hasn't been checkpointed yet. Explicit
+            # ``snapshot=False`` opts into v1 adopt (interrupt + flush;
+            # the batch loses the sample). Either way, if the sample
+            # isn't in ``active_samples()`` (already finished/flushed),
+            # fall back to a plain ``import_eval`` from the provided
+            # log.
+            snapshot = data.get("snapshot", True)
+            fetch = snapshot_running if snapshot else adopt_running
             try:
-                history, meta = await adopt_running(data["sample_id"])
+                history, meta = await fetch(data["sample_id"])
             except ValueError:
                 if data.get("log"):
                     history, meta = import_eval(data["log"], data["sample_id"])

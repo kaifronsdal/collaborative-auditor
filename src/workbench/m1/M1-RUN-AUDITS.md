@@ -68,16 +68,19 @@ gets there by clicking a `RunHandle` row:
 
 - **completed sample** → `{"t": "import", "path": log, "sample_id": id}`
   (existing).
-- **running sample** → `{"t": "import_running", "sample_id": id}` —
-  `adopt_running` interrupts the sample (its `AuditTape` flushes to
-  `.eval`), then `import_eval`s it. Adopt semantics: the batch loses that
-  sample; the desk `Branch` picks up at the exact turn it was on.
+- **running sample** → `{"t": "import_running", "sample_id": id}` — **v2
+  (default)** `snapshot_running` reads the live `AuditTape` from
+  `ActiveSample.store` (inspect fork @ `536002a8`) without interrupting;
+  the batch sample keeps running, the desk `Branch` is a fork at the
+  current turn. Petri only dumps `trajectories` in `audit_solver`'s
+  `finally`, so `BatchHooks.post_generate` checkpoints per-turn to make
+  the live store readable. `{"snapshot": false}` opts into **v1**
+  `adopt_running` (interrupt + flush + `import_eval`; the batch loses
+  the sample); v2 also falls back to it if the store hasn't been
+  checkpointed yet.
 
 That's a UI action, not something the agent calls, so there's no
-`wb.pin`. **v2** (snapshot without stopping — the batch sample keeps
-running, the desk `Branch` is a fork) needs `ActiveSample.store` on the
-inspect fork so the tape can be read without waiting for a flush; ~3
-lines, tracked in M1-REFACTOR-NOTES.md.
+`wb.pin`.
 
 ## §steer — steering under A
 
