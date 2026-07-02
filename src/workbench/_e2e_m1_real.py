@@ -166,6 +166,40 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
     print(f"  steer landed       : {bool(operator_hit)}")
     print("=" * 72)
 
+    # ---- full cell trace ---------------------------------------------------
+    # Interleave assistant prose with each python(code) call + result so a
+    # human can read what the orchestrator actually did turn-by-turn.
+    print("\nCELL TRACE")
+    print("=" * 72)
+    ordered = sorted(session.events.values(), key=lambda e: e.get("timestamp", ""))
+    cell_n = 0
+    for e in ordered:
+        if (
+            e["event"] == "model"
+            and not e.get("pending")
+            and session._resolve(e.get("span_id")) == ("orch", "orch")  # noqa: SLF001
+        ):
+            out = e.get("output") or {}
+            choices = out.get("choices") or []
+            content = choices[0]["message"]["content"] if choices else []
+            prose = "".join(
+                c.get("text", "")
+                for c in content
+                if isinstance(c, dict) and c.get("type") == "text"
+            ).strip()
+            if prose:
+                print(f"\n--- assistant prose ---\n{prose}\n")
+        if e["event"] == "tool" and e.get("function") == "python":
+            cell_n += 1
+            args = e.get("arguments") or {}
+            code = args.get("code", "")
+            bg = args.get("background", False)
+            print(f"\n=== CELL {cell_n} (background={bg}) ===")
+            print(code)
+            print(f"--- result (cell {cell_n}) ---")
+            print(_tool_text(e) or "<empty>")
+    print("=" * 72)
+
     await session.close()
 
     # Hard-fail exit code only on the core assertions above; steer is soft.

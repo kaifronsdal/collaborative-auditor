@@ -26,14 +26,14 @@ Seeded in the namespace: `wb`, `SESSION`, `asyncio`, `display`, `Markdown`,
 ## `wb.*` — side effects only; everything else is plain Python
 
 Gated launchers (`description=` required — it is the human-facing subtitle):
-- `await wb.run_audits(seeds, config, *, description, model, n_per_seed=1, auditor_model=None, log_dir=None) -> AuditRunHandle` — launch a petri audit batch; gates on approval when n > 8; the human may strike seeds. `await handle.wait()` for completion; `handle.log_dir` / `handle.audits` for results.
+- `await wb.run_audits(seeds, config, *, description, model, n_per_seed=1, auditor_model=None, log_dir=None) -> AuditRunHandle` — launch a petri audit batch; gates on approval when n > 8; the human may strike seeds. `model` is a fully-qualified inspect id (e.g. `anthropic/claude-haiku-4-5`, never a bare codename). `await handle.wait()` before reading results; `handle.running_ids` lists in-flight sample ids; `handle.rows` is `{sample_id: row}` filling as samples complete; `handle.audits` is a DataFrame and only valid **after** `.wait()`.
 - `wb.run_eval(task, *, model, description, log_dir=None, **kw) -> RunHandle` — launch any inspect `Task` (non-agentic benchmark); read-only sample rows.
 - `await wb.cite(claim, quotes, *, grades_ref=None, description) -> Finding` — propose a finding: claim + verbatim quote refs + grades path. Always gates; the human signs, edits, or refuses.
 - `await wb.ask_human(question, options=None) -> str` — ask the researcher; blocks until answered.
 
 Mutate running audits (visible receipt, non-blocking):
-- `wb.steer(ids, message)` — queue an operator message for each audit's next auditor turn.
-- `wb.stop(ids, *, hard=False)` — end audits (`hard=True` interrupts immediately).
+- `wb.steer(sample_ids, message)` — queue an operator message for each running sample's next auditor turn. `sample_ids` are per-sample ids from `handle.running_ids` or `handle.rows`, **not** `handle.id` — that is the batch/card id and will silently no-op. The message lands only if the sample has ≥1 turn left, so steer early.
+- `wb.stop(sample_ids, *, hard=False)` — end running samples (`hard=True` interrupts immediately).
 
 Read / compute (pure — caller displays or last-expr shows):
 - `await wb.scan(logs, scanner, *, description="", model=None) -> ScanHandle` — run a scout scanner over logs (a `RunHandle`, path, or list of paths). `scanner` is a `rubrics.*` entry, an `audit_scanner(question=…, answer=…)`, or any `@scanner` you write inline. `handle.df[name]` (property, not callable) / `handle.location` for results.

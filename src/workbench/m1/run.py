@@ -385,6 +385,15 @@ class RunHandle(_PollingHandle):
         return sum(1 for r in self.rows.values() if r.status == "done")
 
     @property
+    def running_ids(self) -> list[str]:
+        """Per-sample ids currently in flight — the ``ids`` for ``wb.steer``.
+
+        Distinct from ``self.id`` (the batch/card id). Populated from
+        ``active_samples()`` each poll; empty once every sample has flushed.
+        """
+        return [r.id for r in self._running]
+
+    @property
     def location(self) -> str | None:
         return self._log_file
 
@@ -633,7 +642,16 @@ class AuditRunHandle(RunHandle):
         ``inspect_petri.audits_df`` = ``samples_df`` + ``flat_score_values``,
         so ``audit_judge``'s dict-valued score becomes one column per
         dimension (``score_concerning``, ``score_deception``, …).
+
+        Only valid once the run has settled — ``samples_df`` on a mid-write
+        ``.eval`` raises an opaque ``KeyError: 'eval_id'``; fail with a
+        useful message so the agent knows to ``await handle.wait()`` first.
         """
+        if not self.finished:
+            raise RuntimeError(
+                f"{self.task_name}: .audits only valid after `await handle.wait()` "
+                f"({self.n_done}/{self.total} done, {len(self._running)} running)"
+            )
         from inspect_petri import audits_df  # noqa: PLC0415
 
         return audits_df(self.log_dir)
