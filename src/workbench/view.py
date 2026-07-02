@@ -11,4 +11,6 @@ from __future__ import annotations
 from typing import Literal
 
 type Role = Literal["auditor", "target", "orch"]
-type Status = Literal["idle", "running", "paused", "ended"]
+#: `"waiting"` is orchestrator-only: `running` + at least one unresolved
+#: `kernel.gate` — the header shows "waiting on you" instead of "running".
+type Status = Literal["idle", "running", "paused", "ended", "waiting"]

@@ -80,6 +80,41 @@ Ranked by visual/interaction impact. File owners noted.
 19. **Prose soft-cap** — `AssistantProse` max-height ~12 lines with
     `show more ↓` fade.
 
+## New classes for `orch.css` (round-1 structural pass)
+
+Emitted by the tsx pass; need styling. Grouped by component.
+
+- **`OrchColumn` header** — `.head-left` (flex row, gap 6px),
+  `.head-title` (uppercase, tracking), `.head-sep` (faint `·`),
+  `.head-model` / `.head-turn` (mono xs, ink-dim), `.head-status` +
+  `.head-status-{idle,paused,running,waiting,ended}` (waiting → gate accent).
+  `.rl-dot-gen` (pulsing blue), `.rl-dot-exec` (pulsing amber),
+  `.rl-dot-gate` (solid purple) — extend the existing `.rl-dot-*` set.
+  `.head-bg-btn` (text-button, xs).
+- **Gate pill/popover** — `.head-gate-wrap` (relative), `.head-gate-jump`
+  (pill: gate-bg, gate-text, rounded), `.head-gate-pop` (absolute dropdown,
+  card bg, shadow), `.hgp-row` (flex, gap), `.hgp-desc` (flex:1, truncate,
+  cursor:pointer), `.hgp-btn` / `.hgp-btn.deny` / `.hgp-all`.
+- **Composer** — `.composer-to` (chip top-left of textarea, orch accent),
+  `.composer-hint-running` (`a { text-decoration: underline }`).
+- **`OrchTurn`** — `.asst-prose.prose-capped` (`max-height: ~12lh`,
+  overflow hidden, bottom fade mask), `.prose-more` (link-button, centered).
+  `.cell-status.err` (danger chip in `.cc-head`).
+- **`PromptCard`** — `.gate-waiting` (subtle pulse on `.out.gated`),
+  `.ask-opts-vert` (`flex-direction: column; align-items: stretch`),
+  `.ask-opt-key` (mono, ink-faint), `.ask-opt-own-wrap` (flex row, input
+  flex:1), `.ask-opt-send` (icon button, disabled → opacity .4).
+- **`RunProposalCard`** — `.sp-check` (accent-color: gate), `.sp-seed`
+  (flex:1 truncate), `.sp-row-struck` (line-through, opacity .55),
+  `.gate-deny-reason` (full-width input above `.gate-bar`, danger border).
+  `.gate-bar` layout is now `[deny] [.gate-reason flex:1] [edit] [approve]`
+  — existing `.gate-reason { flex:1 }` already provides the spacer.
+- **`RunCard`** — `.out-task` (lowercase, ink), `.out-id` (mono, ink-faint),
+  `.out-live` (xs badge, orch accent, top-right), `.fx-bar` (thin track,
+  `> i` fill = orch accent), `.stat.err` (danger), `.row-dot` +
+  `.row-dot-{running,done,error,stopped}` (8px, running pulses),
+  `.ar-in-desk` (transient chip, orch accent, fade-out ~2s).
+
 ## Process for each iteration round
 
 1. `git pull` / check tree clean

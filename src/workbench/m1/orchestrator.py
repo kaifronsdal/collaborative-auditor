@@ -229,7 +229,11 @@ class Orchestrator(StepGated):
     def view(self) -> dict[str, Any]:
         return {
             "span_id": self.span_id,
-            "status": self.status,
+            # `"waiting"` is a UI-facing sub-state of `"running"`: the loop is
+            # live but a `kernel.gate` Future is unresolved, so the human is
+            # the bottleneck. Header shows "waiting on you" (UI-ITERATION §1).
+            "status": "waiting" if self.kernel.gate.pending else self.status,
+            "model": self.model_name,
             "pending_gates": list(self.kernel.gate.pending),
             "bg_cells": sorted(self.kernel.bg),
             "notifications": list(self.kernel.notifications),

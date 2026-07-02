@@ -19,7 +19,9 @@ export type TimelineMap = Record<BranchId, Partial<Record<Role, ServerTimeline>>
  *  `byRole` bucketing as auditor/target. */
 export type Role = "auditor" | "target" | "orch";
 export type BranchId = string;
-export type Status = "idle" | "running" | "paused" | "ended";
+/** `"waiting"` is orchestrator-only: `running` with ≥1 unresolved kernel gate
+ *  — the header renders "waiting on you" and pulses the gate accent. */
+export type Status = "idle" | "running" | "paused" | "ended" | "waiting";
 
 /** Per-branch, per-role queued (user-injected, not yet generated) messages.
  *  Orchestrator input goes via `orch_send` (immediate), not the queued map. */
@@ -29,6 +31,8 @@ export type QueuedMap = Record<BranchId, Record<"auditor" | "target", ChatMessag
 export type OrchestratorState = {
   span_id: string;
   status: Status;
+  /** `Orchestrator.model_name` — header shows the short form. */
+  model?: string;
   /** `display_id`s awaiting `{t:"approve"}` — drives `[approve all]` pill. */
   pending_gates: string[];
   /** Turn ids of cells still running detached. */

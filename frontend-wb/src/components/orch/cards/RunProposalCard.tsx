@@ -4,8 +4,8 @@
  * config, pending, verdict}`.
  *
  * While pending: `.out.gated` with the description as `.gate-desc`, a
- * strikeable `.seed-preview` (click a row to toggle), and the
- * approve/edit/deny `.gate-bar` (scenario-b.html turn 3). Approve sends the
+ * checkbox-per-seed `.seed-preview`, and a `.gate-bar` laid out
+ * `[deny] … [edit] [approve]` (scenario-b.html turn 3). Approve sends the
  * surviving seed list; deny sends `{denied: true, reason}`. Once resolved
  * the backend flips this same `display_id` to a live `RunHandle` card, so the
  * post-approval state here is only seen briefly (or on a denied proposal).
@@ -65,15 +65,20 @@ export default function RunProposalCard({
   const denied = resolved && payload.verdict?.denied;
 
   return (
-    <div className={resolved ? "out" : "out gated"}>
+    <div
+      className={resolved ? "out" : "out gated gate-waiting"}
+      data-display-id={displayId}
+    >
       <div className="out-head">
         <i
           className={resolved ? "bi bi-record-fill fx-dot" : "bi bi-hourglass-split"}
           style={resolved ? undefined : { color: "var(--gate-text)" }}
         />
-        <span className="out-kind">
-          run · {resolved ? (denied ? "denied" : "approved") : "proposed"}
-        </span>
+        {resolved ? (
+          <span className="out-meta">{denied ? "denied" : "approved"}</span>
+        ) : (
+          <span className="gate-tag">proposed</span>
+        )}
         <span className="out-meta">{nLive} audits</span>
       </div>
       <div className="gate-desc">{payload.description}</div>
@@ -82,18 +87,21 @@ export default function RunProposalCard({
         {payload.seeds.map((seed, i) => {
           const isStruck = struck.has(i);
           return (
-            <div
+            <label
               key={i}
-              className="sp-row"
-              style={
-                isStruck ? { textDecoration: "line-through", opacity: 0.6 } : undefined
-              }
-              onClick={payload.pending ? () => toggle(i) : undefined}
-              title={payload.pending ? (isStruck ? "restore" : "strike") : seed}
+              className={`sp-row${isStruck ? " sp-row-struck" : ""}`}
+              title={seed}
             >
+              <input
+                type="checkbox"
+                className="sp-check"
+                checked={!isStruck}
+                disabled={!payload.pending}
+                onChange={() => toggle(i)}
+              />
               <span className="sp-id">{String(i).padStart(2, "0")}</span>
-              {seed}
-            </div>
+              <span className="sp-seed">{seed}</span>
+            </label>
           );
         })}
         <div className="sp-toggle" onClick={() => setExpanded((v) => !v)}>
@@ -119,35 +127,11 @@ export default function RunProposalCard({
       </div>
 
       {payload.pending ? (
-        denyReason == null ? (
-          <div className="gate-bar">
-            <span className="gate-reason">
-              {payload.n} audits — approve to launch
-            </span>
-            <button type="button" className="gate-btn primary" onClick={approve}>
-              <i className="bi bi-check2" /> approve
-            </button>
-            <button
-              type="button"
-              className="gate-btn"
-              onClick={() => setExpanded(true)}
-            >
-              edit
-            </button>
-            <button
-              type="button"
-              className="gate-btn deny"
-              onClick={() => setDenyReason("")}
-            >
-              deny
-            </button>
-          </div>
-        ) : (
-          <div className="gate-bar">
+        <>
+          {denyReason != null && (
             <input
               autoFocus
-              className="gate-reason"
-              style={{ border: "none", background: "none", outline: "none" }}
+              className="gate-deny-reason"
               placeholder="reason (optional) — enter to deny, esc to cancel"
               value={denyReason}
               onChange={(e) => setDenyReason(e.target.value)}
@@ -156,14 +140,32 @@ export default function RunProposalCard({
                 if (e.key === "Escape") setDenyReason(null);
               }}
             />
-            <button type="button" className="gate-btn deny" onClick={() => deny(denyReason)}>
+          )}
+          <div className="gate-bar">
+            <button
+              type="button"
+              className="gate-btn deny"
+              onClick={() =>
+                denyReason == null ? setDenyReason("") : deny(denyReason)
+              }
+            >
               deny
             </button>
-            <button type="button" className="gate-btn" onClick={() => setDenyReason(null)}>
-              cancel
+            <span className="gate-reason">
+              {nLive} audits — approve to launch
+            </span>
+            <button
+              type="button"
+              className="gate-btn"
+              onClick={() => setExpanded(true)}
+            >
+              edit
+            </button>
+            <button type="button" className="gate-btn primary" onClick={approve}>
+              <i className="bi bi-check2" /> approve
             </button>
           </div>
-        )
+        </>
       ) : (
         <div className="fx-approved">
           <i className={`bi bi-${denied ? "x" : "check"}-circle-fill`} />

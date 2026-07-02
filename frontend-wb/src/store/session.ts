@@ -69,9 +69,11 @@ export type RewriteDraft = {
 /** Local id for the just-started Recents stub, before `current` arrives. */
 const PENDING_ID = "__pending__";
 
-/** Status precedence for optimistic-vs-backend reconciliation. */
+/** Status precedence for optimistic-vs-backend reconciliation. `"waiting"` is
+ *  orchestrator-only and never flows through this branch-status path, but the
+ *  Record type demands the key. */
 const STATUS_RANK: Record<Status | "null", number> = {
-  null: 0, idle: 1, paused: 2, running: 3, ended: 4,
+  null: 0, idle: 1, paused: 2, running: 3, waiting: 3, ended: 4,
 };
 
 /**
