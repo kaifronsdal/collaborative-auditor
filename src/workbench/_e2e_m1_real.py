@@ -77,7 +77,9 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
                 f"turns={turns} events={len(session.events)}"
             )
             last_turn_count = turns
-        if orch.status in ("paused", "ended"):
+        # Don't exit on the initial pre-first-turn "paused" — only when the
+        # agent has actually run and then parked (or ended).
+        if orch.status == "ended" or (orch.status == "paused" and turns > 0):
             break
         await asyncio.sleep(POLL_S)
     else:

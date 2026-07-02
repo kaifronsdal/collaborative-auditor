@@ -196,7 +196,11 @@ class Orchestrator(StepGated):
         loop until ``max_turns`` or cancellation.
         """
         init_transcript(self.session.transcript)
-        self.status = "paused"
+        # ``send()``/``play()`` may have already set ``running`` before this
+        # task reached here (same guard as ``Branch.run()``); only fall back
+        # to paused if we're still at the constructor default.
+        if self.status == "idle":
+            self.status = "paused"
         try:
             model = get_model(self.model_name, **self.model_args)
             agent_fn = orchestrator_agent(self, model)
