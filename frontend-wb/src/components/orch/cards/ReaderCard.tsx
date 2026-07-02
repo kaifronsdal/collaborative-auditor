@@ -1,0 +1,116 @@
+/**
+ * `ReaderCard` — the shared dense-transcript shell (UI-AUDIT.md §D). A flat
+ * `.rd-msg` list (gutter-left role tag + `renderContent(msg)` body — *not*
+ * M0's rounded `<Bubble>`), with a minimal header and an `open in desk →`
+ * footer that imports the sample.
+ *
+ * Variants (dispatched on `payload.kind`):
+ * - `excerpt`    — a `±N` window around turn `at`. The anchor message
+ *                  (`i === at_idx`) gets `.rd-anchor`; per-message turn
+ *                  numbers are `at - at_idx + i`.
+ * - `transcript` — a pointer into a `.eval` sample. Backend now ships the
+ *                  *tail* 3 messages as `preview` (elicited behaviour, not
+ *                  system-prompt boilerplate); falls back to a stub row when
+ *                  empty. `.iv-url` in the footer shows basename only.
+ */
+import type { ChatMessage } from "@tsmono/inspect-common";
+
+import type { JSX } from "react";
+
+import { renderContent } from "../../Bubble";
+import type { Up } from "../../../lib/wire";
+
+// -- payload shapes -----------------------------------------------------------
+
+export type ExcerptPayload = {
+  kind: "excerpt";
+  log: string;
+  sample_id: string;
+  at: number;
+  /** Index into `messages` of the message *at* turn `at` — the anchor. */
+  at_idx: number;
+  messages: ChatMessage[];
+};
+
+export type TranscriptPayload = {
+  kind: "transcript";
+  log: string;
+  sample_id: string;
+  at: number | null;
+  n_messages: number;
+  preview?: ChatMessage[];
+};
+
+export type ReaderPayload = ExcerptPayload | TranscriptPayload;
+
+type Props = {
+  payload: ReaderPayload;
+  displayId: string;
+  send: (msg: Up) => void;
+};
+
+/** Short role tag for the gutter (UI-AUDIT §C). */
+const roleTag = (r: ChatMessage["role"]): string =>
+  r === "assistant" ? "asst" : r === "system" ? "sys" : r;
+
+const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() ?? p;
+
+// -- shared shell -------------------------------------------------------------
+
+export default function ReaderCard({ payload, displayId, send }: Props): JSX.Element {
+  const openInDesk = (): void =>
+    send({ t: "import", path: payload.log, sample_id: payload.sample_id });
+
+  const isExcerpt = payload.kind === "excerpt";
+  const msgs = isExcerpt ? payload.messages : (payload.preview ?? []);
+  const nMsgs = isExcerpt ? payload.messages.length : payload.n_messages;
+
+  return (
+    <div className="out reader" data-display-id={displayId}>
+      <div className="out-head">
+        <i className={`bi ${isExcerpt ? "bi-quote" : "bi-file-text"}`} />
+        <span className="out-meta">
+          {payload.sample_id}
+          {payload.at != null && ` · t${payload.at}`}
+          {" · "}
+          {nMsgs} msgs
+        </span>
+      </div>
+
+      <div className="rd-body">
+        {msgs.length > 0 ? (
+          msgs.map((m, i) => {
+            const anchor = isExcerpt && i === payload.at_idx;
+            // Excerpt turn number: window starts at `at - at_idx` (UI-AUDIT §A
+            // bugfix — was `at - floor(len/2)` which broke on asymmetric
+            // windows near the transcript head).
+            const turn = isExcerpt ? payload.at - payload.at_idx + i : undefined;
+            return (
+              <div key={m.id ?? i} className={`rd-msg${anchor ? " rd-anchor" : ""}`}>
+                <span className="rd-role">
+                  {roleTag(m.role)}
+                  {turn != null && <span className="rd-turn"> · t{turn}</span>}
+                </span>
+                {renderContent(m.content)}
+              </div>
+            );
+          })
+        ) : (
+          <div className="rd-msg rd-empty">
+            <span className="rd-role">log</span>
+            no preview — open in desk to read
+          </div>
+        )}
+      </div>
+
+      <div className="rd-foot">
+        <span className="iv-url" title={payload.log}>
+          {basename(payload.log)}
+        </span>
+        <a onClick={openInDesk}>
+          open in desk <i className="bi bi-arrow-right" />
+        </a>
+      </div>
+    </div>
+  );
+}

@@ -572,3 +572,123 @@
    stdout/tracebacks/JSON dumps scroll; the accent-rail result is exempt. */
 .out-stream,
 .out-plain:not(.out-result) { max-height: 20lh; overflow-y: auto; }
+
+/* -- cards additions -- */
+
+/* GateCard shell (UI-AUDIT §D): icon-only head while pending; resolved cards
+   collapse to a single `.out-head` with `.gate-resolved`. */
+.gate-spacer { flex: 1; }
+.gate-resolved {
+  flex: 1; min-width: 0; color: var(--ink-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gate-resolved b { color: var(--ink); font-weight: 600; }
+.out.answered > .out-head { border-bottom: none; }
+.gate-config {
+  padding: 6px 14px 8px; font: 11px var(--mono); color: var(--ink-faint);
+  background: var(--bg-000);
+}
+.gate-claim {
+  padding: 10px 14px; font: 13px/1.45 var(--sans); color: var(--ink);
+  background: var(--bg-000); border-bottom: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+}
+/* prompt: `other…` link that expands the free-text row */
+.ask-other {
+  align-self: center; font: 11.5px var(--sans); color: var(--ink-faint);
+  cursor: pointer; padding: 5px 4px;
+}
+.ask-other:hover { color: var(--accent-text); }
+/* key-hint superscript replaces `[N]` (§C — only shown when opts>3) */
+sup.ask-opt-key {
+  font: 9px var(--mono); color: var(--ink-faint);
+  margin-right: 4px; vertical-align: super;
+}
+
+/* run_proposal: `.sp-row` is a `<label>` — flex it so checkbox + ellipsised
+   text sit on one line and the popover can position against it. */
+.sp-row { position: relative; display: flex; align-items: center; }
+.sp-pop {
+  position: absolute; left: 32px; right: 12px; top: calc(100% - 2px); z-index: 10;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-000); box-shadow: 0 4px 14px hsl(0 0% 0% / .12);
+  font: 12px/1.45 var(--sans); color: var(--ink-mid);
+  white-space: normal; word-break: break-word;
+}
+
+/* cite_proposal quote checklist */
+.cite-quotes { background: var(--bg-000); border-top: 1px solid var(--bg-200); }
+.cite-q {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 14px; border-bottom: 1px solid var(--bg-100); cursor: pointer;
+}
+.cite-q:hover { background: var(--bg-100); }
+.cite-q .sp-check { margin-top: 3px; }
+.cite-q-body { flex: 1; min-width: 0; }
+.cite-q-head { font: 10.5px var(--mono); color: var(--ink-faint); margin-bottom: 3px; }
+.cite-q-text {
+  font: 12.5px/1.4 var(--sans); color: var(--ink-mid);
+  max-height: 4.2em; overflow: hidden;
+}
+
+/* ProgressCard: eval rows now use `.ar-seed` too — give it flex there. */
+.eval-row .ar-seed {
+  flex: 1; min-width: 0; color: var(--ink-mid);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ar-turns {
+  font: 10.5px var(--mono); color: var(--accent-text); flex-shrink: 0;
+  min-width: 30px; text-align: right;
+}
+.ar-opened {
+  font-size: 10px; color: var(--accent-text); flex-shrink: 0;
+}
+/* scan: one row per scanner (§C) */
+.scan-rows { border-top: 1px solid var(--border); }
+.scan-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 14px; font: 11.5px var(--mono); color: var(--ink-dim);
+  border-bottom: 1px solid var(--bg-200);
+}
+.scan-row:last-child { border-bottom: none; }
+.scan-name {
+  flex: 1; min-width: 0; font: 12px var(--sans); color: var(--ink-mid);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.scan-found b { color: var(--accent-text); font-weight: 600; }
+.scan-row .fx-bar { width: 60px; }
+.scan-df { border-top: 1px solid var(--border); padding: 8px 14px; overflow-x: auto; }
+.scan-df table.dataframe { font: 11px/1.4 var(--mono); border-collapse: collapse; }
+.scan-df th, .scan-df td { padding: 3px 8px; border: 1px solid var(--border); text-align: left; }
+
+/* ReaderCard: flat `.rd-msg` list — gutter-left role tag, plain body. Not a
+   `<Bubble>`: no rounded box, no CollapsibleContent (§C dense reader). */
+.rd-body { background: var(--bg-000); }
+.rd-msg {
+  padding: 8px 14px 8px 58px; position: relative;
+  font: 12.5px/1.5 var(--sans); color: var(--ink-mid);
+  border-bottom: 1px solid var(--bg-100);
+}
+.rd-msg:last-child { border-bottom: none; }
+.rd-msg > :first-child { margin-top: 0; }
+.rd-msg > :last-child { margin-bottom: 0; }
+.rd-msg .reasoning { color: var(--ink-faint); font-style: italic; }
+.rd-role {
+  position: absolute; left: 12px; top: 10px; width: 40px;
+  font: 9.5px var(--mono); color: var(--ink-faint);
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.rd-turn { display: block; text-transform: none; letter-spacing: 0; }
+.rd-anchor { border-left: 3px solid var(--accent); padding-left: 55px; }
+.rd-empty { color: var(--ink-faint); font-style: italic; }
+.rd-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
+  border-top: 1px dashed var(--border);
+}
+.rd-foot a { margin-left: auto; color: var(--accent-text); cursor: pointer; }
+.iv-url {
+  font: 10.5px var(--mono); color: var(--ink-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.fx-more a { cursor: pointer; }

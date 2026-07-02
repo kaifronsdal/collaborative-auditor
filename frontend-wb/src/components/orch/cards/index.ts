@@ -1,30 +1,33 @@
 /**
- * Registry keyed on `bundle["application/vnd.workbench.v1+json"].kind`.
- * `<Output>` looks up `cards[payload.kind]` and renders it with
- * `{payload, displayId, send}`; unknown kinds fall through to the plain
- * `text/plain` / `text/html` renderer.
+ * Registry keyed on `bundle["application/vnd.workbench.v1+json"].kind`
+ * (UI-AUDIT.md §D). Eight kinds → three shell families + a variant tag; the
+ * component reads `payload.kind` internally to pick body/verdict behaviour,
+ * so `variant` here is documentation for the caller.
+ *
+ * `<Output>` currently consumes the flat `cards` map (`kind → Component`);
+ * `CARDS` is the §D shape (`kind → {C, variant}`) for when Output migrates.
  */
 import type { ComponentType } from "react";
 
 import type { Up } from "../../../lib/wire";
-import ExcerptCard from "./ExcerptCard";
-import PromptCard from "./PromptCard";
-import RunCard from "./RunCard";
-import RunProposalCard from "./RunProposalCard";
-import ScanCard from "./ScanCard";
-import TranscriptCard from "./TranscriptCard";
+import FindingCard from "./FindingCard";
+import GateCard from "./GateCard";
+import ProgressCard from "./ProgressCard";
+import ReaderCard from "./ReaderCard";
 
-export type { ExcerptPayload } from "./ExcerptCard";
-export type { PromptPayload } from "./PromptCard";
-export type { RunPayload } from "./RunCard";
-export type { RunProposalPayload } from "./RunProposalCard";
-export type { ScanPayload } from "./ScanCard";
-export type { TranscriptPayload } from "./TranscriptCard";
+export type { FindingPayload } from "./FindingCard";
+export type {
+  CiteProposalPayload,
+  GatePayload,
+  PromptPayload,
+  RunProposalPayload,
+} from "./GateCard";
+export type { ProgressPayload, RunPayload, ScanPayload } from "./ProgressCard";
+export type { ExcerptPayload, ReaderPayload, TranscriptPayload } from "./ReaderCard";
 
 /** Shared prop contract — `payload` is narrowed per-card, so the registry
  *  types it loosely and the caller casts on dispatch. `send` is the store's
- *  own `(msg: Up) => void` — the scaffold agent extended `Up` with
- *  `approve`/`import_running`/`detach_cell` so cards use the real type. */
+ *  own `(msg: Up) => void`. */
 export type CardProps<P = Record<string, unknown>> = {
   payload: P;
   displayId: string;
@@ -34,12 +37,19 @@ export type CardProps<P = Record<string, unknown>> = {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyCard = ComponentType<CardProps<any>>;
 
-export const cards: Record<string, AnyCard> = {
-  prompt: PromptCard,
-  run_proposal: RunProposalCard,
-  audit_run: RunCard,
-  eval_run: RunCard,
-  scan: ScanCard,
-  excerpt: ExcerptCard,
-  transcript: TranscriptCard,
+export const CARDS: Record<string, { C: AnyCard; variant?: string }> = {
+  prompt: { C: GateCard, variant: "prompt" },
+  run_proposal: { C: GateCard, variant: "run_proposal" },
+  cite_proposal: { C: GateCard, variant: "cite_proposal" },
+  audit_run: { C: ProgressCard, variant: "run" },
+  eval_run: { C: ProgressCard, variant: "run" },
+  scan: { C: ProgressCard, variant: "scan" },
+  excerpt: { C: ReaderCard, variant: "excerpt" },
+  transcript: { C: ReaderCard, variant: "transcript" },
+  finding: { C: FindingCard },
 };
+
+/** Flat back-compat map for `Output.tsx` (owned by the turn/output agent). */
+export const cards: Record<string, AnyCard> = Object.fromEntries(
+  Object.entries(CARDS).map(([k, { C }]) => [k, C])
+);
