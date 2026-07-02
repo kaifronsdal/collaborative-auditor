@@ -28,6 +28,7 @@ import sys
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, ClassVar, Protocol, Self
 from uuid import uuid4
 
@@ -120,9 +121,11 @@ class Prompt:
     options: list[str] | None = None
     id: str = field(default_factory=lambda: uuid4().hex)
     answer: str | None = None
+    answered_at: str | None = None
 
     def resolve(self, verdict: Any) -> None:
         self.answer = str(verdict)
+        self.answered_at = datetime.now(UTC).isoformat()
 
     def _repr_mimebundle_(
         self, include: Any = None, exclude: Any = None
@@ -140,6 +143,7 @@ class Prompt:
                 "question": self.question,
                 "options": self.options,
                 "answer": self.answer,
+                "answered_at": self.answered_at,
                 "pending": pending,
             },
         }
@@ -479,12 +483,29 @@ class OrchestratorKernel:
             # ``text`` and the human sees a code cell with zero output).
             # Not via ``_emit`` — that reads ``_current_turn`` which isn't
             # set in ``run_turn``'s context (only inside the cell task).
+            ename = type(err).__name__
+            evalue = str(err)
             tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
+            frames = [
+                {"file": f.filename, "lineno": f.lineno, "line": f.line}
+                for f in traceback.extract_tb(err.__traceback__)
+                if not _is_boring(f)
+            ]
+            plain = f"{ename}: {evalue}"
+            if frames:
+                last = frames[-1]
+                plain += f"\n  at {last['file']}:{last['lineno']}  {last['line'] or ''}"
             ev = DisplayEvent(
                 id=uuid4().hex,
                 bundle={
-                    "text/plain": tb,
-                    WB_MIME: {"kind": "traceback", "ename": type(err).__name__, "text": tb},
+                    "text/plain": plain,
+                    WB_MIME: {
+                        "kind": "traceback",
+                        "ename": ename,
+                        "evalue": evalue,
+                        "frames": frames,
+                        "text": tb,
+                    },
                 },
             )
             ev.turn_id = turn_id
@@ -559,6 +580,24 @@ class OrchestratorKernel:
 
 
 # -- helpers ------------------------------------------------------------------
+
+_BORING_TB = (
+    "IPython/",
+    "asyncio/",
+    "anyio/",
+    "<frozen",
+    "concurrent/futures/",
+    "interactiveshell",
+)
+
+
+def _is_boring(f: traceback.FrameSummary) -> bool:
+    """Frames the human shouldn't see in the traceback card summary
+    (UI-AUDIT.md §A) — IPython/asyncio machinery and the ``run_code``
+    ``exec(code_obj, ...)`` shim. The full ``text`` still carries them."""
+    return any(p in f.filename for p in _BORING_TB) or (
+        f.line is not None and "exec(code_obj" in f.line
+    )
 
 
 def _bound_names(code: str, ns: dict[str, Any]) -> list[str]:

@@ -25,9 +25,9 @@ from workbench.m1.kernel import WB_MIME, Gate
 
 @dataclass
 class Quote:
-    """One supporting transcript excerpt: ``audit_id`` at turn ``at``."""
+    """One supporting transcript excerpt: ``sample_id`` at turn ``at``."""
 
-    audit_id: str
+    sample_id: str
     at: int
     role: str
     text: str
@@ -35,7 +35,13 @@ class Quote:
 
 def _as_quote(q: Any) -> Quote:
     """Normalise a WS-edited quote (dict) or an existing ``Quote``."""
-    return q if isinstance(q, Quote) else Quote(**q)
+    if isinstance(q, Quote):
+        return q
+    # Accept the pre-UI-AUDIT ``audit_id`` key during the transition.
+    d = dict(q)
+    if "sample_id" not in d and "audit_id" in d:
+        d["sample_id"] = d.pop("audit_id")
+    return Quote(**d)
 
 
 # -- proposal (gated card) ----------------------------------------------------

@@ -94,6 +94,12 @@ class TranscriptRef:
     def _repr_mimebundle_(
         self, include: Any = None, exclude: Any = None
     ) -> dict[str, Any]:
+        # Preview the *tail* (elicited behaviour) not the head (system-prompt
+        # boilerplate); if ``at`` is set, a ±1 window around it (UI-AUDIT §A).
+        if self.at is not None:
+            preview = self.messages[max(0, self.at - 1) : self.at + 2]
+        else:
+            preview = self.messages[-3:]
         return {
             "text/plain": f"<Transcript {self.sample_id} · {len(self.messages)} msgs>",
             WB_MIME: {
@@ -101,7 +107,8 @@ class TranscriptRef:
                 "log": self.log,
                 "sample_id": self.sample_id,
                 "at": self.at,
-                "preview": [m.model_dump(mode="json") for m in self.messages[:3]],
+                "n_messages": len(self.messages),
+                "preview": [m.model_dump(mode="json") for m in preview],
             },
         }
 

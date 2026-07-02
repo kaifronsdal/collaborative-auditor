@@ -227,8 +227,18 @@ class RunProposal:
     def resolve(self, verdict: Any) -> None:
         v = verdict or {}
         self.verdict = v
-        if isinstance(v, dict) and (edited := v.get("seeds")) is not None:
-            self.seeds = list(edited)
+        if not isinstance(v, dict):
+            return
+        # Frontend (UI-AUDIT §A) sends ``surviving`` as a list of seed *ids*
+        # (``s{i}`` — matching the ``seeds`` payload below); accept that, or
+        # the older ``seeds`` shape (list of texts, or list of ``{id,text}``).
+        if (surviving := v.get("surviving")) is not None:
+            keep = set(surviving)
+            self.seeds = [s for i, s in enumerate(self.seeds) if f"s{i}" in keep]
+        elif (edited := v.get("seeds")) is not None:
+            self.seeds = [
+                e["text"] if isinstance(e, dict) else e for e in edited
+            ]
 
     @property
     def denied(self) -> bool:
@@ -255,7 +265,11 @@ class RunProposal:
                 "seeds": [
                     {"id": f"s{i}", "text": s[:200]} for i, s in enumerate(self.seeds)
                 ],
-                "config": self.config,
+                # Decision-relevant config for the gate card (UI-AUDIT §A).
+                # ``model`` isn't carried on the proposal (only on the
+                # ``run_audits`` call); ``max_turns`` comes through
+                # ``self.config`` if set.
+                "config": {"n_per_seed": self.n_per_seed, **self.config},
                 "pending": pending,
                 "verdict": self.verdict,
             },
@@ -520,11 +534,7 @@ class RunHandle(_PollingHandle):
                 "done": self.n_done,
                 "finished": self.finished,
                 "error": self.error,
-                **(
-                    {"elapsed": f"{time.monotonic() - self._started:.0f}s"}
-                    if self.finished
-                    else {}
-                ),
+                "elapsed": f"{time.monotonic() - self._started:.0f}s",
                 "rows": {
                     "running": [vars(r) for r in self._running],
                     "done": [vars(r) for r in self.rows.values()],
