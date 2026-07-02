@@ -52,7 +52,7 @@ def install_template() -> None:
             ),
             paper_bgcolor="#fff",
             plot_bgcolor="#fff",
-            margin=dict(l=8, r=8, t=24, b=8),
+            margin=dict(l=40, r=20, t=30, b=40),
             height=320,
             colorway=[INK["mid"], INK["dim"], INK["ink"], INK["faint"]],
             colorscale=dict(sequential=[[0, INK["faint"]], [1, INK["ink"]]]),

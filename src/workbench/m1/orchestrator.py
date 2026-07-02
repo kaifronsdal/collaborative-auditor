@@ -135,16 +135,32 @@ class Orchestrator(StepGated):
         self.kernel = OrchestratorKernel(
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
+        self.kernel.gate.on_change = self._broadcast_status_soon
         self.kernel.shell.user_ns["wb"] = Workbench(self.kernel.gate, session)
         self.kernel.shell.user_ns.update(_seed_analysis_ns())
         self._init_gate()
-        self.status: Status = "idle"
+        self._status: Status = "idle"
         self.queued: list[ChatMessage] = []
         #: The live agent state; set once ``run()`` enters its span. Read by
         #: ``m1.persist.save_orchestrator`` for the resume ``messages``.
         self.state: AgentState | None = None
         #: The detached ``run()`` task; set by ``Session.start_orchestrator``.
         self.task: asyncio.Task[None] | None = None
+
+    @property
+    def status(self) -> Status:
+        # ``"waiting"`` is a UI-facing overlay on the underlying ``_status``:
+        # ``session.broadcast_status()`` reads this attribute directly, so the
+        # overlay must live here (not just in ``view()``) for the header to
+        # flip on gate open/close. Preserve ``"ended"`` so ``StepGated``'s
+        # ``!= "ended"`` guards still hold if a bg cell's gate outlives run().
+        if self._status != "ended" and self.kernel.gate.pending:
+            return "waiting"
+        return self._status
+
+    @status.setter
+    def status(self, value: Status) -> None:
+        self._status = value
 
     # -- kernel → wire bridge -------------------------------------------------
 
@@ -176,6 +192,17 @@ class Orchestrator(StepGated):
             # ships ``{"t":"update"}`` — the M0 path, unchanged.
             ie.uuid = ev.id
         self.session.emit(ie, update=ev.update)
+
+    def _broadcast_status_soon(self) -> None:
+        """``Gate.on_change`` hook — push ``status`` the moment a gate opens/closes.
+
+        Without this the ``"waiting"`` overlay only surfaces on the next
+        ``push_full_state``. Called sync from inside ``Gate.__call__`` (event
+        loop is running); guarded on ``self.task`` so a gate that fires before
+        ``run()`` is spawned doesn't broadcast into a half-built session.
+        """
+        if self.task is not None:
+            asyncio.create_task(self.session.broadcast_status())  # noqa: RUF006
 
     # -- run ------------------------------------------------------------------
 
@@ -229,10 +256,7 @@ class Orchestrator(StepGated):
     def view(self) -> dict[str, Any]:
         return {
             "span_id": self.span_id,
-            # `"waiting"` is a UI-facing sub-state of `"running"`: the loop is
-            # live but a `kernel.gate` Future is unresolved, so the human is
-            # the bottleneck. Header shows "waiting on you" (UI-ITERATION §1).
-            "status": "waiting" if self.kernel.gate.pending else self.status,
+            "status": self.status,
             "model": self.model_name,
             "pending_gates": list(self.kernel.gate.pending),
             "bg_cells": sorted(self.kernel.bg),

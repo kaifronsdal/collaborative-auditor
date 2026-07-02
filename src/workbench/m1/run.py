@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import tempfile
+import time
 import zipfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -275,6 +276,7 @@ class SampleRow:
     input: str = ""
     turns: int | None = None
     scores: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -299,6 +301,7 @@ class _PollingHandle:
     _watcher: asyncio.Task[None] | None = field(default=None, repr=False)
     _dh: DisplayHandle | None = field(default=None, repr=False)
     _poll_interval: float = field(default=0.25, repr=False)
+    _started: float = field(default_factory=time.monotonic, repr=False)
 
     async def wait(self) -> Self:
         """Await the job *and* the watcher's final poll/update.
@@ -490,6 +493,7 @@ class RunHandle(_PollingHandle):
             input=str(s.input)[:80],
             turns=turns,
             scores={k: v.value for k, v in (s.scores or {}).items()},
+            error=s.error,
         )
 
     # -- repr -------------------------------------------------------------
@@ -516,6 +520,11 @@ class RunHandle(_PollingHandle):
                 "done": self.n_done,
                 "finished": self.finished,
                 "error": self.error,
+                **(
+                    {"elapsed": f"{time.monotonic() - self._started:.0f}s"}
+                    if self.finished
+                    else {}
+                ),
                 "rows": {
                     "running": [vars(r) for r in self._running],
                     "done": [vars(r) for r in self.rows.values()],

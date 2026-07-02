@@ -153,17 +153,26 @@ class Gate:
     ``kernel``.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, on_change: Callable[[], None] | None = None) -> None:
         self.pending: dict[str, asyncio.Future[Any]] = {}
+        #: Fired whenever ``pending`` gains or loses an entry — the
+        #: ``Orchestrator`` hooks this to ``session.broadcast_status()`` so
+        #: the header flips to/from ``waiting`` the moment a gate opens
+        #: (UI-ITERATION §Backend-needed).
+        self.on_change = on_change
 
     async def __call__(self, proposal: Proposal) -> Any:
         dh = display(proposal, display_id=proposal.id)
         fut: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
         self.pending[proposal.id] = fut
+        if self.on_change is not None:
+            self.on_change()
         try:
             verdict = await fut
         finally:
             self.pending.pop(proposal.id, None)
+            if self.on_change is not None:
+                self.on_change()
         proposal.resolve(verdict)
         dh.update(proposal)
         return verdict
