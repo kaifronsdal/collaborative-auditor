@@ -193,7 +193,9 @@ class RunProposal:
                 "description": self.description,
                 "n": self.n,
                 "n_per_seed": self.n_per_seed,
-                "seeds": [s[:200] for s in self.seeds],
+                "seeds": [
+                    {"id": f"s{i}", "text": s[:200]} for i, s in enumerate(self.seeds)
+                ],
                 "config": self.config,
                 "pending": pending,
                 "verdict": self.verdict,
@@ -212,6 +214,7 @@ class SampleRow:
     id: str
     status: SampleStatus
     input: str = ""
+    turns: int | None = None
     scores: dict[str, Any] = field(default_factory=dict)
 
 
@@ -310,11 +313,12 @@ class RunHandle(_PollingHandle):
     task_name: str
     log_dir: str
     #: rows keyed by sample id — completed samples only (``log_buffer=1``
-    #: flushes each on completion; running samples aren't in the summaries
-    #: yet).
+    #: flushes each on completion). In-flight samples are polled separately
+    #: from ``active_samples()`` into ``_running``.
     rows: dict[str, SampleRow] = field(default_factory=dict)
     kind: str = "eval_run"
 
+    _running: list[SampleRow] = field(default_factory=list, repr=False)
     _log_file: str | None = field(default=None, repr=False)
 
     @property
@@ -355,6 +359,20 @@ class RunHandle(_PollingHandle):
     # -- hooks ------------------------------------------------------------
 
     async def _poll(self) -> None:
+        # In-flight samples (not yet flushed) come from the process-local
+        # registry; filter to this run's log_dir and skip any that already
+        # landed in ``self.rows`` (brief overlap at completion).
+        self._running = [
+            SampleRow(
+                id=str(s.sample.id),
+                status="running",
+                input=str(s.sample.input)[:80],
+                turns=s.total_messages // 2,
+            )
+            for s in active_samples()
+            if s.log_location.startswith(self.log_dir)
+            and str(s.sample.id) not in self.rows
+        ]
         if self._log_file is None:
             # ``list_eval_logs`` (not ``active_samples()[i].log_location``)
             # because the latter is set before the first flush — reading a
@@ -367,8 +385,12 @@ class RunHandle(_PollingHandle):
         for s in summaries:
             self.rows[str(s.id)] = self._row(s)
 
-    def _signature(self) -> tuple[int, int]:
-        return (len(self.rows), self.n_done)
+    def _signature(self) -> tuple[Any, ...]:
+        return (
+            len(self.rows),
+            self.n_done,
+            tuple((r.id, r.turns) for r in self._running),
+        )
 
     async def _settle(self, task: asyncio.Task[Any]) -> None:
         # Drop this run's control entries — sample ids can collide across
@@ -383,10 +405,14 @@ class RunHandle(_PollingHandle):
             status = (
                 "stopped" if CONTROL.get(str(s.id), SampleControl()).stop else "error"
             )
+        turns = (s.metadata or {}).get("turns")
+        if turns is None and s.message_count is not None:
+            turns = s.message_count // 2
         return SampleRow(
             id=str(s.id),
             status=status,
             input=str(s.input)[:80],
+            turns=turns,
             scores={k: v.value for k, v in (s.scores or {}).items()},
         )
 
@@ -414,7 +440,10 @@ class RunHandle(_PollingHandle):
                 "done": self.n_done,
                 "finished": self.finished,
                 "error": self.error,
-                "rows": [vars(r) for r in self.rows.values()],
+                "rows": {
+                    "running": [vars(r) for r in self._running],
+                    "done": [vars(r) for r in self.rows.values()],
+                },
             },
         }
 
@@ -443,6 +472,7 @@ class ScanHandle(_PollingHandle):
 
     _location: str | None = field(default=None, repr=False)
     _results: Any | None = field(default=None, repr=False)
+    _df_head: dict[str, list[dict[str, Any]]] = field(default_factory=dict, repr=False)
 
     @property
     def n_done(self) -> int:
@@ -487,6 +517,10 @@ class ScanHandle(_PollingHandle):
             self._location = task.result().location
         if self._location is not None and self.error is None:
             self._results = await scan_results_df_async(self._location)
+            self._df_head = {
+                name: df.head(3).to_dict("records")
+                for name, df in self._results.scanners.items()
+            }
 
     # -- repr -------------------------------------------------------------
 
@@ -513,6 +547,7 @@ class ScanHandle(_PollingHandle):
                 "finished": self.finished,
                 "error": self.error,
                 "per_scanner": self.per_scanner,
+                **({"df_head": self._df_head} if self.finished else {}),
             },
         }
 

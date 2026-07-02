@@ -9,6 +9,7 @@ import { marked } from "marked";
 
 import type { ChatMessage, ToolCallError } from "@tsmono/inspect-common";
 
+import { useSession } from "../../store/session";
 import { Output } from "./Output";
 import type { OrchTurnData } from "./types";
 
@@ -124,18 +125,34 @@ function CodeCell({
   detached: boolean;
   background: boolean;
 }): JSX.Element {
+  const send = useSession((s) => s.send);
   const loc = useMemo(() => code.split("\n").length, [code]);
   const [collapsed, setCollapsed] = useState(loc > COLLAPSE_LOC);
   const cls =
     "code-cell" +
     (collapsed ? " collapsed" : "") +
     (detached || background ? " bg" : "");
+  // `→ bg` is only offered on the *live* blocking cell: `running` (ToolEvent
+  // still `pending`) implies this is the latest turn — the agent loop can't
+  // advance past an unfinished tool call. Already-detached/background cells
+  // don't need it.
+  const canDetach = running && !detached && !background;
   return (
     <div className={cls}>
       <div className="cc-head">
         <span className="lang">python</span>
         {running && <i className="bi bi-record-fill fx-dot pending" />}
         {(detached || background) && <span className="cc-bg-chip">bg</span>}
+        {canDetach && (
+          <button
+            type="button"
+            className="cc-bg-btn"
+            title="Detach: keep running in background, unblock the orchestrator"
+            onClick={() => send({ t: "detach_cell" })}
+          >
+            <i className="bi bi-arrow-right-short" /> bg
+          </button>
+        )}
         <span className="turn-no">turn {turn}</span>
       </div>
       <pre>

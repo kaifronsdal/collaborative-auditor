@@ -12,7 +12,11 @@
  * (`/logs/?log_file=…&sample_id=…`) is left as a TODO for when the server
  * serves `inspect view --port` alongside the WS.
  */
+import type { ChatMessage } from "@tsmono/inspect-common";
+
 import type { JSX } from "react";
+
+import { Bubble } from "../../Bubble";
 import type { Up } from "../../../lib/wire";
 
 export type TranscriptPayload = {
@@ -20,6 +24,9 @@ export type TranscriptPayload = {
   log: string;
   sample_id: string;
   at: number | null;
+  /** Head of the sample's message list, shipped by the backend so the card
+   *  is readable without mounting inspect-view. */
+  preview?: ChatMessage[];
 };
 
 type Props = {
@@ -31,6 +38,8 @@ type Props = {
 export default function TranscriptCard({ payload, send }: Props): JSX.Element {
   const openInDesk = (): void =>
     send({ t: "import", path: payload.log, sample_id: payload.sample_id });
+
+  const preview = payload.preview ?? [];
 
   return (
     <div className="out">
@@ -46,19 +55,30 @@ export default function TranscriptCard({ payload, send }: Props): JSX.Element {
           </button>
         </span>
       </div>
-      <div className="iv-embed">
-        <div className="iv-msg">
-          <div className="iv-gutter">
-            <span className="iv-role">log</span>
-          </div>
-          <div className="iv-body">
-            <code>{payload.log}</code>
-            <div style={{ marginTop: 6, color: "var(--ink-faint)" }}>
-              embedded inspect-view not yet mounted — open in DeskView to read
+      {preview.length > 0 ? (
+        // No mountable `<TranscriptView>` in @tsmono/inspect-* yet — render the
+        // backend-supplied `preview` slice with M0's Bubble (same treatment as
+        // ExcerptCard) inside the `.iv-embed` shell so the scroll clip applies.
+        <div className="iv-embed">
+          {preview.map((m, i) => (
+            <Bubble key={m.id ?? i} msg={m} byline={m.role} />
+          ))}
+        </div>
+      ) : (
+        <div className="iv-embed">
+          <div className="iv-msg">
+            <div className="iv-gutter">
+              <span className="iv-role">log</span>
+            </div>
+            <div className="iv-body">
+              <code>{payload.log}</code>
+              <div style={{ marginTop: 6, color: "var(--ink-faint)" }}>
+                no preview — open in DeskView to read
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
       <div className="iv-foot">
         <span className="iv-url">{payload.log}</span>
         <a onClick={openInDesk}>

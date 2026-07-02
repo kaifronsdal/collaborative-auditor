@@ -82,6 +82,7 @@ class TranscriptRef:
                 "log": self.log,
                 "sample_id": self.sample_id,
                 "at": self.at,
+                "preview": [m.model_dump(mode="json") for m in self.messages[:3]],
             },
         }
 
@@ -94,6 +95,7 @@ class Excerpt:
     log: str
     sample_id: str
     at: int
+    at_idx: int
     messages: list[ChatMessage] = field(repr=False)
     text: str = field(repr=False)
 
@@ -107,6 +109,7 @@ class Excerpt:
                 "log": self.log,
                 "sample_id": self.sample_id,
                 "at": self.at,
+                "at_idx": self.at_idx,
                 "messages": [m.model_dump(mode="json") for m in self.messages],
             },
         }
@@ -132,7 +135,12 @@ async def excerpt(
     lo = max(0, at - around)
     window = msgs[lo : at + around + 1]
     return Excerpt(
-        log=loc, sample_id=sample_id, at=at, messages=window, text=await _render(window)
+        log=loc,
+        sample_id=sample_id,
+        at=at,
+        at_idx=at - lo,
+        messages=window,
+        text=await _render(window),
     )
 
 

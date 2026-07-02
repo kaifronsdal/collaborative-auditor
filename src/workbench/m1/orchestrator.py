@@ -51,6 +51,8 @@ from shortuuid import uuid
 
 from workbench.gate import StepGated
 from workbench.m1.kernel import DisplayEvent, OrchestratorKernel
+from workbench.m1.plots import install_template
+from workbench.m1.prompt import ORCHESTRATOR_SYSTEM_PROMPT
 from workbench.m1.wb import Workbench
 from workbench.view import Status
 
@@ -123,7 +125,7 @@ class Orchestrator(StepGated):
         self.session = session
         self.model_name = model
         self.model_args = model_args or {}
-        self.system_prompt = system_prompt
+        self.system_prompt = system_prompt or ORCHESTRATOR_SYSTEM_PROMPT
         self.max_turns = max_turns
         #: Persistence (M1.3): pre-save chat history to prepend on resume,
         #: and any ``RunHandle.log_dir``s the pre-save cells produced.
@@ -137,6 +139,7 @@ class Orchestrator(StepGated):
         # before the first cell runs — otherwise the first in-cell
         # ``eval_async`` leaks ~8 stream events (M1-RUN-AUDITS.md §Required).
         _prewarm()
+        install_template()
         self.kernel = OrchestratorKernel(
             extra_ns={"SESSION": session}, on_display=self._on_display
         )

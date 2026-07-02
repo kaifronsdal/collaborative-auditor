@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Any
 
 from inspect_ai import Task
 
+from workbench.m1.cite import Finding, Quote, cite
 from workbench.m1.kernel import Prompt
+from workbench.m1.plots import Plots
 from workbench.m1.read import (
     Excerpt,
     TranscriptRef,
@@ -164,6 +166,25 @@ class Workbench:
     async def ask_human(self, question: str, options: list[str] | None = None) -> str:
         return str(await self._k.gate(Prompt(question, options)))
 
+    async def cite(
+        self,
+        claim: str,
+        quotes: Sequence[Quote | dict[str, Any]],
+        *,
+        grades_ref: str | None = None,
+        description: str,
+    ) -> Finding:
+        """Propose a finding for the human to sign. Always blocks; deny
+        returns an unsigned ``Finding`` (no exception)."""
+        return await cite(
+            self._k, claim, list(quotes), grades_ref=grades_ref, description=description
+        )
+
+    #: Plot helpers over ``px.*`` — ``link``/``annotate_top``/``paired_slope``/
+    #: ``replicate_grid``/``survival`` (M1-PLOTTING.md). The ``workbench``
+    #: template + ``notebook_connected`` renderer are installed at kernel init.
+    plots = Plots()
+
     # -- mutate running samples ------------------------------------------
 
     def steer(self, ids: str | Iterable[str], message: str) -> None:
@@ -254,8 +275,3 @@ class Workbench:
             description=description,
         )
         return h._start(scan_async(job))
-
-    # -- stubs for M1.3 ---------------------------------------------------
-
-    async def cite(self, claim: str, quotes: Any, **kw: Any) -> Any:
-        raise NotImplementedError("wb.cite: M1.3")

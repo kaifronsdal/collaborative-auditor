@@ -31,6 +31,7 @@ const componentIcons: ComponentIcons = {
 export function App(): JSX.Element {
   const connect = useSession((s) => s.connect);
   const current = useSession((s) => s.current);
+  const hasOrch = useSession((s) => s.orchestrator != null);
   const pendingNewAudit = useSession((s) => s.pendingNewAudit);
 
   useEffect(() => {
@@ -40,10 +41,12 @@ export function App(): JSX.Element {
     connect(sid);
   }, [connect]);
 
-  // Show StartView when there's no active branch OR when the user has
-  // explicitly requested a new audit (pendingNewAudit shields the null
-  // from being overwritten by the next backend state broadcast).
-  const showStart = !current || pendingNewAudit;
+  // Show DeskView when there is an active branch OR an orchestrator running
+  // (M1: the orch column can drive the desk before any M0 branch exists —
+  // Column/SwimlaneColumn render empty-state on a null branch id via the
+  // `?? EMPTY` selectors). `pendingNewAudit` still forces StartView so the
+  // user can spin up a new M0 audit alongside a live orchestrator.
+  const showStart = (current == null && !hasOrch) || pendingNewAudit;
 
   return (
     <ComponentIconProvider icons={componentIcons}>

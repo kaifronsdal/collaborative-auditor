@@ -1,16 +1,82 @@
 import type { JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 
-import { SEED_PRESETS } from "../lib/presets";
+import { DEFAULT_AUDITOR, MODELS, SEED_PRESETS, modelLabel } from "../lib/presets";
 import { useSession } from "../store/session";
 import { ModelPicker, readStoredConfig } from "./ModelPicker";
 import type { GenerateConfigDict } from "./ModelPicker";
 
 /**
- * Empty-state landing screen. Form-first: seed textarea is the dominant element,
- * controls live in one row below it, preset chips above.
+ * Empty-state landing screen. Two tabs: the M0 "Desk" seed form (unchanged)
+ * and the M1 "Orchestrator" launcher (model dropdown → `start_orchestrator`).
  */
 export function StartView(): JSX.Element {
+  const [tab, setTab] = useState<"desk" | "orch">("desk");
+  return (
+    <div className="start-view">
+      <div className="start-tabs">
+        <button
+          type="button"
+          className={`start-tab${tab === "desk" ? " on" : ""}`}
+          onClick={() => setTab("desk")}
+        >
+          Desk
+        </button>
+        <button
+          type="button"
+          className={`start-tab${tab === "orch" ? " on" : ""}`}
+          onClick={() => setTab("orch")}
+        >
+          Orchestrator
+        </button>
+      </div>
+      {tab === "desk" ? <DeskStartCard /> : <OrchStartCard />}
+    </div>
+  );
+}
+
+/** M1 orchestrator launcher — model dropdown + Start. */
+function OrchStartCard(): JSX.Element {
+  const send = useSession((s) => s.send);
+  const [model, setModel] = useState(DEFAULT_AUDITOR);
+  const [isStarting, setIsStarting] = useState(false);
+
+  function handleStart(): void {
+    if (isStarting) return;
+    setIsStarting(true);
+    // Clear the new-audit shield so the incoming `state` broadcast (which
+    // carries `orchestrator != null`) flips App into DeskView.
+    useSession.setState({ pendingNewAudit: false });
+    send({ t: "start_orchestrator", model });
+  }
+
+  return (
+    <div className="start-card">
+      <div className="start-controls">
+        <label className="mp-field">
+          <span className="mp-role">orchestrator</span>
+          <select
+            className="mp-select"
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+          >
+            {MODELS.map((m) => (
+              <option key={m} value={m}>
+                {modelLabel(m)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="start-btn" disabled={isStarting} onClick={handleStart}>
+          Start
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** The original M0 seed → auditor/target form. */
+function DeskStartCard(): JSX.Element {
   const startAudit = useSession((s) => s.start);
   const setNextConfig = useSession((s) => s.setNextConfig);
   // Read nextConfig from the store so sidebar picker changes propagate here.
@@ -67,7 +133,6 @@ export function StartView(): JSX.Element {
   }
 
   return (
-    <div className="start-view">
       <div className="start-card">
         {/* preset chips above the textarea */}
         <div className="seed-chips">
@@ -124,6 +189,5 @@ export function StartView(): JSX.Element {
           </button>
         </div>
       </div>
-    </div>
   );
 }

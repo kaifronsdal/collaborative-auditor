@@ -8,7 +8,7 @@
  * `payload.kind`; unknown kinds fall through to `WbFallback` so the column
  * stays inspectable.
  */
-import { useMemo, type JSX } from "react";
+import { useEffect, useMemo, useRef, type JSX } from "react";
 
 import { useSession } from "../../store/session";
 import { cards } from "./cards";
@@ -89,7 +89,22 @@ export function Output({ id, bundle, meta, stable }: OutputProps): JSX.Element |
  *  §Open question — frontend regex for M1.0). */
 const AUDIT_ID_RE = />(a-[0-9a-f]{4,})</g;
 
+/** plotly.js attaches `.on(event, cb)` to the graph div; `window.Plotly` is
+ *  loaded from CDN by the first `notebook_connected` output's script tag. */
+type PlotlyDiv = HTMLDivElement & {
+  on: (ev: string, cb: (d: PlotlyClick) => void) => void;
+  removeAllListeners?: (ev: string) => void;
+};
+type PlotlyClick = { points: Array<{ customdata?: unknown[] }> };
+declare global {
+  interface Window {
+    Plotly?: { react: (el: Element, ...a: unknown[]) => void };
+  }
+}
+
 function HtmlOutput({ html, stable }: { html: string; stable: boolean }): JSX.Element {
+  const send = useSession((s) => s.send);
+  const hostRef = useRef<HTMLDivElement>(null);
   const isPlotly = html.includes("plotly-graph-div");
   const processed = useMemo(
     () =>
@@ -101,9 +116,37 @@ function HtmlOutput({ html, stable }: { html: string; stable: boolean }): JSX.El
           ),
     [html, isPlotly]
   );
-  // TODO(M1-PLOTTING): mount plotly div + attach `plotly_click → customdata[0]`.
+
+  // M1-PLOTTING: `dangerouslySetInnerHTML` inserts plotly's `<script>` tags
+  // inertly, so the figure never mounts. Re-execute them (this runs
+  // `Plotly.newPlot(divId, data, layout, config)` — or the CDN loader on the
+  // first plot), then wire `plotly_click` so `customdata[0]` (the audit id
+  // the workbench styler stashes per-point) navigates the desk.
+  useEffect(() => {
+    if (!isPlotly) return;
+    const host = hostRef.current;
+    if (!host) return;
+    // Run each embedded script by cloning it into a fresh <script> node —
+    // browsers only execute scripts that are *created*, not innerHTML'd.
+    for (const s of Array.from(host.querySelectorAll("script"))) {
+      const live = document.createElement("script");
+      for (const { name, value } of Array.from(s.attributes)) live.setAttribute(name, value);
+      live.textContent = s.textContent;
+      s.replaceWith(live);
+    }
+    if (window.Plotly == null) return; // CDN not loaded yet — leave static HTML
+    const gd = host.querySelector<PlotlyDiv>(".plotly-graph-div");
+    if (!gd) return;
+    gd.on("plotly_click", (d) => {
+      const id = d.points[0]?.customdata?.[0];
+      if (typeof id === "string") send({ t: "import_running", sample_id: id });
+    });
+    return () => gd.removeAllListeners?.("plotly_click");
+  }, [isPlotly, html, send]);
+
   return (
     <div
+      ref={hostRef}
       className={`out ${isPlotly ? "bare plotly-host" : "html"}`}
       {...(stable ? { "data-display-id": "stable" } : {})}
       dangerouslySetInnerHTML={{ __html: processed }}
