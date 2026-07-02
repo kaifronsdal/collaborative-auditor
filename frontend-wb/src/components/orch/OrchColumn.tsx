@@ -1,11 +1,13 @@
 /**
  * `<OrchColumn>` — the M1 orchestrator column shell.
  *
- * Header (status pill + step/play/pause), a scrolling turn list, and a
- * composer that talks to the orchestrator via `{t:"orch_send"}`. Turns are
- * derived from `byRole["orch"]["orch"]`: each `ModelEvent` is one turn, its
- * following `ToolEvent(function="python")` is the code cell, and every
- * `InfoEvent(source="orchestrator")` is bucketed by `data.turn`.
+ * Location follows interaction (UI-AUDIT §B): the header is passive status
+ * only (title + dot-or-gate-pill); transport (`⏹ ⏭ ▶/⏸`) and send live in the
+ * composer footer where the cursor is, matching M0's `DeskView` composer.
+ *
+ * Turns are derived from `byRole["orch"]["orch"]`: each `ModelEvent` is one
+ * turn, its following `ToolEvent(function="python")` is the code cell, and
+ * every `InfoEvent(source="orchestrator")` is bucketed by `data.turn`.
  */
 import {
   Fragment,
@@ -37,7 +39,7 @@ import "./orch.css";
 /** The synthetic branch id / role the backend registers the orch span under. */
 const ORCH = "orch";
 
-/** Header status text (UI-ITERATION §1/§3). */
+/** Header status text (tooltip only — UI-AUDIT §B). */
 const STATUS_TEXT: Record<Status, string> = {
   idle: "idle",
   paused: "paused",
@@ -72,8 +74,10 @@ export function OrchColumn(): JSX.Element {
   const isRunning = status === "running" || status === "waiting";
   const bgCells = orch?.bg_cells ?? EMPTY_BG;
   const pendingGates = orch?.pending_gates ?? EMPTY_GATES;
+  const notifications = orch?.notifications ?? EMPTY_NOTIF;
   const last = turns.at(-1);
   const cellRunning = last?.py?.pending === true;
+  const statusText = STATUS_TEXT[status];
 
   // Resolve each pending gate's card payload so the header popover can show
   // its `.gate-desc` and per-row approve. `display_id === InfoEvent.uuid`
@@ -94,6 +98,18 @@ export function OrchColumn(): JSX.Element {
       };
     });
   }, [pendingGates, turns]);
+
+  // §C sys-chip → origin-cell badge: parse `notifications` for
+  // `cell-{N} … bound: {name}` and thread the settled binding into the turn
+  // that emitted it, so `.cc-bg-chip` can show `done · {name}` in place.
+  const settledBg = useMemo(() => {
+    const m = new Map<number, string>();
+    for (const n of notifications) {
+      const match = /cell-(\d+).*bound: (\w+)/.exec(n);
+      if (match) m.set(Number(match[1]), match[2]);
+    }
+    return m;
+  }, [notifications]);
 
   // Follow the live tail (same policy as M0 `LinearColumn`).
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -133,30 +149,18 @@ export function OrchColumn(): JSX.Element {
     sendText();
   };
 
-  // Context-aware primary (mirrors DeskView's auditor composer).
-  const primary = hasText
-    ? { Icon: IconSend, title: "Send to orchestrator", onClick: sendText, mode: "send" as const }
-    : isRunning
-      ? {
-          Icon: IconPause,
-          title: "Pause orchestrator",
-          onClick: () => send({ t: "pause", target: ORCH }),
-          mode: "pause" as const,
-        }
-      : {
-          Icon: IconPlay,
-          title: "Run orchestrator",
-          onClick: () => send({ t: "play", target: ORCH }),
-          mode: "play" as const,
-        };
+  const meta = [
+    shortModel(orch?.model),
+    `turn ${turns.length}`,
+    statusText,
+  ].filter(Boolean).join(" · ");
 
   return (
     <div className="col-wrap orch-col-wrap">
       <div className="column orch-col" ref={scrollRef} onScroll={onScroll}>
         <OrchHeader
-          status={status}
-          model={shortModel(orch?.model)}
-          turn={turns.length}
+          meta={meta}
+          statusText={statusText}
           dot={dotClass(status, cellRunning)}
           gates={gateInfo}
           onJump={jumpToGate}
@@ -166,22 +170,14 @@ export function OrchColumn(): JSX.Element {
         {turns.map((t, i) => (
           <Fragment key={t.model.uuid ?? t.turn}>
             {i > 0 && <div className="turn-sep" />}
-            <OrchTurn data={t} bgCells={bgCells} />
+            <OrchTurn data={t} bgCells={bgCells} settledBg={settledBg.get(t.turn)} />
           </Fragment>
-        ))}
-
-        {orch?.notifications.map((n, i) => (
-          <div key={`n${i}`} className="sys-chip">
-            <i className="bi bi-bell sc-icon" />
-            <span>{n}</span>
-          </div>
         ))}
 
         {isRunning && !last?.model.pending && <ShimmerBubble />}
       </div>
 
       <div className="composer">
-        <span className="composer-to">to: orchestrator</span>
         <textarea
           className="composer-input"
           rows={1}
@@ -195,28 +191,54 @@ export function OrchColumn(): JSX.Element {
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              primary.onClick();
+              sendText();
             }
           }}
           placeholder="Instruct the orchestrator…"
         />
         <div className="composer-lower">
+          <div className="composer-controls">
+            {isRunning && (
+              <button
+                type="button"
+                title="interrupt cell"
+                onClick={() => send({ t: "cancel_cell", turn: turns.length })}
+              >
+                <IconStop />
+              </button>
+            )}
+            <button
+              type="button"
+              title="run one turn"
+              disabled={isRunning}
+              onClick={() => send({ t: "step", target: ORCH })}
+            >
+              <IconStep />
+            </button>
+            <button
+              type="button"
+              title={isRunning ? "pause after this turn" : "run"}
+              onClick={() => send({ t: isRunning ? "pause" : "play", target: ORCH })}
+            >
+              {isRunning ? <IconPause /> : <IconPlay />}
+            </button>
+          </div>
           {cellRunning && hasText ? (
             <span className="composer-hint composer-hint-running">
-              cell running — this will be read after turn {turns.length} ·{" "}
-              <a onClick={sendNow}>send now (background current cell)</a>
+              reads after turn {turns.length} · <a onClick={sendNow}>send now</a>
             </span>
           ) : (
             <span className="composer-hint">
-              <i className="bi bi-arrow-return-right" /> orchestrator
+              enter to send · shift+enter newline
             </span>
           )}
           <button
-            className={`primary primary-${primary.mode}`}
-            onClick={primary.onClick}
-            title={primary.title}
+            className="primary primary-send"
+            onClick={sendText}
+            disabled={!hasText}
+            title="Send to orchestrator"
           >
-            <primary.Icon size={16} />
+            <IconSend size={16} />
           </button>
         </div>
       </div>
@@ -228,60 +250,49 @@ export function OrchColumn(): JSX.Element {
 
 type GateInfo = { id: string; kind: string; desc: string };
 
+/** Passive-status header: title (with meta tooltip) + either the bare status
+ *  dot or, when gates are pending, a purple pill that absorbs the dot. Hover
+ *  the pill for the per-gate popover; click it to jump to the first gate. */
 function OrchHeader({
-  status,
-  model,
-  turn,
+  meta,
+  statusText,
   dot,
   gates,
   onJump,
   send,
 }: {
-  status: Status;
-  model: string;
-  turn: number;
+  meta: string;
+  statusText: string;
   dot: string;
   gates: GateInfo[];
   onJump: (id: string) => void;
   send: ReturnType<typeof useSession.getState>["send"];
 }): JSX.Element {
-  const [open, setOpen] = useState(false);
-  const isRunning = status === "running" || status === "waiting";
+  const [hover, setHover] = useState(false);
   // `ask_human` gates need a value; only `run_proposal`s can be bulk-approved.
   const approvable = gates.filter((g) => g.kind === "run_proposal");
 
   return (
     <div className="column-head orch-head">
       <span className="head-left">
-        <span className="head-title">orchestrator</span>
-        {model && (
-          <>
-            <span className="head-sep">·</span>
-            <span className="head-model">{model}</span>
-          </>
-        )}
-        <span className="head-sep">·</span>
-        <span className="head-turn">t{turn}</span>
-        <span className="head-sep">·</span>
-        <span className={`rl-dot rl-dot-${dot}`} title={status} />
-        <span className={`head-status head-status-${status}`}>
-          {STATUS_TEXT[status]}
-        </span>
-        {gates.length > 0 && (
-          <span className="head-gate-wrap">
+        <span className="head-title" title={meta}>orchestrator</span>
+        {gates.length > 0 ? (
+          <span
+            className="head-gate-wrap"
+            onMouseEnter={() => setHover(true)}
+            onMouseLeave={() => setHover(false)}
+          >
             <button
               type="button"
               className="head-gate-jump"
-              onClick={() => {
-                onJump(gates[0].id);
-                setOpen((v) => !v);
-              }}
+              onClick={() => onJump(gates[0].id)}
               title="jump to first pending gate"
             >
-              {gates.length} waiting
+              <span className="rl-dot rl-dot-gate" />
+              {gates.length} waiting on you
             </button>
-            {open && (
-              <div className="head-gate-pop" onMouseLeave={() => setOpen(false)}>
+            {hover && (
+              <div className="head-gate-pop">
                 {gates.map((g) => (
                   <div key={g.id} className="hgp-row">
                     <span className="hgp-desc" onClick={() => onJump(g.id)}>
@@ -323,7 +334,6 @@ function OrchHeader({
                       for (const g of approvable) {
                         send({ t: "approve", display_id: g.id, verdict: {} });
                       }
-                      setOpen(false);
                     }}
                   >
                     Approve all ({approvable.length})
@@ -332,42 +342,9 @@ function OrchHeader({
               </div>
             )}
           </span>
+        ) : (
+          <span className={`rl-dot rl-dot-${dot}`} title={statusText} />
         )}
-      </span>
-      <span className="orch-head-actions">
-        {isRunning && (
-          <button
-            type="button"
-            className="head-bg-btn"
-            title="Detach: keep the current cell running in background"
-            onClick={() => send({ t: "detach_cell" })}
-          >
-            <i className="bi bi-layer-backward" /> bg
-          </button>
-        )}
-        <button
-          type="button"
-          title="Interrupt"
-          disabled={!isRunning}
-          onClick={() => send({ t: "cancel_cell", turn })}
-        >
-          <IconStop />
-        </button>
-        <button
-          type="button"
-          title="Step one turn"
-          disabled={isRunning}
-          onClick={() => send({ t: "step", target: ORCH })}
-        >
-          <IconStep />
-        </button>
-        <button
-          type="button"
-          title={isRunning ? "Pause" : "Play"}
-          onClick={() => send({ t: isRunning ? "pause" : "play", target: ORCH })}
-        >
-          {isRunning ? <IconPause /> : <IconPlay />}
-        </button>
       </span>
     </div>
   );
@@ -422,3 +399,4 @@ export function eventsToOrchTurns(events: readonly Event[]): OrchTurnData[] {
 
 const EMPTY_BG: readonly number[] = [];
 const EMPTY_GATES: readonly string[] = [];
+const EMPTY_NOTIF: readonly string[] = [];

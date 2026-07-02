@@ -24,15 +24,6 @@
   font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
   color: var(--ink-faint);
 }
-.orch-head .head-sep { color: var(--border); }
-.orch-head .head-model,
-.orch-head .head-turn {
-  font: 11px var(--mono); color: var(--ink-dim);
-}
-.orch-head .head-status { font-size: 11px; color: var(--ink-faint); }
-.orch-head .head-status-waiting { color: var(--gate-text); font-weight: 500; }
-.orch-head .head-status-running { color: var(--accent-text); }
-.orch-head .head-status-ended { color: var(--ink-faint); }
 .orch-head .rl-dot { margin: 0 -1px 0 2px; }
 /* extend styles.css `.rl-dot-*` set for the tri-state (§3) */
 .rl-dot-idle   { background: transparent; border: 1.5px solid var(--ink-faint); box-sizing: border-box; }
@@ -71,26 +62,6 @@
   border: none; border-radius: var(--r-sm);
   background: var(--gate); color: #fff; font: 12px var(--sans); cursor: pointer;
 }
-.head-bg-btn {
-  border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-000); padding: 0 7px;
-  font: 10.5px var(--sans); color: var(--ink-dim); cursor: pointer;
-  display: inline-flex; align-items: center; gap: 3px; height: 22px;
-}
-.orch-head-actions {
-  margin-left: auto; display: inline-flex; gap: 2px;
-}
-.orch-head-actions button {
-  width: 22px; height: 22px; padding: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-000); cursor: pointer;
-  color: var(--ink-faint); font-size: 11px;
-}
-.orch-head-actions button:hover:not(:disabled) {
-  background: var(--bg-200); color: var(--ink-mid);
-}
-.orch-head-actions button:disabled { opacity: .4; cursor: default; }
 
 /* ---- one turn ---- */
 .orch-col .turn { margin: 0 0 18px; }
@@ -428,26 +399,11 @@
 .out.html thead th { background: var(--bg-100); font-weight: 600; }
 .out.html tbody tr:hover { background: var(--bg-100); }
 
-/* sys-chip (mirror/notification) */
-.sys-chip {
-  display: flex; align-items: flex-start; gap: 8px;
-  margin: 12px 0 var(--sp-2); padding: 8px 12px;
-  border: 1px solid var(--border); border-radius: var(--r-md);
-  background: var(--bg-200); font-size: 12.5px; color: var(--ink-mid);
-}
-.sys-chip .sc-icon { color: var(--ink-faint); flex-shrink: 0; margin-top: 2px; }
-
 /* ---- round-1 structural-pass classes (UI-ITERATION §New classes) ---- */
 
-/* composer addressee chip — orch accent so it reads distinct from M0's
-   auditor composer even after typing clears the placeholder. */
-.orch-col-wrap .composer { position: relative; padding-top: 26px; }
-.composer-to {
-  position: absolute; top: 8px; left: 14px;
-  font: 10.5px var(--mono); color: var(--gate-text);
-  background: var(--gate-dim); border: 1px solid hsl(265 40% 85%);
-  padding: 1px 8px; border-radius: var(--r-pill);
-}
+/* orch composer disambiguation from M0's auditor composer: a gate-purple left
+   rail replaces the old `to:` chip at zero height cost (UI-AUDIT §B). */
+.orch-col-wrap .composer { border-left: 2px solid var(--gate); }
 .composer-hint-running a { text-decoration: underline; cursor: pointer; }
 
 /* cc-head error chip (§18) */
@@ -595,11 +551,33 @@
    next to 11px text; the label is self-explanatory, so drop the icon. */
 .cc-bg-btn i { display: none; }
 .cc-head .fx-dot { margin-right: 2px; }
-/* head-bg-btn variant keeps its icon (label is just `bg`). */
-.head-bg-btn i { font-size: 10px; }
 
 /* three-column desk grid */
 .desk-body.has-orch .columns {
   grid-template-columns:
     var(--auditor-width, 1fr) 4px var(--target-width, 1fr) var(--orch-width, 1.1fr);
 }
+
+/* -- column additions -- */
+
+/* GatePill absorbs the status dot (UI-AUDIT §B redundancy map). */
+.head-gate-jump {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.head-gate-jump .rl-dot { margin: 0; flex-shrink: 0; }
+
+/* Composer transport cluster (⏹ ⏭ ▶/⏸) — relocated from the header per
+   "location follows interaction". Sizing/gap match M0's `.composer-lower`
+   (32px primary, var(--sp-2) row gap; controls sit as a tight sub-group). */
+.composer-controls { display: inline-flex; gap: 4px; }
+.composer-controls button {
+  width: 26px; height: 26px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-000); cursor: pointer;
+  color: var(--ink-faint);
+}
+.composer-controls button:hover:not(:disabled) {
+  background: var(--bg-200); color: var(--ink-mid);
+}
+.composer-controls button:disabled { opacity: .4; cursor: default; }
