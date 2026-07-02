@@ -29,100 +29,87 @@ INK: dict[str, Any] = dict(
 ACCENT, OK, DANGER = "#2f76da", "#479e76", "#b33232"
 
 
-# -- model → color (M1-PLOTTING.md §Model palette) ---------------------------
-#
-# One hue per provider (brand-adjacent, ≥30° apart so provider is the
-# dominant visual grouping); lightness varies by tier within a provider
-# (flagship = darker/saturated, small = lighter), then a small nudge by
-# version so e.g. opus-4-8 vs opus-4-6 are distinguishable side-by-side.
-# The explicit ``MODEL_COLORS`` dict pins common ids to stable hexes;
-# ``model_color()`` falls through to the hue/tier heuristic for anything
-# not listed. Update the dict as new models ship.
+# -- model → color / label (data in ``model_palette.py``) --------------------
 
-_PROVIDER_HUE: dict[str, tuple[int, int]] = {
-    # provider → (H°, S%). Anthropic clay-orange ≈ H24; Gemini gradient
-    # ≈ H270; user spec: openai=blue, google=purple.
-    "anthropic": (24, 68),
-    "openai": (210, 62),
-    "google": (270, 55),
-    "x-ai": (0, 0),  # grok — greyscale
-    "meta-llama": (195, 55),  # cyan (dodge openai-blue)
-    "meta": (195, 55),
-    "mistral": (45, 70),  # amber (dodge anthropic-orange)
-    "deepseek": (245, 60),
-    "moonshotai": (330, 55),  # kimi — magenta
-    "z-ai": (165, 50),  # glm — teal
-    "cohere": (300, 50),
-    "together": (150, 45),
-    "mockllm": (0, 0),
-}
-
-#: Tier keywords → lightness delta from L=50%. Flagship darker; distilled
-#: lighter. Matched as substrings against the model id (first hit wins).
-_TIER_L: tuple[tuple[str, int], ...] = (
-    ("deep-think", -14), ("ultra", -14),
-    ("opus", -10), ("pro", -8), ("o3", -8), ("o1", -6), ("large", -8),
-    ("mythos", -4), ("grok-4", -4),
-    ("sonnet", 0), ("gpt-5", 0), ("gpt-4", 6), ("medium", 0), ("chat", 4),
-    ("gemini", 0), ("glm", 0), ("kimi", 0), ("llama", 0), ("grok", 0),
-    ("flash", 10), ("haiku", 12), ("mini", 14), ("small", 12),
-    ("nano", 18), ("lite", 16), ("oss", 8),
+from workbench.m1.model_palette import (  # noqa: E402
+    BRAND_CASE,
+    BRAND_PREFIX,
+    LOWERCASE_TOKENS,
+    MODEL_LABELS,
+    MODEL_ORDER,
+    PROVIDER_ALIAS,
+    PROVIDER_HUE,
+    TIER_L,
 )
+
+#: Lightness ramp per family — flagship darkest, smallest lightest.
+#: Saturation co-varies (dark = more saturated) so adjacent shades differ
+#: on two axes, not just L, which is what makes opus-4-8/4-7/4-6 legible
+#: side-by-side even in a large family.
+_L_RAMP = (28, 76)
+_S_RAMP = (10, -14)  # delta from provider base S at (dark, light) ends
 
 
 def _hsl(h: int, s: int, lightness: int) -> str:
-    """HSL → ``#rrggbb``. Clamps L to [15, 85] so nothing goes near-black/white."""
+    """HSL → ``#rrggbb``. Clamps so nothing goes near-black/white."""
     import colorsys  # noqa: PLC0415
 
-    lightness = max(15, min(85, lightness))
+    lightness = max(18, min(84, lightness))
+    s = max(0, min(95, s))
     r, g, b = colorsys.hls_to_rgb(h / 360, lightness / 100, s / 100)
     return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
 
 
-def _version_nudge(name: str) -> int:
-    """Small L offset from the trailing version number so adjacent
-    releases within a tier are distinguishable (newer → slightly darker)."""
-    import re  # noqa: PLC0415
+def _resolve_provider(model_id: str) -> tuple[str, str]:
+    """→ ``(canonical_provider, name)``. Strips router prefixes and
+    resolves aliases; infers provider from brand prefix on bare ids."""
+    parts = model_id.split("/")
+    # Strip ``openrouter/`` / ``together/`` router prefixes.
+    if len(parts) > 2 and parts[0] in {"openrouter", "together", "hf"}:
+        parts = parts[1:]
+    if len(parts) == 1:
+        name = parts[0]
+        for pfx, prov in BRAND_PREFIX.items():
+            if name.lower().startswith(pfx):
+                return prov, name
+        return "", name
+    provider, name = parts[0], "/".join(parts[1:])
+    return PROVIDER_ALIAS.get(provider, provider), name
 
-    if m := re.search(r"(\d+)[.\-]?(\d+)?", name.rsplit("/", 1)[-1]):
-        major = int(m.group(1))
-        minor = int(m.group(2) or 0)
-        # Clamp so a runaway version number doesn't blow past the tier band.
-        return -min(8, major + minor // 2)
-    return 0
+
+def _ramp_color(provider: str, t: float) -> str:
+    """Color at position ``t ∈ [0, 1]`` along ``provider``'s ramp."""
+    h, s0 = PROVIDER_HUE.get(provider, (hash(provider) % 360, 45))
+    lightness = _L_RAMP[0] + t * (_L_RAMP[1] - _L_RAMP[0])
+    # Greyscale providers stay greyscale — don't let the S-ramp tint them.
+    s = 0 if s0 == 0 else s0 + _S_RAMP[0] + t * (_S_RAMP[1] - _S_RAMP[0])
+    return _hsl(h, round(s), round(lightness))
 
 
 def model_color(model_id: str) -> str:
     """Deterministic hex color for a model id.
 
-    Provider decides hue; tier keyword decides lightness band; version
-    number nudges within the band. Unknown providers hash to a hue so
-    every id gets *something* stable. Prefer the explicit
-    ``MODEL_COLORS`` entry when present.
+    Provider decides hue (16 providers spread across the wheel;
+    ``model_palette.PROVIDER_HUE``). Within a provider, position along
+    the L+S ramp is the model's index in ``MODEL_ORDER[provider]``
+    (flagship=0 → darkest/saturated; smallest=N-1 → lightest/pale) —
+    so N models get N *evenly-spaced* shades. Ids not in the order list
+    fall back to the ``TIER_L`` keyword heuristic.
     """
-    if (c := MODEL_COLORS.get(model_id)) is not None:
-        return c
-    provider, _, name = model_id.partition("/")
-    if not name:
-        name, provider = provider, ""
-    # Normalise a few aliases inspect uses.
-    provider = {"vertex": "google", "azure": "openai", "bedrock": "anthropic"}.get(
-        provider, provider
-    )
-    if provider in _PROVIDER_HUE:
-        h, s = _PROVIDER_HUE[provider]
-    else:
-        # Try to infer from the name (e.g. bare ``claude-opus-4-8``).
-        for key, (h, s) in _PROVIDER_HUE.items():
-            if key in name or name.startswith(
-                {"anthropic": "claude", "openai": "gpt", "google": "gemini",
-                 "x-ai": "grok", "moonshotai": "kimi", "z-ai": "glm"}.get(key, key)
-            ):
-                break
-        else:
-            h, s = (hash(provider or name) % 360, 45)
-    tier_l = next((dl for kw, dl in _TIER_L if kw in name.lower()), 0)
-    return _hsl(h, s, 50 + tier_l + _version_nudge(name))
+    provider, name = _resolve_provider(model_id)
+    order = MODEL_ORDER.get(provider, [])
+    canonical = f"{provider}/{name}" if provider else name
+    # Known model → interpolate on the ordered ramp.
+    for candidate in (model_id, canonical):
+        if candidate in order:
+            i, n = order.index(candidate), len(order)
+            return _ramp_color(provider, i / max(1, n - 1))
+    # Unknown model in a known/unknown provider → tier-keyword heuristic.
+    lname = name.lower()
+    tier_l = next((dl for kw, dl in TIER_L if kw in lname), 0)
+    # Map tier_l ∈ [-18, +22] onto the ramp position.
+    t = (tier_l + 18) / 40
+    return _ramp_color(provider, min(1.0, max(0.0, t)))
 
 
 def model_colormap(models: Sequence[str]) -> dict[str, str]:
@@ -130,43 +117,58 @@ def model_colormap(models: Sequence[str]) -> dict[str, str]:
     return {m: model_color(m) for m in models}
 
 
-#: Explicit pins for models we know about today (CLAUDE.md §Recent
-#: Frontier Models). Everything else falls through to ``model_color``'s
-#: heuristic. Update as new models ship.
+#: Derived: every id in ``MODEL_ORDER`` → its ramp color. Exposed for
+#: back-compat and for direct dict lookup in tests.
 MODEL_COLORS: dict[str, str] = {
-    # Anthropic — clay orange, opus darkest → haiku lightest
-    "anthropic/claude-opus-4-8": "#c85a2e",
-    "anthropic/claude-opus-4-7": "#cf6236",
-    "anthropic/claude-opus-4-6": "#d56a3f",
-    "anthropic/claude-mythos-preview": "#d9744b",
-    "anthropic/claude-sonnet-5": "#df7d54",
-    "anthropic/claude-sonnet-4-6": "#e4885f",
-    "anthropic/claude-haiku-4-5-20251001": "#eda57f",
-    # OpenAI — blue
-    "openai/gpt-5.4-pro": "#2a5f9e",
-    "openai/gpt-5.4": "#3a6fad",
-    "openai/gpt-5.3-codex": "#4278b4",
-    "openai/gpt-5.3-chat-latest": "#4f84bd",
-    "openai/gpt-5.2": "#5b8fc5",
-    "openai/gpt-5-mini": "#7fa9d4",
-    "openai/gpt-oss-120b": "#94b7dc",
-    # Google — purple
-    "google/gemini-3.1-deep-think": "#5d3fa8",
-    "google/gemini-3.1-pro": "#6d50b5",
-    "google/gemini-3.5-flash": "#9a80d1",
-    "google/gemini-3-flash-preview": "#a892d9",
-    # xAI — greyscale
-    "x-ai/grok-4.3": "#3a3a3a",
-    "x-ai/grok-4.1": "#525252",
-    "x-ai/grok-4": "#6b6b6b",
-    # Zhipu — teal
-    "z-ai/glm-5.1": "#3f9e8a",
-    "z-ai/glm-5": "#52ab98",
-    # Moonshot — magenta
-    "moonshotai/kimi-k2.6": "#b84a8f",
-    "moonshotai/kimi-k2.5": "#c25e9c",
-    "moonshotai/kimi-k2-0905": "#cc72a9",
+    m: _ramp_color(p, i / max(1, len(ms) - 1))
+    for p, ms in MODEL_ORDER.items()
+    for i, m in enumerate(ms)
 }
+
+
+# -- model → display label ---------------------------------------------------
+
+import re  # noqa: E402
+
+_DATE_SUFFIX = re.compile(r"-20\d{6}$|-\d{2}-20\d{2}$|-0[1-9]\d{2}$|-1[0-2]\d{2}$")
+_CLAUDE_VER = re.compile(r"\b(\d)-(\d)\b")
+
+
+def model_label(model_id: str) -> str:
+    """Canonical human-facing display name for a model id.
+
+    Looks up ``MODEL_LABELS`` first; falls back to a rule-based
+    prettifier: strip provider/router prefix, strip ``-YYYYMMDD`` /
+    ``-MMDD`` snapshot suffixes, ``4-8 → 4.8`` for Claude, split on
+    ``-``, title-case each token, then apply brand-casing exceptions
+    (``Gpt→GPT``, ``Deepseek→DeepSeek``, ``mini`` stays lowercase, …).
+    """
+    provider, name = _resolve_provider(model_id)
+    canonical = f"{provider}/{name}" if provider else name
+    if (label := MODEL_LABELS.get(model_id) or MODEL_LABELS.get(canonical)):
+        return label
+    # Heuristic fallback.
+    n = _DATE_SUFFIX.sub("", name)
+    n = n.removesuffix("-latest").removesuffix("-preview")
+    if provider == "anthropic":
+        n = _CLAUDE_VER.sub(r"\1.\2", n)
+    parts = [p for p in n.replace("_", "-").split("-") if p]
+    out: list[str] = []
+    for p in parts:
+        if p in LOWERCASE_TOKENS:
+            out.append(p)
+        elif re.fullmatch(r"\d+(\.\d+)?[a-z]?", p):  # 5.4, 4o, 3n
+            out.append(p)
+        else:
+            t = p[:1].upper() + p[1:]
+            out.append(BRAND_CASE.get(t, t))
+    return " ".join(out)
+
+
+def model_labelmap(models: Sequence[str]) -> dict[str, str]:
+    """``{model_id: label}`` — for ``px.*`` axis relabelling or a
+    ``df.assign(label=df.model.map(model_labelmap(df.model)))`` column."""
+    return {m: model_label(m) for m in models}
 
 
 def install_template() -> None:
@@ -396,7 +398,7 @@ class Plots:
     """The ``wb.plots.*`` surface — thin wrappers over ``px``."""
 
     INK, ACCENT, OK, DANGER = INK, ACCENT, OK, DANGER
-    MODEL_COLORS = MODEL_COLORS
+    MODEL_COLORS, MODEL_LABELS = MODEL_COLORS, MODEL_LABELS
 
     link = staticmethod(link)
     annotate_top = staticmethod(annotate_top)
@@ -405,9 +407,11 @@ class Plots:
     survival = staticmethod(survival)
     model_color = staticmethod(model_color)
     model_colormap = staticmethod(model_colormap)
+    model_label = staticmethod(model_label)
+    model_labelmap = staticmethod(model_labelmap)
 
     def __repr__(self) -> str:
         return (
             "<wb.plots · link annotate_top paired_slope replicate_grid "
-            "survival model_color model_colormap>"
+            "survival model_color model_colormap model_label model_labelmap>"
         )

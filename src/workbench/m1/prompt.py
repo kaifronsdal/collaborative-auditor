@@ -41,7 +41,7 @@ Read / compute (pure — caller displays or last-expr shows):
 - `wb.transcript(log, sample_id, *, at=None) -> TranscriptRef` — embed the full inspect-view for the human; you see a one-line summary only.
 - `await wb.read_transcript(log, sample_id, *, range=None) -> str` — plain text of the messages, for you to read.
 - `wb.plots.paired_slope(df, *, x, y, pair, hue=None)` / `wb.plots.annotate_top(fig, df, x, y, label, n)` — convenience wrappers around plotly.
-- `wb.plots.model_colormap(models: Sequence[str]) -> dict[str, str]` — pass as `color_discrete_map=` to `px.*` when a chart is colored by model id. Gives each provider a consistent hue (Anthropic orange, OpenAI blue, Google purple, …) and each tier a lightness (opus/pro darker, haiku/flash lighter). Always use this when comparing models.
+- `wb.plots.model_colormap(models) -> dict[str, str]` / `wb.plots.model_label(model_id) -> str` — pass the colormap as `color_discrete_map=` to `px.*` and relabel the axis with `df.model.map(wb.plots.model_label)` whenever a chart is colored/keyed by model id. Provider decides hue (Anthropic orange, OpenAI blue, Google purple, xAI grey, …); tier decides lightness (opus/pro darker, haiku/flash lighter). Labels are canonical (`Claude Opus 4.8`, `GPT-5 mini`, `Gemini 3.1 Pro`). Always use both when comparing models.
 
 ## Gating
 
