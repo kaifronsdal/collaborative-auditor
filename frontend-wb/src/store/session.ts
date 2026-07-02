@@ -66,6 +66,19 @@ export type RewriteDraft = {
   error?: string;
 };
 
+/** Which start card `+ New audit` opens. Persisted UI-side; the backend
+ *  doesn't care until a `start` / `start_orchestrator` is actually sent. */
+export type Mode = "desk" | "orch";
+const MODE_KEY = "workbench.mode";
+
+function readStoredMode(): Mode {
+  try {
+    return localStorage.getItem(MODE_KEY) === "orch" ? "orch" : "desk";
+  } catch {
+    return "desk";
+  }
+}
+
 /** Local id for the just-started Recents stub, before `current` arrives. */
 const PENDING_ID = "__pending__";
 
@@ -164,6 +177,10 @@ export type SessionState = {
   branchConfig: Record<string, BranchConfig>;
   /** Editable config for the next audit (pre-populates StartView pickers). */
   nextConfig: NextConfig;
+  /** Which start card the sidebar's MODES section has selected. Only affects
+   *  what `+ New audit` / the empty StartView renders — a running session's
+   *  mode is fixed by whether it has an `orchestrator`. */
+  mode: Mode;
 
   /**
    * Stash of the real branch id before we set `current = PENDING_BRANCH`.
@@ -188,6 +205,8 @@ export type SessionState = {
   }) => void;
   /** Update the sidebar's editable next-audit config. */
   setNextConfig: (patch: Partial<NextConfig>) => void;
+  /** Select which start card `+ New audit` opens; persisted to localStorage. */
+  setMode: (mode: Mode) => void;
   /**
    * Return to the empty StartView without tearing down the backend branch.
    * The branch stays in the session (clicking its Recents row re-views it via
@@ -376,6 +395,7 @@ export const useSession = create<SessionState>((set, get) => ({
     auditor_config: {},
     target_config: {},
   },
+  mode: readStoredMode(),
   prevCurrent: null,
   error: null,
   rewriteDrafts: {},
@@ -719,6 +739,11 @@ export const useSession = create<SessionState>((set, get) => ({
 
   setNextConfig: (patch) => {
     set((state) => ({ nextConfig: { ...state.nextConfig, ...patch } }));
+  },
+
+  setMode: (mode) => {
+    try { localStorage.setItem(MODE_KEY, mode); } catch { /* ignore */ }
+    set({ mode });
   },
 
   fetchSessions: async () => {

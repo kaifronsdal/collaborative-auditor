@@ -194,10 +194,10 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
 
             print("Capturing M1 screenshots:")
 
-            # ── 01 StartView → Orchestrator tab ─────────────────────────────
+            # ── 01 StartView — sidebar MODES → Orchestrator ─────────────────
             await page.goto(f"http://127.0.0.1:{ui_port}/?session=fresh")
             await page.wait_for_selector(".start-view", timeout=15_000)
-            await page.get_by_role("button", name="Orchestrator").click()
+            await page.locator(".side-mode", has_text="Orchestrator").click()
             await page.wait_for_selector(".start-card .start-btn")
             await _shot(page, "01-orch-start")
 

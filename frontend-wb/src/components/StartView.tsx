@@ -7,36 +7,14 @@ import { ModelPicker, readStoredConfig } from "./ModelPicker";
 import type { GenerateConfigDict } from "./ModelPicker";
 
 /**
- * Empty-state landing screen. Two tabs: the M0 "Desk" seed form (unchanged)
- * and the M1 "Orchestrator" launcher (model dropdown → `start_orchestrator`).
+ * Empty-state landing screen. Mode selection lives in the sidebar's MODES
+ * section; this just renders whichever card `store.mode` points at.
  */
 export function StartView(): JSX.Element {
-  const [tab, setTab] = useState<"desk" | "orch">("desk");
+  const mode = useSession((s) => s.mode);
   return (
     <div className="start-view">
-      <div className="start-tabs">
-        <button
-          type="button"
-          className={`start-tab${tab === "desk" ? " on" : ""}`}
-          onClick={() => setTab("desk")}
-        >
-          Collaborative Auditor
-          <span className="start-tab-sub">
-            you and a model co-write probes, turn by turn
-          </span>
-        </button>
-        <button
-          type="button"
-          className={`start-tab${tab === "orch" ? " on" : ""}`}
-          onClick={() => setTab("orch")}
-        >
-          Orchestrator
-          <span className="start-tab-sub">
-            an agent runs audits, analyzes results, and drafts findings for you
-          </span>
-        </button>
-      </div>
-      {tab === "desk" ? <DeskStartCard /> : <OrchStartCard />}
+      {mode === "desk" ? <DeskStartCard /> : <OrchStartCard />}
     </div>
   );
 }
@@ -71,7 +49,7 @@ function OrchStartCard(): JSX.Element {
         onChange={(e) => setSystemPrompt(e.target.value)}
       />
       <div className="start-controls">
-        {/* The tab already says "Orchestrator" — the role chip was redundant. */}
+        {/* The sidebar entry already says "Orchestrator" — no role chip. */}
         <label className="mp-field">
           <span className="mp-role">model</span>
           <select

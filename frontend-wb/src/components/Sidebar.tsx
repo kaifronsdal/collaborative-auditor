@@ -1,11 +1,17 @@
 import type { JSX } from "react";
 
 import type { BranchId, BranchMeta } from "../lib/wire";
-import { useSession } from "../store/session";
+import { type Mode, useSession } from "../store/session";
 import { useEffect, useState } from "react";
 import { Chevron } from "./icons";
 
 const COLLAPSED_KEY = "workbench.sidebarCollapsed";
+
+/** Sidebar MODES section entries — icon + label, claude.ai "Products" style. */
+const MODES: { id: Mode; icon: string; label: string }[] = [
+  { id: "desk", icon: "bi-chat-left-text", label: "Collaborative Auditor" },
+  { id: "orch", icon: "bi-terminal", label: "Orchestrator" },
+];
 
 /** Format a timestamp as a relative string ("2m ago", "3h ago", etc.). */
 function relTime(ts: number): string {
@@ -103,6 +109,8 @@ export function Sidebar(): JSX.Element {
   const status = useSession((s) => s.status);
   const branches = useSession((s) => s.branches);
   const send = useSession((s) => s.send);
+  const mode = useSession((s) => s.mode);
+  const setMode = useSession((s) => s.setMode);
 
   useEffect(() => {
     void fetchSessions();
@@ -193,6 +201,23 @@ export function Sidebar(): JSX.Element {
       <button className="side-new" onClick={newAudit}>
         <span className="plus">+</span> New audit
       </button>
+
+      <div className="side-section">Modes</div>
+      <div className="side-modes">
+        {MODES.map((m) => (
+          <button
+            key={m.id}
+            className={`side-mode${mode === m.id ? " active" : ""}`}
+            // Sets the "next new" preference. When StartView is up the card
+            // swaps immediately; when a session is live the running layout is
+            // fixed, so this only affects what `+ New audit` opens next.
+            onClick={() => setMode(m.id)}
+          >
+            <i className={`bi ${m.icon}`} />
+            <span>{m.label}</span>
+          </button>
+        ))}
+      </div>
 
       <div className="side-section">Recents</div>
       <div className="side-recents">
