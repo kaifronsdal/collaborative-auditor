@@ -364,10 +364,10 @@ def main() -> None:
     p.add_argument(
         "--dump",
         type=Path,
-        default=Path("frontend-wb/fixtures/smoke_branch_deep.json"),
-        help="where to write Scenario A's wire capture (default: %(default)s)",
+        default=None,
+        help="where to write Scenario A's wire capture "
+        "(e.g. frontend-wb/fixtures/smoke_branch_deep.json)",
     )
-    p.add_argument("--no-dump", dest="dump", action="store_const", const=None)
     anyio.run(_amain, p.parse_args())
 
 

@@ -9,8 +9,8 @@ what's left is upstream PRs and larger refactors deferred to M1.3.
 |---|---|---|
 | `inspect_petri._task.audit` | `auditor: Agent \| None = None` param → `audit_solver` | `wb.run_audits` stays one line; `batch_auditor` with `drain_control` hook |
 | `inspect_petri._auditor.agent.auditor_agent` | `before_turn: Callable[[AgentState, int], Awaitable[bool]]` fired at loop top | delete `CONTROL`/`SampleControl`/`drain_control` (~50 lines in `run.py`) |
-| `inspect_petri.__init__` | re-export `render_target_timeline`, `RenderedTarget` | `wb.transcript`/`wb.read_transcript` = 3-line wrappers |
-| `inspect_petri.util` (new) | `flat_score_values` (from `petri_ukaisi.analysis`) + `audits_df(log_dir)` | `AuditRunHandle.audits` per-dimension columns |
+| `inspect_petri.__init__` | re-export `render_target_timeline`, `RenderedTarget` — **landed @ `7d27f77`** (PR #4) | `wb.transcript`/`wb.read_transcript` = 3-line wrappers |
+| `inspect_petri.util` (new) | `flat_score_values` (from `petri_ukaisi.analysis`) + `audits_df(log_dir)` — **landed @ `f60b274`** (PR #3) | `AuditRunHandle.audits` per-dimension columns |
 | `inspect_ai` (upstream candidate) | guard removal + `init_active_samples` no-op — already on `model-event-output-streaming` @ `4636d9a6` | concurrent `eval_async` |
 | `inspect_ai.log._samples.ActiveSample` | add `store: Store` field (pass `state.store` at `_eval/task/run.py:1195`) | `import_running` v2 — snapshot a running sample's tape without stopping it |
 
@@ -23,11 +23,13 @@ what's left is upstream PRs and larger refactors deferred to M1.3.
 - **inspect reuse:** `_wire_bundle` → `jsonable_python` (recurses, so nested
   numpy/bytes coerce too); log discovery → `active_samples()[].log_location`;
   `python_tool` gains `code_viewer` for transcript rendering.
-- **`StepGated` mixin** (`gate.py`) — `Orchestrator` inherits; `_await_gate` /
-  `_rearm_if_playing` name the pattern. `Branch` adoption is a follow-up
-  commit (touches working M0 code).
-- **`RunHandle._start()`** owns the `display → task → watcher` wiring
-  instead of `_launch` reaching into privates.
+- **`StepGated` mixin** (`gate.py`) — `Orchestrator` and `Branch` inherit;
+  `await_step` / `rearm` name the pattern.
+- **`_PollingHandle` base + `RunHandle.launch` classmethod** own the
+  `display → task → watcher` wiring instead of a free `_launch` reaching
+  into privates.
+- **`Session.start_orchestrator` / `notify` / `emit` + `Orchestrator.send`**
+  — server.py `orch_*`/`step`/`play`/`pause` cases collapsed onto these.
 - **`CONTROL` cleanup** — `_watch` pops the run's ids on finish.
 - **Deny → return** — `run_audits` on deny returns a settled
   `AuditRunHandle(error="denied: …")` instead of raising, so the model
@@ -40,8 +42,6 @@ what's left is upstream PRs and larger refactors deferred to M1.3.
   `acp_transport` set, which needs `acp_server=True` (binds a socket). The
   petri `before_turn` PR is the cleaner path for `run_audits`; `AgentChannel`
   is the path for `run_eval` on channel-based agents.
-- **`Branch(StepGated)`** + collapse `server.py` `orch_*`/`step`/`play`/`pause`
-  cases — separate commit, touches M0.
 - **`_LIVE` → `OrchestratorKernel._instance`** — the guarded resources
   (`InteractiveShell.instance()`, `sys.stdout`) are seized by the kernel,
   not the orchestrator. Plus `close()` context-manager.

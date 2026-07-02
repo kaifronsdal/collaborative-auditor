@@ -11,7 +11,7 @@ scripts in `~/.claude/jobs/db64a254/tmp/proto_{A,B,C}.py`.
 
 | | **A · in-process `eval_async`** | **B · subprocess `inspect eval`** | **C · in-process `Branch` fanout** |
 |---|---|---|---|
-| Shared code with `run_eval` | ✓✓ same `_launch()` | ✓✓ same, different spawner | ✗ separate path |
+| Shared code with `run_eval` | ✓✓ same `RunHandle.launch()` | ✓✓ same, different spawner | ✗ separate path |
 | Warm startup | **0.30–0.35 s** / call | **~2.0 s** fixed (`import inspect_ai`) | ~0 |
 | Cold startup | ~2.8 s (pre-warmable) | ~2.0 s every time | ~0 |
 | Progress latency | 50–150 ms (`.eval` poll, `log_buffer=1`) | 50–300 ms (`--log-buffer 1`) | ~0 (event-streamed) |
@@ -25,23 +25,24 @@ scripts in `~/.claude/jobs/db64a254/tmp/proto_{A,B,C}.py`.
 
 ## Decision: **A**, with B as `detached=True` and pin-to-desk for pause/resample
 
-`run_audits` and `run_eval` share one launcher:
+`run_audits` and `run_eval` share one launcher — `_PollingHandle._start`
+owns the `display → task → watcher` wiring, `RunHandle.launch` wraps it
+for `eval_async`:
 
 ```python
-async def _launch(task, *, log_dir, handle_cls, **kw) -> RunHandle:
-    h = handle_cls(task, log_dir)
-    h._dh = display(h, display_id=h.id)
-    h._task = asyncio.create_task(
-        eval_async(task, log_dir=log_dir, log_buffer=1, **kw)
-    )
-    asyncio.create_task(h._watch(h._task))   # polls .eval, dh.update()s
-    return h
+@classmethod
+def launch(cls, task, *, total, log_dir=None, **eval_kw) -> Self:
+    log_dir = log_dir or tempfile.mkdtemp(prefix="wb-run-")
+    h = cls(task_name=task.name, log_dir=log_dir, total=total, ...)
+    return h._start(
+        eval_async(task, log_dir=log_dir, log_buffer=1, **eval_kw)
+    )   # _start: display(h) → create_task → _watch (polls .eval, dh.update()s)
 ```
 
 `run_audits(seeds, cfg, *, description, n_per_seed=1)` builds
 `petri_audit_task(seeds, cfg, n_per_seed, auditor=batch_auditor)` and calls
-`_launch(handle_cls=AuditRunHandle)`. `run_eval(task, **kw)` calls
-`_launch(handle_cls=EvalHandle)`. The petri-specific "conveniences and
+`AuditRunHandle.launch(...)`. `run_eval(task, **kw)` calls
+`RunHandle.launch(...)`. The petri-specific "conveniences and
 specialized UI" live entirely in `RunProposal` / `AuditRunHandle`:
 
 - `RunProposal._repr_mimebundle_`: seed previews, strike-to-remove; verdict
