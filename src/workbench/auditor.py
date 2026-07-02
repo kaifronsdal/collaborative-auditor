@@ -21,13 +21,11 @@ fork/replay would desync). ``resolve_compaction(False)`` returns petri's
 ``CompactNone`` no-op, so the loop calls ``compact.compact_input`` /
 ``record_output`` unconditionally at zero cost.
 
-What we still take from petri (the load-bearing parts):
-
-- ``auditor_tools()`` — tool implementations (send_message, rollback, …)
-- ``audit_tape()`` / ``Tape.replayable`` — record/replay; anchor/branch events
-- ``resolve_compaction`` / ``auditor_approval`` — the unattended-run policies
-- The system/user prompt templates and ``eager_resume`` correction
-- ``run_audit()`` itself — the auditor+target task-group orchestration
+The load-bearing petri machinery — model resolution, tape-wrapped
+``generate``/``today``, config-digest guard, prompt templating,
+compaction/approval resolve, and the eager-resume tool phase — is now a
+straight import of ``auditor_prelude`` / ``run_turn_tools``. What remains
+here is exactly the desk/batch-specific control flow layered on top.
 """
 
 from __future__ import annotations
@@ -40,31 +38,19 @@ from inspect_ai.event import AnchorEvent, ModelEvent
 from inspect_ai.log import transcript
 from inspect_ai.model import (
     ChatMessage,
-    ChatMessageSystem,
     ChatMessageUser,
     CompactionStrategy,
     GenerateConfig,
     ModelOutput,
-    execute_tools,
     get_model,
 )
-from inspect_petri._auditor import AuditTape, audit_tape, auditor_tools
-from inspect_petri._auditor._audit_tape import (  # noqa: PLC2701
-    TODAY_SOURCE,
-    config_digest,
-    today,
+from inspect_petri._auditor import (
+    audit_tape,
+    auditor_prelude,
+    auditor_tools,
+    run_turn_tools,
 )
-from inspect_petri._auditor.agent import (  # noqa: PLC2701
-    AUDITOR_CONTINUE_PROMPT,
-    AUDITOR_SYSTEM_MESSAGE,
-    AUDITOR_USER_MESSAGE,
-    _eager_resume_inject,
-    _eager_resume_strip_on_error,
-    _format_tools_prompt,
-)
-from inspect_petri._auditor.compaction import resolve_compaction  # noqa: PLC2701
-from inspect_petri._auditor.tools import auditor_approval  # noqa: PLC2701
-from inspect_petri.target import controller
+from inspect_petri._auditor.agent import AUDITOR_CONTINUE_PROMPT  # noqa: PLC2701
 
 from workbench.sources import GEN_SOURCE, TURN_END_SOURCE
 
@@ -106,55 +92,16 @@ def workbench_auditor(
     @agent
     def _factory() -> Agent:
         async def execute(state: AgentState) -> AgentState:
-            agent_model = get_model(role="auditor", required=True)
-            target_model = get_model(role="target", required=True)
-            # Built per-execute (not at factory time) so realism_approver's
-            # closure history is per-sample; at factory scope one history
-            # would be shared across all N batch samples.
-            approval_policies = auditor_approval(realism_filter, approval)
+            model_name = get_model(role="auditor", required=True).name
             tape = audit_tape()
             assert tape is not None, "workbench_auditor requires audit_context()"
-            generate = tape.replayable(agent_model.generate, source=GEN_SOURCE)
-            get_today = tape.replayable(today, source=TODAY_SOURCE)
-            today_date = await get_today()
-
-            store = AuditTape()
-            if not store.seed_instructions:
-                store.seed_instructions = controller().state.seed_instructions
-            digest = config_digest(
-                auditor_model=agent_model.name,
-                target_model=target_model.name,
-                system_message=AUDITOR_SYSTEM_MESSAGE,
-                user_message=AUDITOR_USER_MESSAGE,
-                compaction=compaction is not False,
+            generate, compact, approval_policies, _ = await auditor_prelude(
+                state,
+                max_turns=max_turns,
+                tools=tools,
+                compaction=compaction,
                 realism_filter=realism_filter,
-            )
-            if store.config_digest and store.config_digest != digest:
-                raise ValueError(
-                    f"Resumed audit config does not match the recording "
-                    f"({store.config_digest} vs {digest}); replay would desync."
-                )
-            store.config_digest = digest
-
-            seed = controller().state.seed_instructions
-            seed_tools = controller().state.seed_tools
-            template_vars = {
-                **controller().state.metadata,
-                "max_turns": max_turns,
-                "target_model": target_model.name,
-                "seed_instructions": seed,
-                "today_date": today_date,
-                "skills_prompt": "",
-                "tools_prompt": _format_tools_prompt(seed_tools) if seed_tools else "",
-            }
-            state.messages[:] = [
-                ChatMessageSystem(
-                    content=AUDITOR_SYSTEM_MESSAGE.format_map(template_vars)
-                ),
-                ChatMessageUser(content=AUDITOR_USER_MESSAGE.format_map(template_vars)),
-            ]
-            compact = resolve_compaction(
-                compaction, state.messages[:], tools, agent_model
+                approval=approval,
             )
 
             for turn in range(max_turns):
@@ -177,29 +124,13 @@ def workbench_auditor(
                 divergent = bool(tape.pending) and len(tape.log) >= tape.prefix_len
                 state.output = await generate(input=input_msgs, tools=tools)
                 if divergent:
-                    _emit_divergent(
-                        agent_model.name, list(state.messages), state.output
-                    )
+                    _emit_divergent(model_name, list(state.messages), state.output)
                 state.messages.append(state.output.message)
                 await compact.record_output(input_msgs, state.output)
                 hooks.post_generate()
 
                 if state.output.message.tool_calls:
-                    injected_resume = _eager_resume_inject(state.output, turn)
-                    messages, exec_output = await execute_tools(
-                        messages=state.messages, tools=tools, approval=approval_policies
-                    )
-                    if injected_resume is not None:
-                        messages, state.output = _eager_resume_strip_on_error(
-                            injected_resume, messages, state.output
-                        )
-                    if exec_output is not None:
-                        state.output = exec_output
-                    state.messages.extend(messages)
-                    if any(
-                        m.role == "tool" and m.function == "end_conversation"
-                        for m in messages
-                    ):
+                    if await run_turn_tools(state, tools, approval_policies, turn):
                         break
                 else:
                     state.messages.append(
