@@ -214,8 +214,9 @@ body {
 /* ---- StartView ---- */
 .start-view {
   flex: 1; display: flex; flex-direction: column;
-  align-items: center; justify-content: center;
-  padding: 40px 24px 60px; gap: 24px;
+  /* top-anchored, not dead-center — the card reads as unmoored otherwise */
+  align-items: center; justify-content: flex-start;
+  padding: 15vh 24px 60px; gap: 24px;
   overflow-y: auto;
 }
 
@@ -238,6 +239,9 @@ body {
   background: var(--bg-000); border-bottom: 1px solid var(--bg-000);
   position: relative; z-index: 1;
 }
+/* tabs sit flush on the card — square its top corners so the 14px radius
+   doesn't peek out past the tabs' straight bottom edge */
+.start-tabs + .start-card { border-top-left-radius: 0; border-top-right-radius: 0; }
 
 .mp-field {
   display: inline-flex; align-items: center; gap: 6px;

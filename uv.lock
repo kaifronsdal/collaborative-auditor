@@ -19,12 +19,9 @@ exclude-newer-span = "P1W"
 
 [options.exclude-newer-package]
 inspect-petri = false
-openai = false
 inspect-ai = false
-inspect-swe = false
 inspect-scout = false
-aisitools = false
-anthropic = false
+inspect-swe = false
 
 [[package]]
 name = "agent-client-protocol"

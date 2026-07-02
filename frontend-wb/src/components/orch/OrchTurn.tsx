@@ -223,6 +223,12 @@ function CodeCell({
   // Already-detached/background cells don't need it.
   const canDetach = running && !detached && !background;
   const showBgChip = detached || background || settledBg != null;
+  // When expanded the body already shows line 1, so the head gist would just
+  // duplicate it — swap for a faint `python · N lines` label instead.
+  const loc = code.trimEnd().split("\n").length;
+  const gist = open
+    ? `python · ${loc} line${loc === 1 ? "" : "s"}`
+    : firstNonBlankLine(code);
   const toggle = (): void => {
     if (forceOpen) return;
     userToggled.current = true;
@@ -235,7 +241,11 @@ function CodeCell({
         {...(!forceOpen && { role: "button", tabIndex: 0, onClick: toggle })}
       >
         <i className={`bi bi-chevron-${open ? "down" : "right"} cc-chev`} />
-        <code className="cc-gist">{firstNonBlankLine(code)}</code>
+        {open ? (
+          <span className="cc-gist cc-lang">{gist}</span>
+        ) : (
+          <code className="cc-gist">{gist}</code>
+        )}
         {errored && !running && (
           <span className="cell-status err" title="cell raised">
             <i className="bi bi-exclamation-triangle-fill" /> error

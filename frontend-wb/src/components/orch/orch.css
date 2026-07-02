@@ -412,9 +412,10 @@
   outline: none;
 }
 
-/* RunCard (§8/§11/§12) */
+/* RunCard (§8/§11/§12) — `.out-task` at full ink so the adjacent `.out-id`
+   hash (ink-faint) reads as clearly secondary. */
 .out-head .out-task {
-  font: 12px var(--mono); color: var(--ink-mid); text-transform: lowercase;
+  font: 12px var(--mono); color: var(--ink); text-transform: lowercase;
 }
 .out-head .out-id { font: 10.5px var(--mono); color: var(--ink-faint); }
 .out-live {
@@ -543,12 +544,17 @@
   font: 11.5px var(--mono); color: var(--ink-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.cc-gist.cc-lang { font: 11px var(--sans); }
 .cc-head .cc-bg-chip,
+.cc-head .cc-bg-btn,
 .cc-head .cell-status,
 .cc-head .turn-no { flex-shrink: 0; margin-left: 8px; }
 
-/* Traceback summary card */
-.out.traceback .out-kind { text-transform: none; letter-spacing: 0; }
+/* Traceback summary card — ename inherits danger to match icon + evalue
+   (base `.out-kind` forces ink-dim, which read as grey next to a red icon). */
+.out.traceback .out-kind {
+  text-transform: none; letter-spacing: 0; color: inherit; font-size: 11.5px;
+}
 .tb-body { padding: 10px 14px 8px; }
 .tb-evalue {
   font: 12.5px/1.4 var(--sans); color: var(--danger);
