@@ -171,6 +171,37 @@ def model_labelmap(models: Sequence[str]) -> dict[str, str]:
     return {m: model_label(m) for m in models}
 
 
+def by_model(
+    df: pd.DataFrame, col: str = "model", *, order: bool = True
+) -> dict[str, Any]:
+    """Kwargs to splat into any ``px.*`` call for model-colored charts.
+
+        >>> px.bar(df, x="model", y="score", **wb.plots.by_model(df))
+
+    Sets ``color=col`` + ``color_discrete_map`` (keyed on both raw ids
+    *and* their ``model_label``, so it works whether the axis shows ids
+    or labels) + ``category_orders`` (provider hue then ramp position,
+    so same-provider models sit adjacent and flagship-first).
+    """
+    models = list(dict.fromkeys(df[col]))
+    labels = model_labelmap(models)
+    cmap = model_colormap(models)
+    # Also key the map on labels so ``x=df.model.map(model_label)`` or a
+    # pre-labelled column still picks up the right colors.
+    cmap |= {labels[m]: cmap[m] for m in models}
+    kw: dict[str, Any] = {"color": col, "color_discrete_map": cmap}
+    if order:
+        def _key(m: str) -> tuple[int, float]:
+            p, _ = _resolve_provider(m)
+            h = PROVIDER_HUE.get(p, (999, 0))[0]
+            ms = MODEL_ORDER.get(p, [])
+            return (h, ms.index(m) / len(ms) if m in ms else 0.5)
+
+        ordered = sorted(models, key=_key)
+        kw["category_orders"] = {col: ordered + [labels[m] for m in ordered]}
+    return kw
+
+
 def install_template() -> None:
     """Register ``pio.templates["workbench"]`` and layer it on ``plotly_white``.
 
@@ -409,6 +440,7 @@ class Plots:
     model_colormap = staticmethod(model_colormap)
     model_label = staticmethod(model_label)
     model_labelmap = staticmethod(model_labelmap)
+    by_model = staticmethod(by_model)
 
     def __repr__(self) -> str:
         return (
