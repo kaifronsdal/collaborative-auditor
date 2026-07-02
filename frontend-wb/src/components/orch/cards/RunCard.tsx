@@ -154,7 +154,7 @@ export default function RunCard({ payload, displayId, send }: Props): JSX.Elemen
         <span className="er-score">
           {Object.entries(row.scores)
             .map(([k, v]) => `${k}=${String(v)}`)
-            .join(" ") || row.input}
+            .join(" ")}
         </span>
         <span className={`ar-status ${row.status}`}>{status}</span>
         {chip}

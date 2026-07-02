@@ -23,6 +23,11 @@ after each fix batch.
   card already covers it.
 - **r1** hide script-only `.out.html` (`:not(:has(> :not(script)))`) — kills
   the two empty boxes plotly's CDN-loader emits above the figure.
+- **r3 (polish)** `.eval-row .er-id { width: auto; min-width: 64px }`;
+  RunCard `.er-score` no longer falls back to `row.input` (empty span
+  stays as the flex:1 spacer so `.ar-status` right-aligns); `.cc-bg-btn`
+  drops the `bi-layer-backward` icon (text-only); `.gate-deny-reason`
+  `width: calc(100% - 28px)` so it doesn't overflow the card.
 - **r2** item 16 dedupe in `OrchTurn`: drop non-stable outputs whose wb
   `payload.id` matches a stable one in the same turn (RunCard no longer
   double-mounts when the handle is both `display()`ed and returned).
@@ -147,16 +152,14 @@ Emitted by the tsx pass; need styling. Grouped by component.
   `.row-dot-{running,done,error,stopped}` (8px, running pulses),
   `.ar-in-desk` (transient chip, orch accent, fade-out ~2s).
 
-## Open after r2 (screenshot review)
+## Open after r3 (screenshot review — <3 actionable, iteration stopped)
 
-- **05** plotly x-axis labels clipped — turned out to be plotly's own
-  default margins at `height=260`, not container overflow. Fixed the
-  screenshot cell (`margin=dict(...)`) but real cells will need
-  `wb.plots.*` helpers to set sane defaults (backend).
-- **04** `.eval-row .er-id { width: 140px }` leaves a wide gap for short
-  ids like `demo-0`; consider `min-width` + `max-width` instead.
-- **03** `bi-layer-backward` glyph in `.cc-bg-btn` still reads a touch
-  heavy; candidate for a plain-text-only button.
+- **01** StartView Orchestrator tab: instruction textarea renders
+  zero-height (out of orch-column scope; `StartView.tsx` owner).
+- Deferred to `Output.tsx` owner: items 15 (stable-update `live` badge
+  threaded through all branches) and 17 (plotly loading placeholder).
+- `wb.plots.*` should default `layout.margin` so small figures don't
+  self-clip (backend).
 
 ## Process for each iteration round
 

@@ -499,9 +499,10 @@
 }
 .sp-row-struck { text-decoration: line-through; opacity: .55; }
 .gate-deny-reason {
-  width: 100%; margin: 8px 14px 0; box-sizing: border-box;
+  display: block; width: calc(100% - 28px); margin: 8px 14px 0;
   border: 1px solid var(--danger); border-radius: var(--r-sm);
   padding: 6px 10px; font: 12.5px var(--sans); background: var(--bg-000);
+  outline: none;
 }
 
 /* RunCard (§8/§11/§12) */
@@ -535,11 +536,14 @@
   animation: fade-in-desk .15s ease-out;
 }
 @keyframes fade-in-desk { from { opacity: 0; transform: translateX(-4px); } }
-/* eval-row: `.er-id` wraps a `.qref`; keep it a plain link, not the boxed chip */
+/* eval-row: `.er-id` wraps a `.qref`; keep it a plain link, not the boxed chip.
+   Mockup fixes width at 140px, but real ids (`demo-0`, `a-3f2c`) are short —
+   let the id column shrink so `.er-score` doesn't float mid-row. */
 .eval-row .er-id.qref,
 .audit-row .ar-id.qref {
   border: none; background: none; padding: 0;
 }
+.eval-row .er-id { width: auto; min-width: 64px; max-width: 160px; }
 .eval-row, .audit-row { cursor: pointer; }
 
 /* HTML outputs whose only children are <script> (plotly's CDN loader,
@@ -568,10 +572,12 @@
 }
 .out.bare { margin-top: 10px; }
 
-/* cc-head `run in background` — icon was inheriting the button's 11px but
-   `bi-layer-backward` glyph reads oversized at that scale. */
-.cc-bg-btn i { font-size: 10px; line-height: 1; }
+/* cc-head `run in background` — the `bi-layer-backward` glyph reads heavy
+   next to 11px text; the label is self-explanatory, so drop the icon. */
+.cc-bg-btn i { display: none; }
 .cc-head .fx-dot { margin-right: 2px; }
+/* head-bg-btn variant keeps its icon (label is just `bg`). */
+.head-bg-btn i { font-size: 10px; }
 
 /* three-column desk grid */
 .desk-body.has-orch .columns {
