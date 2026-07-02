@@ -14,7 +14,69 @@
 .orch-head {
   display: flex; align-items: center; gap: 10px;
 }
-.orch-head .rl-dot { margin-left: 2px; }
+/* `.column-head` (styles.css) forces uppercase 11px on the whole header; keep
+   that only on `.head-title` and let the meta chunks read as lowercase mono. */
+.orch-head .head-left {
+  display: inline-flex; align-items: center; gap: 7px; min-width: 0;
+  text-transform: none; letter-spacing: 0; font-weight: 400;
+}
+.orch-head .head-title {
+  font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.orch-head .head-sep { color: var(--border); }
+.orch-head .head-model,
+.orch-head .head-turn {
+  font: 11px var(--mono); color: var(--ink-dim);
+}
+.orch-head .head-status { font-size: 11px; color: var(--ink-faint); }
+.orch-head .head-status-waiting { color: var(--gate-text); font-weight: 500; }
+.orch-head .head-status-running { color: var(--accent-text); }
+.orch-head .head-status-ended { color: var(--ink-faint); }
+.orch-head .rl-dot { margin: 0 -1px 0 2px; }
+/* extend styles.css `.rl-dot-*` set for the tri-state (§3) */
+.rl-dot-idle   { background: transparent; border: 1.5px solid var(--ink-faint); box-sizing: border-box; }
+.rl-dot-gen    { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.rl-dot-exec   { background: hsl(38 85% 52%); animation: pulse 1.4s ease-in-out infinite; }
+.rl-dot-gate   { background: var(--gate); }
+/* `N waiting` header pill */
+.head-gate-wrap { position: relative; }
+.head-gate-jump {
+  border: 1px solid var(--gate); border-radius: var(--r-pill);
+  background: var(--gate-dim); color: var(--gate-text);
+  font: 11px var(--sans); padding: 2px 10px; cursor: pointer;
+}
+.head-gate-jump:hover { filter: brightness(.97); }
+.head-gate-pop {
+  position: absolute; top: calc(100% + 6px); left: 0; z-index: 20;
+  min-width: 260px; padding: 6px;
+  background: var(--bg-000); border: 1px solid var(--border); border-radius: var(--r-md);
+  box-shadow: 0 6px 20px hsl(0 0% 0% / .12);
+  font: 12px var(--sans); text-transform: none; letter-spacing: 0; font-weight: 400;
+}
+.hgp-row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; }
+.hgp-desc {
+  flex: 1; min-width: 0; color: var(--ink-mid); cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.hgp-desc:hover { color: var(--accent-text); }
+.hgp-btn {
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-000); padding: 2px 8px;
+  font: 11px var(--sans); color: var(--ink-mid); cursor: pointer;
+}
+.hgp-btn.deny { color: var(--danger); }
+.hgp-all {
+  width: 100%; margin-top: 4px; padding: 5px 0;
+  border: none; border-radius: var(--r-sm);
+  background: var(--gate); color: #fff; font: 12px var(--sans); cursor: pointer;
+}
+.head-bg-btn {
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-000); padding: 0 7px;
+  font: 10.5px var(--sans); color: var(--ink-dim); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 3px; height: 22px;
+}
 .orch-head-actions {
   margin-left: auto; display: inline-flex; gap: 2px;
 }
@@ -374,6 +436,115 @@
   background: var(--bg-200); font-size: 12.5px; color: var(--ink-mid);
 }
 .sys-chip .sc-icon { color: var(--ink-faint); flex-shrink: 0; margin-top: 2px; }
+
+/* ---- round-1 structural-pass classes (UI-ITERATION §New classes) ---- */
+
+/* composer addressee chip — orch accent so it reads distinct from M0's
+   auditor composer even after typing clears the placeholder. */
+.orch-col-wrap .composer { position: relative; padding-top: 26px; }
+.composer-to {
+  position: absolute; top: 8px; left: 14px;
+  font: 10.5px var(--mono); color: var(--gate-text);
+  background: var(--gate-dim); border: 1px solid hsl(265 40% 85%);
+  padding: 1px 8px; border-radius: var(--r-pill);
+}
+.composer-hint-running a { text-decoration: underline; cursor: pointer; }
+
+/* cc-head error chip (§18) */
+.cell-status.err {
+  display: inline-flex; align-items: center; gap: 4px;
+  font: 10.5px var(--sans); color: var(--danger);
+  padding: 1px 8px; border-radius: var(--r-pill);
+  background: hsl(0 70% 96%); border: 1px solid hsl(0 40% 82%);
+}
+.cell-status.err i { font-size: 10px; }
+
+/* prose soft-cap (§19) */
+.asst-prose.prose-capped {
+  max-height: 19em; overflow: hidden; position: relative;
+  mask-image: linear-gradient(#000 85%, transparent);
+  -webkit-mask-image: linear-gradient(#000 85%, transparent);
+}
+.prose-more {
+  display: block; margin: 4px auto 8px; padding: 2px 12px;
+  border: none; background: none; cursor: pointer;
+  font: var(--fs-xs) var(--sans); color: var(--accent-text);
+}
+
+/* PromptCard (§9) */
+.gate-waiting { animation: gate-breathe 2.4s ease-in-out infinite; }
+@keyframes gate-breathe { 50% { box-shadow: inset 3px 0 0 var(--gate), 0 0 0 1px hsl(265 40% 85%); } }
+.ask-opts.ask-opts-vert { flex-direction: row; }  /* keep pills; own-row wraps below */
+.ask-opt-key { font: 10px var(--mono); color: var(--ink-faint); margin-right: 2px; }
+.ask-opt-own-wrap {
+  flex-basis: 100%; display: flex; align-items: center; gap: 6px;
+}
+.ask-opt-own-wrap .ask-opt.own { flex: 1; }
+.ask-opt-send {
+  width: 24px; height: 24px; padding: 0;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-000); color: var(--ink-dim); cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.ask-opt-send:disabled { opacity: .35; cursor: default; }
+/* mockup: gated ask_human hides its `.out-head` — question + pills self-identify */
+.out.gated:has(> .ask-q) > .out-head { display: none; }
+.out.gated:has(> .ask-q) .ask-q { padding-top: 14px; }
+
+/* RunProposalCard (§10) */
+.sp-check { accent-color: var(--gate); margin-right: 8px; }
+.sp-seed {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sp-row-struck { text-decoration: line-through; opacity: .55; }
+.gate-deny-reason {
+  width: 100%; margin: 8px 14px 0; box-sizing: border-box;
+  border: 1px solid var(--danger); border-radius: var(--r-sm);
+  padding: 6px 10px; font: 12.5px var(--sans); background: var(--bg-000);
+}
+
+/* RunCard (§8/§11/§12) */
+.out-head .out-task {
+  font: 12px var(--mono); color: var(--ink-mid); text-transform: lowercase;
+}
+.out-head .out-id { font: 10.5px var(--mono); color: var(--ink-faint); }
+.out-live {
+  font: 9.5px var(--sans); letter-spacing: .04em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: var(--r-pill);
+  background: var(--accent-dim); color: var(--accent-text);
+  border: 1px solid hsl(215 50% 80%);
+}
+.fx-bar {
+  display: inline-block; width: 100px; height: 4px;
+  background: var(--bg-200); border-radius: 2px; overflow: hidden;
+  vertical-align: middle;
+}
+.fx-bar > i { display: block; height: 100%; background: var(--accent); }
+.out .fx-out .stat.err { display: inline; color: var(--danger); }
+.row-dot {
+  font-size: 8px; line-height: 1; flex-shrink: 0;
+}
+.row-dot-running { color: var(--accent-text); animation: pulse 1.4s ease-in-out infinite; }
+.row-dot-done    { color: var(--ok); }
+.row-dot-error   { color: var(--danger); }
+.row-dot-stopped { color: var(--ink-faint); }
+.ar-in-desk {
+  font: 10px var(--sans); color: var(--accent-text);
+  padding: 1px 7px; border-radius: var(--r-pill); background: var(--accent-dim);
+  animation: fade-in-desk .15s ease-out;
+}
+@keyframes fade-in-desk { from { opacity: 0; transform: translateX(-4px); } }
+/* eval-row: `.er-id` wraps a `.qref`; keep it a plain link, not the boxed chip */
+.eval-row .er-id.qref,
+.audit-row .ar-id.qref {
+  border: none; background: none; padding: 0;
+}
+.eval-row, .audit-row { cursor: pointer; }
+
+/* HTML outputs whose only children are <script> (plotly's CDN loader,
+   MathJax config) render as an empty white box — hide them. */
+.out.html:not(:has(> :not(script))) { display: none; }
 
 /* three-column desk grid */
 .desk-body.has-orch .columns {

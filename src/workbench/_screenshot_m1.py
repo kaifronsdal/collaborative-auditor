@@ -175,7 +175,7 @@ async def _amain() -> None:  # noqa: PLR0915
             # ── turn 3: run_eval → RunHandle card ───────────────────────────
             orch.step()
             await page.wait_for_selector(
-                '.orch-col .out .out-kind:text-matches("run · ")', timeout=30_000
+                ".orch-col .turn[data-turn='3'] .fx-out", timeout=30_000
             )
             # let the watcher tick to done (mockllm is fast)
             for _ in range(200):

@@ -9,7 +9,33 @@ after each fix batch.
 
 - Traceback wire (`kernel._settle` emits `{kind:"traceback"}` DisplayEvent)
 - `pd.set_option` caps (max_columns=12, max_rows=20, max_colwidth=80)
-- Card body CSS port + plotly bundle + pandas table + StartView tabs (in flight)
+- Card body CSS port + plotly bundle + pandas table + StartView tabs
+- **r1 (94b1c8a)** structural pass: items 1–3, 5–14, 18–19 in tsx
+- **r1 (css)** header layout (`.head-left`/`.head-sep`/`.head-model`/
+  `.head-turn`/`.head-status-*`, `.rl-dot-{gen,exec,gate,idle}`,
+  `.head-gate-jump`/pop); composer `to:` chip; `.cell-status.err` pill;
+  RunCard `.fx-bar`/`.row-dot-*`/`.out-task`/`.out-id`/`.out-live`/
+  `.ar-in-desk`; `.er-id.qref` de-boxed; PromptCard `.ask-opt-own-wrap`/
+  `.ask-opt-send`/`.ask-opt-key` + hide `.out-head` on gated ask;
+  `.prose-capped`/`.prose-more`; RunProposal `.sp-*`/`.gate-deny-reason`.
+- **r1** `Output.tsx`: `kind:"traceback"` renders `.out.traceback` (not JSON
+  fallback); `OrchTurn` suppresses redundant `<Traceback>` when the display
+  card already covers it.
+- **r1** hide script-only `.out.html` (`:not(:has(> :not(script)))`) — kills
+  the two empty boxes plotly's CDN-loader emits above the figure.
+- **r1 (infra)** `_screenshot_m1` was broken by `a73f0d5`'s lockfile shrink:
+  `frontend-wb`'s `pnpm install` (which owns ts-mono packages via
+  `pnpm-workspace.yaml`) emptied their `node_modules/`. Fixed by re-running
+  `pnpm install` in `inspect_ai/.../ts-mono/`; `vite.config.ts` now aliases
+  `@tsmono/*` subpaths + pins `esbuild.tsconfigRaw` (string) so the dev
+  server survives either state.
+
+## Backend-needed
+
+- `RunHandle._repr_mimebundle_`: `elapsed` (formatted `"2m14s"`), per-row
+  `error` (exception class name) — RunCard already reads both when present.
+- `Orchestrator.view()["status"] == "waiting"` reaches the WS stream on gate
+  open (currently only on next `view()` push; screenshot harness bypasses).
 
 ## Structural (component/tsx — not CSS)
 
@@ -114,6 +140,19 @@ Emitted by the tsx pass; need styling. Grouped by component.
   `> i` fill = orch accent), `.stat.err` (danger), `.row-dot` +
   `.row-dot-{running,done,error,stopped}` (8px, running pulses),
   `.ar-in-desk` (transient chip, orch accent, fade-out ~2s).
+
+## Open after r1 (screenshot review)
+
+- **04** RunCard duplicated (item 16 — `Output.tsx` owner). The stable
+  `display()` inside `run_eval` and the last-expr `h` both mount.
+- **05** plotly x-axis labels clipped at bottom edge (figure height 260 but
+  container gives no bottom padding on `.out.bare.plotly-host`).
+- **02** DataFrame `.out.html` caption `3 rows × 2 columns` renders in body
+  font — should be `.df-more` xs faint (pandas emits `<p>`, not our class).
+- **02** `'v2'` plain-text output floats with no context; mockup wraps
+  reprs as `.repr` inline block.
+- **03** `run in background` cc-head button icon (`bi-layer-backward`) is
+  large relative to text; drop icon or size to 10px.
 
 ## Process for each iteration round
 

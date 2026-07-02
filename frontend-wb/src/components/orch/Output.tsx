@@ -35,6 +35,20 @@ export function Output({ id, bundle, meta, stable }: OutputProps): JSX.Element |
 
   const wb = bundle[WB_MIME];
   if (wb != null) {
+    // `kernel._settle` emits `{kind:"traceback", ename, text}` as a display so
+    // the error surfaces before `ToolEvent.error` settles. Render it directly
+    // (no card module for a two-field payload) rather than the JSON fallback.
+    if (wb.kind === "traceback") {
+      return (
+        <div className="out traceback" data-display-id={id}>
+          <div className="out-head">
+            <i className="bi bi-exclamation-triangle" />
+            <span className="out-kind">{String(wb.ename ?? "error")}</span>
+          </div>
+          <pre className="out-plain err">{String(wb.text ?? "")}</pre>
+        </div>
+      );
+    }
     const Card = cards[wb.kind];
     return Card ? (
       <Card payload={wb} displayId={id} send={send} />

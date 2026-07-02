@@ -61,6 +61,10 @@ export default defineConfig({
         replacement: tsmono("inspect-components/src/chat/tools/customToolRendering.tsx"),
       },
       {
+        find: /^@tsmono\/inspect-components\/transcript\/timeline$/,
+        replacement: tsmono("inspect-components/src/transcript/timeline/logic.ts"),
+      },
+      {
         find: /^@tsmono\/inspect-components\/transcript\/timeline\/swimlanes$/,
         replacement: tsmono("inspect-components/src/transcript/timeline/components/TimelineSwimLanes.tsx"),
       },

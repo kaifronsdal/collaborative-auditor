@@ -28,9 +28,12 @@ export function OrchTurn({ data, bgCells }: Props): JSX.Element {
   // A cell "errored" as soon as the kernel emits its `{kind:"traceback"}`
   // display card — that lands before `ToolEvent.error` settles, so the
   // `.cc-head` chip shows even before the traceback body renders (§18).
-  const errored =
-    py?.error != null ||
-    outputs.some((o) => o.data.bundle[WB_MIME]?.kind === "traceback");
+  // The display card is the canonical render; `<Traceback err={py.error}>`
+  // below is only a fallback for cells that errored without emitting one.
+  const hasTbCard = outputs.some(
+    (o) => o.data.bundle[WB_MIME]?.kind === "traceback"
+  );
+  const errored = py?.error != null || hasTbCard;
 
   return (
     <div className="turn" data-turn={turn}>
@@ -57,7 +60,7 @@ export function OrchTurn({ data, bgCells }: Props): JSX.Element {
           stable={ev.data.stable}
         />
       ))}
-      {py?.error && <Traceback err={py.error} />}
+      {py?.error && !hasTbCard && <Traceback err={py.error} />}
     </div>
   );
 }
