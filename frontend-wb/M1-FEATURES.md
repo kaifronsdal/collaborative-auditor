@@ -4,22 +4,21 @@ Selected from the polish brainstorm. Per-block actions use the
 **claude.ai idiom** (hover-reveal horizontal icon row under each
 block), not a `⋯` overflow menu.
 
-## 1. Streaming prose (highest priority)
+## 1. Streaming prose — ALREADY WIRED (verify with real model)
 
-The inspect fork is on `model-event-output-streaming` — deltas exist.
-The shimmer placeholder must go; render tokens as they arrive.
+Investigated: the path is complete end-to-end. inspect
+`update_active_model_event_output()` mutates `ModelEvent.output` +
+calls `_event_updated()` (throttled) → `Session._on_event` ships
+`{t:"update"}` → store replaces by uuid → `eventsToOrchTurns` reads
+`.output.choices[0].message.content` live → `AssistantProse` renders
+with `.cursor` while `pending`. The `.shimmer-bubble` is only for the
+pre-first-token gap (empty output), not during streaming.
 
-**Backend:** verify `orchestrator_agent`'s `model.generate` emits
-incremental `ModelEvent`s (`output.choices[0].message.content` grows)
-and that `session._on_event` forwards each as `{t:"update"}` (same
-`uuid`). If inspect emits a distinct delta event type, map it.
-
-**Frontend:** `eventsToOrchTurns` currently reads the *final*
-`ModelEvent.output` per turn. Change to read the *latest* (updates
-replace by uuid, so this may already work). `AssistantProse` renders
-`marked(content)` — with streaming, `content` re-renders on each
-delta. Add a blinking cursor `▌` (CSS, not glyph) after the last
-char while `pending`.
+**Remaining:** verify `assignByRole` (events.ts:95-99) creates a new
+array on update (not in-place mutate) so the `useMemo([events])` in
+`eventsToOrchTurns` re-fires. Screenshot harness (mockllm) doesn't
+stream — verify on the e2e worker with a real model + browser, or add
+a mockllm streaming variant.
 
 ## 2. Rewind to turn N
 
@@ -41,11 +40,12 @@ char while `pending`.
   discarded. Kernel bindings are kept.` → `send({t:"rewind", turn})`.
 - `eventsToOrchTurns` drops events with `data.rewound`.
 
-## 3. RunCard sort/filter
+## 3. RunCard sort/filter — write locally
 
-**Reuse** inspect view's sample-list machinery if it exposes a
-standalone sort/filter component (`@tsmono/inspect-components` —
-investigate). Otherwise local:
+Investigated: `@tsmono/inspect-components` exports content/usage
+widgets only; sort/filter is ag-grid-coupled inside the inspect *app*
+(Redux, `GridState`, rich `SampleRow` schema). Not reusable. Local
+~40-line implementation:
 - Column headers clickable (`id`/`score`/`status`/`turns`) → toggle
   sort asc/desc. `useState<{col, dir}>`.
 - Filter chip row above rows: `all · running · done · error` +

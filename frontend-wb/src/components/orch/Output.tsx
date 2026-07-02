@@ -263,7 +263,7 @@ function HtmlOutput({ html }: { html: string }): JSX.Element {
         if (gd.data?.some((t) => t.customdata)) {
           host.insertAdjacentHTML(
             "beforeend",
-            '<div class="fx-more plotly-hint">click a point to open in desk</div>'
+            '<div class="fx-more plotly-hint">click a point to open in auditor</div>'
           );
         }
       }

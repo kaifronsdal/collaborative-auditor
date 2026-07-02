@@ -20,9 +20,9 @@ export function StartView(): JSX.Element {
           className={`start-tab${tab === "desk" ? " on" : ""}`}
           onClick={() => setTab("desk")}
         >
-          Desk
+          Collaborative Auditor
           <span className="start-tab-sub">
-            drive a single audit conversation by hand
+            you and a model co-write probes, turn by turn
           </span>
         </button>
         <button

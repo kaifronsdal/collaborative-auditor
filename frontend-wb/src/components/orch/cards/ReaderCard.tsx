@@ -98,7 +98,7 @@ export default function ReaderCard({ payload, displayId, send }: Props): JSX.Ele
         ) : (
           <div className="rd-msg rd-empty">
             <span className="rd-role">log</span>
-            no preview — open in desk to read
+            no preview — open in auditor to read
           </div>
         )}
       </div>
@@ -108,7 +108,7 @@ export default function ReaderCard({ payload, displayId, send }: Props): JSX.Ele
           {basename(payload.log)}
         </span>
         <a onClick={openInDesk}>
-          open in desk <i className="bi bi-arrow-right" />
+          open in auditor <i className="bi bi-arrow-right" />
         </a>
       </div>
     </div>

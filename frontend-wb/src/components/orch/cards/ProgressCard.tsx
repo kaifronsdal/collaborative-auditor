@@ -267,7 +267,7 @@ function RunRow({
       className={audit ? "audit-row" : "eval-row"}
       role="button"
       tabIndex={0}
-      title={row.status === "running" ? "watch live in desk" : "open transcript in desk"}
+      title={row.status === "running" ? "watch live in auditor" : "open transcript in auditor"}
       onClick={onClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -302,7 +302,7 @@ function RunRow({
       )}
       {status}
       {opened && (
-        <span className="ar-opened" title="in desk">
+        <span className="ar-opened" title="opened in auditor">
           <i className="bi bi-box-arrow-up-right" />
         </span>
       )}
