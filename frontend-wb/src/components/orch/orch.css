@@ -655,6 +655,62 @@ sup.ask-opt-key {
 .ar-opened {
   font-size: 10px; color: var(--accent-text); flex-shrink: 0;
 }
+/* §9 per-sample stop: hover-reveal, sits right of the status slot. */
+.ar-stop {
+  width: 18px; height: 18px; padding: 0; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: var(--r-sm); background: none; cursor: pointer;
+  color: var(--ink-faint); font-size: 12px;
+  opacity: 0; transition: opacity .12s;
+}
+.audit-row:hover .ar-stop, .eval-row:hover .ar-stop { opacity: 1; }
+.ar-stop:hover { background: var(--bg-200); color: var(--danger); }
+.ar-status.stopping {
+  background: var(--bg-200); color: var(--ink-faint);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+/* §3 sort/filter — chip row + search sit between `.fx-out` and the row list;
+   `.pc-cols` is the clickable column header. Both gated on `total > 8`. */
+.pc-filter {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 6px 14px 4px; border-top: 1px solid var(--border);
+  font: 11.5px var(--sans); color: var(--ink-faint);
+}
+.pc-chip { cursor: pointer; padding: 2px 4px; color: var(--ink-dim); }
+.pc-chip .sep { color: var(--border); margin-right: 6px; }
+.pc-chip:hover { color: var(--ink); }
+.pc-chip.active { color: var(--accent-text); font-weight: 600; }
+.pc-chip .pc-n { color: var(--ink-faint); font-weight: 400; }
+.pc-chip.pc-range {
+  padding: 1px 7px 1px 3px; border-radius: var(--r-pill);
+  background: var(--accent-dim); color: var(--accent-text);
+  display: inline-flex; align-items: center; gap: 2px;
+}
+.pc-search {
+  margin-left: auto; width: 120px; padding: 2px 6px;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-000); font: 11px var(--mono); color: var(--ink-mid);
+  outline: none;
+}
+.pc-search:focus { border-color: var(--accent); }
+.pc-cols {
+  display: flex; align-items: center; gap: 14px;
+  padding: 4px 14px 6px;
+  font: 10px var(--mono); color: var(--ink-faint);
+  text-transform: uppercase; letter-spacing: .05em;
+}
+.pc-col { cursor: pointer; display: inline-flex; align-items: center; gap: 3px; }
+.pc-col:hover { color: var(--ink-mid); }
+.pc-col i { font-size: 9px; color: var(--accent-text); }
+
+/* §8 score histogram — 10-bin sparkline below the counter line. */
+.pc-hist-wrap {
+  padding: 2px 14px 8px; display: flex; align-items: flex-end; gap: 10px;
+}
+.pc-hist { flex: 1; display: block; height: 32px; }
+.pc-hist rect { fill: var(--accent); cursor: pointer; opacity: .75; }
+.pc-hist rect:hover, .pc-hist rect.active { opacity: 1; }
 /* scan: one row per scanner (§C) */
 .scan-rows { border-top: 1px solid var(--border); }
 .scan-row {

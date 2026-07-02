@@ -7,7 +7,10 @@
  * Variants (dispatched on `payload.kind`):
  * - `audit_run`/`eval_run` — one row per sample. Row click imports it into
  *   the M0 desk (`{t:"import"}` for finished, `{t:"import_running"}` for
- *   live). Opened rows keep a persistent `↗` glyph.
+ *   live). Opened rows keep a persistent `↗` glyph. When `total > 8` a
+ *   `.pc-filter` chip row + `.pc-cols` sortable header appear (M1-FEATURES
+ *   §3); when `finished` a `.pc-hist` score sparkline (§8) filters rows by
+ *   bin on click. Row-hover `bi-stop-fill` sends `{t:"stop_sample"}` (§9).
  * - `scan` — one row *per scanner* (not one card per scanner). Location in
  *   the footer; on finish each scanner's `df_head` HTML renders inline.
  */
@@ -38,6 +41,8 @@ export type RunPayload = {
   error: string | null;
   elapsed?: string;
   rows: { running: SampleRow[]; done: SampleRow[] };
+  /** First numeric score per row, positional with `rows.done` (§8). */
+  scores?: (number | null)[];
 };
 
 type ScannerStat = { scans: number; results: number; errors: number };
@@ -69,17 +74,25 @@ type Props = {
 
 const ROW_CAP = 3;
 
+type SortCol = "id" | "score" | "status" | "turns";
+type StatusFilter = "all" | SampleRow["status"];
+
 /** `"ValueError: bad seed"` → `"ValueError"`. */
 const errClass = (e: string | null | undefined): string =>
   e?.split(/[:(\n]/, 1)[0].trim() || "error";
 
 const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() ?? p;
 
+/** First numeric value in a row's score dict, or `null`. */
+const firstNumeric = (scores: Record<string, unknown>): number | null => {
+  for (const v of Object.values(scores)) if (typeof v === "number") return v;
+  return null;
+};
+
 /** First numeric score, rendered as `·NN` (mockup convention). */
 function fmtScore(scores: Record<string, unknown>): string {
-  for (const v of Object.values(scores)) {
-    if (typeof v === "number") return `·${Math.round(v * 100).toString().padStart(2, "0")}`;
-  }
+  const n = firstNumeric(scores);
+  if (n != null) return `·${Math.round(n * 100).toString().padStart(2, "0")}`;
   const keys = Object.keys(scores);
   return keys.length ? String(scores[keys[0]]) : "—";
 }
@@ -91,20 +104,42 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
   // Rows the user has opened in the desk — persistent `↗` glyph, survives the
   // 2s highlight and re-renders (UI-AUDIT §C).
   const opened = useRef<Set<string>>(new Set());
+  // §9 optimistic stop: id stays here until the next `dh.update` moves it out
+  // of `rows.running` (status flips → the set entry goes inert, never cleared).
+  const stopping = useRef<Set<string>>(new Set());
   const [, bump] = useState(0);
+  const rerender = (): void => bump((n) => n + 1);
+
+  // §3 sort/filter — local, run-variant only.
+  const [sortCol, setSortCol] = useState<SortCol>("id");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [textFilter, setTextFilter] = useState("");
+  // §8 histogram bin click — `[lo, hi]` inclusive.
+  const [scoreRange, setScoreRange] = useState<[number, number] | null>(null);
 
   const markOpened = (id: string): void => {
     opened.current.add(id);
-    bump((n) => n + 1);
+    rerender();
+  };
+
+  const clickSort = (col: SortCol): void => {
+    if (col === sortCol) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    else {
+      setSortCol(col);
+      setSortDir("asc");
+    }
   };
 
   const pct = payload.total > 0 ? Math.min(100, (payload.done / payload.total) * 100) : 0;
 
-  // Variant supplies the row list + errored count + optional footer; the
-  // shell owns show-all/collapse and the counter line.
+  // Variant supplies the row list + errored count + optional footer/controls;
+  // the shell owns show-all/collapse and the counter line.
   let title: string;
   let allRows: JSX.Element[];
   let errored: number;
+  let controls: JSX.Element | null = null;
+  let hist: JSX.Element | null = null;
   let footer: JSX.Element | null = null;
 
   if (payload.kind === "scan") {
@@ -146,6 +181,30 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
     errored = (payload.rows.done ?? []).filter((r) => r.status === "error").length;
     const audit = payload.kind === "audit_run";
     const log = payload.log;
+
+    // -- §3 filter → sort ----
+    const q = textFilter.trim().toLowerCase();
+    const filtered = rows.filter((r) => {
+      if (statusFilter !== "all" && r.status !== statusFilter) return false;
+      if (q && !r.id.toLowerCase().includes(q) && !r.input.toLowerCase().includes(q)) return false;
+      if (scoreRange) {
+        const s = firstNumeric(r.scores);
+        if (s == null || s < scoreRange[0] || s > scoreRange[1]) return false;
+      }
+      return true;
+    });
+    const sorted = [...filtered].sort((a, b) => {
+      const d =
+        sortCol === "id"
+          ? a.id.localeCompare(b.id, undefined, { numeric: true })
+          : sortCol === "status"
+            ? a.status.localeCompare(b.status)
+            : sortCol === "turns"
+              ? (a.turns ?? -1) - (b.turns ?? -1)
+              : (firstNumeric(a.scores) ?? -Infinity) - (firstNumeric(b.scores) ?? -Infinity);
+      return sortDir === "asc" ? d : -d;
+    });
+
     const onRowClick = (row: SampleRow): void => {
       if (row.status === "running") {
         send({ t: "import_running", sample_id: row.id });
@@ -156,15 +215,80 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
       }
       markOpened(row.id);
     };
-    allRows = rows.map((r) => (
+    const onStop = (row: SampleRow): void => {
+      // wire type owned by the kernel/backend agent (M1-FEATURES §9)
+      send({ t: "stop_sample", id: row.id } as unknown as Up);
+      stopping.current.add(row.id);
+      rerender();
+    };
+    allRows = sorted.map((r) => (
       <RunRow
         key={r.id}
         row={r}
         audit={audit}
         opened={opened.current.has(r.id)}
+        stopping={r.status === "running" && stopping.current.has(r.id)}
         onClick={() => onRowClick(r)}
+        onStop={r.status === "running" ? () => onStop(r) : undefined}
       />
     ));
+
+    // -- §3 controls (filter chips + search + sortable header) ----
+    if (payload.total > 8) {
+      const counts = { all: rows.length, running: 0, done: 0, error: 0 };
+      for (const r of rows) if (r.status in counts) counts[r.status as keyof typeof counts]++;
+      const chips: StatusFilter[] = ["all", "running", "done", "error"];
+      const cols: SortCol[] = ["id", "score", "status", "turns"];
+      controls = (
+        <>
+          <div className="pc-filter">
+            {chips.map((c, i) => (
+              <a
+                key={c}
+                className={`pc-chip${statusFilter === c ? " active" : ""}`}
+                onClick={() => setStatusFilter(c)}
+              >
+                {i > 0 && <span className="sep">·</span>}
+                {c} <span className="pc-n">({counts[c as keyof typeof counts]})</span>
+              </a>
+            ))}
+            {scoreRange && (
+              <a className="pc-chip pc-range" onClick={() => setScoreRange(null)}>
+                <i className="bi bi-x" /> score {scoreRange[0].toFixed(2)}–{scoreRange[1].toFixed(2)}
+              </a>
+            )}
+            <input
+              className="pc-search"
+              placeholder="filter id/seed…"
+              value={textFilter}
+              onChange={(e) => setTextFilter(e.target.value)}
+            />
+          </div>
+          <div className="pc-cols">
+            {cols.map((c) => (
+              <a key={c} className="pc-col" onClick={() => clickSort(c)}>
+                {c}
+                {sortCol === c && (
+                  <i className={`bi bi-caret-${sortDir === "asc" ? "up" : "down"}-fill`} />
+                )}
+              </a>
+            ))}
+          </div>
+        </>
+      );
+    }
+
+    // -- §8 histogram ----
+    if (payload.finished && payload.scores) {
+      hist = (
+        <Histogram
+          scores={payload.scores}
+          range={scoreRange}
+          onPick={setScoreRange}
+          smallCard={payload.total <= 8}
+        />
+      );
+    }
   }
 
   const shown = showAll ? allRows : allRows.slice(0, ROW_CAP);
@@ -213,6 +337,9 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
         )}
       </div>
 
+      {hist}
+      {controls}
+
       {allRows.length > 0 && (
         <div className={payload.kind === "scan" ? "scan-rows" : "audit-rows"}>{shown}</div>
       )}
@@ -244,23 +371,29 @@ function RunRow({
   row,
   audit,
   opened,
+  stopping,
   onClick,
+  onStop,
 }: {
   row: SampleRow;
   audit: boolean;
   opened: boolean;
+  stopping: boolean;
   onClick: () => void;
+  onStop?: () => void;
 }): JSX.Element {
   // Status slot per UI-AUDIT §C: `done` → nothing (dot suffices); `running` →
-  // `t{turns}`; `error` → exception class; `stopped` → literal.
-  const status =
-    row.status === "done" ? null : row.status === "running" ? (
-      <span className="ar-turns">t{row.turns ?? "…"}</span>
-    ) : row.status === "error" ? (
-      <span className="ar-status error">{errClass(row.error)}</span>
-    ) : (
-      <span className="ar-status stopped">stopped</span>
-    );
+  // `t{turns}`; `error` → exception class; `stopped` → literal. §9 optimistic
+  // `stopping…` overrides while the row is still `running` locally.
+  const status = stopping ? (
+    <span className="ar-status stopping">stopping…</span>
+  ) : row.status === "done" ? null : row.status === "running" ? (
+    <span className="ar-turns">t{row.turns ?? "…"}</span>
+  ) : row.status === "error" ? (
+    <span className="ar-status error">{errClass(row.error)}</span>
+  ) : (
+    <span className="ar-status stopped">stopped</span>
+  );
 
   return (
     <div
@@ -301,10 +434,80 @@ function RunRow({
         </span>
       )}
       {status}
+      {onStop && !stopping && (
+        <button
+          className="ar-stop"
+          title="stop this sample"
+          onClick={(e) => {
+            e.stopPropagation();
+            onStop();
+          }}
+        >
+          <i className="bi bi-stop-fill" />
+        </button>
+      )}
       {opened && (
         <span className="ar-opened" title="opened in auditor">
           <i className="bi bi-box-arrow-up-right" />
         </span>
+      )}
+    </div>
+  );
+}
+
+// -- §8 score histogram -------------------------------------------------------
+
+function Histogram({
+  scores,
+  range,
+  onPick,
+  smallCard,
+}: {
+  scores: (number | null)[];
+  range: [number, number] | null;
+  onPick: (r: [number, number] | null) => void;
+  /** `total ≤ 8` — no `.pc-filter` row, so the `× clear` chip lives here. */
+  smallCard: boolean;
+}): JSX.Element | null {
+  const nums = scores.filter((s): s is number => s != null);
+  if (nums.length < 2) return null;
+  const lo = Math.min(...nums);
+  const hi = Math.max(...nums);
+  const span = hi - lo || 1;
+  const bins = new Array<number>(10).fill(0);
+  for (const s of nums) bins[Math.min(9, Math.floor(((s - lo) / span) * 10))]++;
+  const peak = Math.max(...bins);
+  const edge = (i: number): number => lo + (span * i) / 10;
+
+  return (
+    <div className="pc-hist-wrap">
+      <svg className="pc-hist" height={32} viewBox="0 0 100 32" preserveAspectRatio="none">
+        {bins.map((n, i) => {
+          const h = n > 0 ? Math.max(2, (n / peak) * 30) : 0;
+          const bLo = edge(i);
+          const bHi = i === 9 ? hi : edge(i + 1);
+          const active = range != null && range[0] === bLo && range[1] === bHi;
+          return (
+            <rect
+              key={i}
+              x={i * 10 + 0.5}
+              y={32 - h}
+              width={9}
+              height={h}
+              className={active ? "active" : undefined}
+              onClick={() => onPick(active ? null : [bLo, bHi])}
+            >
+              <title>
+                {bLo.toFixed(2)}–{bHi.toFixed(2)}: {n}
+              </title>
+            </rect>
+          );
+        })}
+      </svg>
+      {smallCard && range && (
+        <a className="pc-chip pc-range" onClick={() => onPick(null)}>
+          <i className="bi bi-x" /> {range[0].toFixed(2)}–{range[1].toFixed(2)}
+        </a>
       )}
     </div>
   );
