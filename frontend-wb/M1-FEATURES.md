@@ -122,6 +122,32 @@ right of status, only when `row.status === "running"`. Click →
 `send({t:"stop_sample", id: row.id})`. Optimistic: row status →
 `stopping` (grey pulse) until next `dh.update`.
 
+## 11. Interrupt-and-send (Claude Code / Cursor Escape pattern)
+
+User types feedback while a cell is running and wants it read *now*,
+not queued. Distinct from `cancel_cell` (kill, no message) and
+`detach_cell` (background, message queued for after).
+
+**Backend** (`kernel.py`, `server.py`, `orchestrator.py`):
+- `kernel.interrupt(turn_id)`: cancel the cell task; `_settle` on
+  `CancelledError` when `_user_interrupted[turn_id]` is set produces
+  `TurnResult(text=f"[interrupted by user after {dur:.1f}s]\n{partial}",
+  success=False, error=None)` — *not* a traceback. Partial outputs
+  already in `kernel.outputs[turn_id]` are preserved.
+- `server._dispatch` `case "interrupt_and_send"`: `kernel.interrupt(
+  msg["turn"])` + `orch.queued.append(ChatMessageUser(msg["text"]))`.
+  The queued message drains into the *same* generate that reads the
+  interrupted tool result.
+
+**Frontend** (`OrchColumn.tsx`):
+- Composer primary button while `cellRunning && hasText`: instead of
+  `disabled`, becomes **"interrupt & send"** (icon `bi-stop-fill` +
+  `bi-send`, or a split button). `send({t:"interrupt_and_send",
+  turn, text})`.
+- The existing `send now (background)` link stays as the softer
+  option in the hint row.
+- `⏹` alone (no text) stays as pure cancel.
+
 ## 10. Not `⋯` — icon row per block
 
 Covered by §6. No overflow menus. Every action is a visible icon on
