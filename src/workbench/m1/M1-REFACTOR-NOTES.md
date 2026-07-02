@@ -36,6 +36,19 @@ what's left is upstream PRs and larger refactors deferred to M1.3.
   reads one line not a traceback.
 - **`orch_*` dispatch** now `broadcast_status()` (was silently not).
 
+## Real-model e2e findings (v2→v4 on `m1-e2e-0702`)
+
+- v2/v3: 5/8 cells wasted on unqualified `model=` + `wb.steer([handle.id])`.
+  Fixed via prompt (@ `488357e`): model must be fully-qualified;
+  `handle.running_ids` for steer targets; `.audits` only after `.wait()`.
+- v4: 7 cells, 1 log_dir, `.audits` DataFrame after `.wait()`, steer used
+  correct sample id. Remaining: (a) e2e's `_find_operator_message` reads
+  `EvalSample.messages` (target conv) but steer goes to the *auditor* —
+  false negative; check auditor `ModelEvent.input` instead. (b) `.audits`
+  `sample_id` col is inspect's uuid, not the seed `id` — agent passed it to
+  `read_transcript`; accept either or note in prompt. (c) no `score_*`
+  columns with `audit_judge(None)` at `max_turns=3` — expected.
+
 ## Deferred to M1.3
 
 - **`CONTROL` → `AgentChannel`** (inspect-reuse #1, −45 lines) — requires
