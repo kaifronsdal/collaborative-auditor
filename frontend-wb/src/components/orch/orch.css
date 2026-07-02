@@ -546,6 +546,33 @@
    MathJax config) render as an empty white box — hide them. */
 .out.html:not(:has(> :not(script))) { display: none; }
 
+/* plotly figure host: `.out { overflow: hidden }` clips the modebar and the
+   x-axis label row that plotly draws at the div's bottom edge. */
+.out.plotly-host { overflow: visible; margin-top: 12px; }
+.out.plotly-host .plotly-graph-div { margin: 0 auto; }
+
+/* pandas' trailing "N rows × M columns" caption — a `<p>` after the table. */
+.out.html table.dataframe + p,
+.out.html > p:last-child {
+  font: var(--fs-xs) var(--sans); color: var(--ink-faint);
+  margin: 6px 2px 0;
+}
+
+/* bare text/plain (last-expr repr, `display(obj)`): mockup `.repr` — a quiet
+   inline block so the value doesn't float untethered. Only applies inside
+   `.out.bare` — tracebacks/errors keep the full-width red pre. */
+.out.bare > .out-plain {
+  display: inline-block; margin: 0; padding: 4px 10px;
+  background: var(--bg-200); border-radius: var(--r-sm);
+  color: var(--ink-mid);
+}
+.out.bare { margin-top: 10px; }
+
+/* cc-head `run in background` — icon was inheriting the button's 11px but
+   `bi-layer-backward` glyph reads oversized at that scale. */
+.cc-bg-btn i { font-size: 10px; line-height: 1; }
+.cc-head .fx-dot { margin-right: 2px; }
+
 /* three-column desk grid */
 .desk-body.has-orch .columns {
   grid-template-columns:

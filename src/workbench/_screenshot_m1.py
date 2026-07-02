@@ -55,7 +55,8 @@ CELLS = [
     (
         "Here is a bar chart of the counts.",
         "fig = px.bar(x=['a', 'b', 'c'], y=[4, 5, 6])\n"
-        "fig.update_layout(width=420, height=260)\nfig",
+        "fig.update_layout(width=420, height=260,\n"
+        "                  margin=dict(l=30, r=10, t=10, b=30))\nfig",
     ),
     (
         "This cell will raise.",

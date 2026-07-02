@@ -35,6 +35,21 @@ export function OrchTurn({ data, bgCells }: Props): JSX.Element {
   );
   const errored = py?.error != null || hasTbCard;
 
+  // Dedupe (§16): a handle that's `display()`ed with a stable id inside the
+  // cell AND returned as the last expression mounts twice. Drop any non-stable
+  // output whose wb `payload.id` matches a stable one in the same turn.
+  const stableWbIds = new Set(
+    outputs
+      .filter((o) => o.data.stable)
+      .map((o) => o.data.bundle[WB_MIME]?.id)
+      .filter((v): v is string => typeof v === "string")
+  );
+  const deduped = outputs.filter(
+    (o) =>
+      o.data.stable ||
+      !stableWbIds.has(o.data.bundle[WB_MIME]?.id as string | undefined ?? "")
+  );
+
   return (
     <div className="turn" data-turn={turn}>
       {userInput.map((m) => (
@@ -51,7 +66,7 @@ export function OrchTurn({ data, bgCells }: Props): JSX.Element {
           background={py.arguments.background === true}
         />
       )}
-      {outputs.map((ev) => (
+      {deduped.map((ev) => (
         <Output
           key={ev.uuid ?? ev.data.id}
           id={ev.data.id}

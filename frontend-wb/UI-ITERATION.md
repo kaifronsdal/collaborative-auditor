@@ -23,6 +23,12 @@ after each fix batch.
   card already covers it.
 - **r1** hide script-only `.out.html` (`:not(:has(> :not(script)))`) — kills
   the two empty boxes plotly's CDN-loader emits above the figure.
+- **r2** item 16 dedupe in `OrchTurn`: drop non-stable outputs whose wb
+  `payload.id` matches a stable one in the same turn (RunCard no longer
+  double-mounts when the handle is both `display()`ed and returned).
+- **r2 (css)** `.out.bare > .out-plain` as `.repr`-style inline block;
+  pandas caption `<p>` xs/faint; `.plotly-host { overflow: visible }`;
+  `.cc-bg-btn i` sized to 10px.
 - **r1 (infra)** `_screenshot_m1` was broken by `a73f0d5`'s lockfile shrink:
   `frontend-wb`'s `pnpm install` (which owns ts-mono packages via
   `pnpm-workspace.yaml`) emptied their `node_modules/`. Fixed by re-running
@@ -141,18 +147,16 @@ Emitted by the tsx pass; need styling. Grouped by component.
   `.row-dot-{running,done,error,stopped}` (8px, running pulses),
   `.ar-in-desk` (transient chip, orch accent, fade-out ~2s).
 
-## Open after r1 (screenshot review)
+## Open after r2 (screenshot review)
 
-- **04** RunCard duplicated (item 16 — `Output.tsx` owner). The stable
-  `display()` inside `run_eval` and the last-expr `h` both mount.
-- **05** plotly x-axis labels clipped at bottom edge (figure height 260 but
-  container gives no bottom padding on `.out.bare.plotly-host`).
-- **02** DataFrame `.out.html` caption `3 rows × 2 columns` renders in body
-  font — should be `.df-more` xs faint (pandas emits `<p>`, not our class).
-- **02** `'v2'` plain-text output floats with no context; mockup wraps
-  reprs as `.repr` inline block.
-- **03** `run in background` cc-head button icon (`bi-layer-backward`) is
-  large relative to text; drop icon or size to 10px.
+- **05** plotly x-axis labels clipped — turned out to be plotly's own
+  default margins at `height=260`, not container overflow. Fixed the
+  screenshot cell (`margin=dict(...)`) but real cells will need
+  `wb.plots.*` helpers to set sane defaults (backend).
+- **04** `.eval-row .er-id { width: 140px }` leaves a wide gap for short
+  ids like `demo-0`; consider `min-width` + `max-width` instead.
+- **03** `bi-layer-backward` glyph in `.cc-bg-btn` still reads a touch
+  heavy; candidate for a plain-text-only button.
 
 ## Process for each iteration round
 
