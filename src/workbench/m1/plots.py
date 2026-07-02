@@ -30,18 +30,33 @@ ACCENT, OK, DANGER = "#2f76da", "#479e76", "#b33232"
 
 
 def install_template() -> None:
-    """Register ``pio.templates["workbench"]`` and set it as default.
+    """Register ``pio.templates["workbench"]`` and layer it on ``plotly_white``.
+
+    Layering (``"plotly_white+workbench"``) means the ~25 trace types we
+    don't style here inherit sane defaults instead of raw plotly.js. The
+    overrides below are the deltas: Okabe-Ito colorway (CVD-safe — the
+    prior palette collapsed green/red and blue/purple under
+    deuteranopia), y-grid only, WCAG-AA tick contrast, ``automargin`` /
+    ``autotickangles``, and explicit ``hovermode="closest"`` (``x
+    unified`` breaks the per-mark ``plotly_click`` → ``wb://`` nav that
+    ``link()`` depends on).
 
     Idempotent. The ``notebook_connected`` renderer is set separately in
     ``orchestrator._prewarm`` — don't touch it here.
     """
-    if "workbench" in pio.templates and pio.templates.default == "workbench":
+    default = "plotly_white+workbench"
+    if "workbench" in pio.templates and pio.templates.default == default:
         return
     axis = dict(
+        showgrid=True,
         gridcolor="#e8e8ec",
-        linecolor="#e8e8ec",
+        gridwidth=1,
+        linecolor="#d4d4d8",
         zerolinecolor="#d4d4d8",
-        tickfont=dict(color=INK["faint"], size=10),
+        zerolinewidth=1,
+        automargin=True,
+        tickfont=dict(color=INK["dim"], size=11),
+        title=dict(font=dict(color=INK["dim"], size=12), standoff=8),
     )
     pio.templates["workbench"] = go.layout.Template(
         layout=dict(
@@ -50,31 +65,56 @@ def install_template() -> None:
                 size=12,
                 color=INK["mid"],
             ),
+            title=dict(font=dict(color=INK["ink"], size=14), x=0, xanchor="left"),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
             margin=dict(l=40, r=20, t=30, b=40),
             height=320,
-            # App palette (styles.css `--accent`/`--ok`/`--danger`) first so
-            # single-series charts pick up the accent, not grey.
-            colorway=[ACCENT, OK, "#ff9f43", DANGER, "#a855f7", "#06b6d4"],
+            # Okabe-Ito (Wong 2011, Nature Methods) with app ACCENT
+            # substituted for O-I blue #0072B2 so single-series charts
+            # match the UI. CVD-safe for prot/deuter/tritanopia; distinct
+            # in greyscale. OK/DANGER stay as *explicit* semantic
+            # constants — not in the categorical rotation (else the 2nd
+            # series in any 2-trace chart is "green = good").
+            colorway=[
+                ACCENT, "#e69f00", "#009e73", "#cc79a7",
+                "#56b4e9", "#d55e00", "#f0e442", "#999999",
+            ],
             colorscale=dict(sequential=[[0, INK["faint"]], [1, INK["ink"]]]),
-            xaxis=axis,
+            xaxis={**axis, "showgrid": False, "autotickangles": [0, -45, -90]},
             yaxis=axis,
+            bargap=0.25,
+            hovermode="closest",
             hoverlabel=dict(
                 bgcolor="#fff",
                 bordercolor="#e8e8ec",
-                font=dict(color=INK["mid"]),
+                font=dict(color=INK["mid"], size=11),
+            ),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="left",
+                x=0,
+                font=dict(color=INK["dim"], size=11),
+                bgcolor="rgba(0,0,0,0)",
             ),
             modebar=dict(remove=["toImage", "autoScale2d", "resetScale2d"]),
-            showlegend=False,
         ),
         data=dict(
-            bar=[go.Bar(marker=dict(line=dict(width=0)))],
-            scatter=[go.Scatter(line=dict(dash="solid"))],
+            bar=[
+                go.Bar(
+                    marker=dict(line=dict(width=0)),
+                    hovertemplate="%{x}: %{y}<extra></extra>",
+                )
+            ],
+            scatter=[
+                go.Scatter(marker=dict(size=7, opacity=0.85), line=dict(width=2))
+            ],
             histogram=[go.Histogram()],
         ),
     )
-    pio.templates.default = "workbench"
+    pio.templates.default = default
 
 
 # -- primitives ---------------------------------------------------------------
