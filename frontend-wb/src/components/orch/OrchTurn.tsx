@@ -235,8 +235,7 @@ function CodeCell({
         {...(!forceOpen && { role: "button", tabIndex: 0, onClick: toggle })}
       >
         <i className={`bi bi-chevron-${open ? "down" : "right"} cc-chev`} />
-        {!open && <code className="cc-gist">{firstNonBlankLine(code)}</code>}
-        {running && <i className="bi bi-record-fill fx-dot pending" />}
+        <code className="cc-gist">{firstNonBlankLine(code)}</code>
         {errored && !running && (
           <span className="cell-status err" title="cell raised">
             <i className="bi bi-exclamation-triangle-fill" /> error

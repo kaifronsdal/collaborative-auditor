@@ -103,7 +103,7 @@
   border: 1px solid var(--border); border-radius: var(--r-md);
   background: var(--bg-000); overflow: hidden; margin-bottom: var(--sp-2);
 }
-.code-cell.bg { box-shadow: inset 3px 0 0 var(--accent); }
+/* background/detached cells are labeled by `.cc-bg-chip`, no left rail */
 .code-cell .cc-head {
   display: flex; align-items: center; gap: 8px;
   padding: 6px var(--sp-2) 5px;
@@ -132,7 +132,10 @@
   display: inline-flex; align-items: center; gap: 2px;
 }
 .cc-bg-btn:hover { background: var(--bg-200); }
-.fx-dot { font-size: 8px; color: var(--ok); line-height: 1; }
+.fx-dot {
+  font-size: 8px; color: var(--ok); line-height: 1;
+  display: inline-block; vertical-align: middle; position: relative; top: -1px;
+}
 .fx-dot.pending { color: var(--ink-faint); animation: pulse 1.4s ease-in-out infinite; }
 
 /* ---- generic output container ---- */
@@ -161,13 +164,11 @@
 }
 .out-head .out-actions button:hover { background: var(--bg-200); color: var(--accent-text); }
 
-.out.bare { border: none; background: none; }
+.out.bare { border: none; background: none; border-radius: 0; overflow: visible; }
 .out.bare > .out-head { display: none; }
 .out.html { padding: var(--sp-2) 14px; overflow-x: auto; }
 
-.out.gated {
-  box-shadow: inset 3px 0 0 var(--gate); background: var(--gate-dim);
-}
+.out.gated { background: var(--gate-dim); }
 .out.gated .out-head { border-bottom-color: hsl(265 30% 88%); }
 .out.gated .out-head .out-kind { color: var(--gate-text); }
 .gate-tag {
@@ -180,7 +181,7 @@
   color: var(--ink); background: var(--bg-000); border-bottom: 1px solid var(--border);
 }
 .out:not(.gated) > .gate-desc {
-  padding: 0 14px 8px; margin-top: -2px;
+  padding: 6px 14px 4px;
   font: 12.5px/1.4 var(--sans); color: var(--ink-dim);
   background: none; border: none;
 }
@@ -194,13 +195,12 @@
 .out.traceback { border-color: hsl(0 40% 82%); }
 .out.traceback .out-head { color: var(--danger); }
 
-/* print() / stdout */
+/* print() / stdout — plain pre, distinguished from result by lower contrast */
 .out-stream {
-  margin: 10px 0 0; padding: 6px 2px 2px 14px;
-  font: 12px/1.5 var(--mono); color: var(--ink-dim); white-space: pre-wrap;
-  border-left: 2px solid var(--border);
+  margin: 10px 0 0; padding: 4px 2px 2px;
+  font: 12px/1.5 var(--mono); color: var(--ink-mid); white-space: pre-wrap;
 }
-.out-stream.err { color: var(--danger); border-left-color: var(--danger); }
+.out-stream.err { color: var(--danger); }
 
 /* ---- card internals (ported from mockups-m1/shared.css) ---- */
 
@@ -214,6 +214,7 @@
 .fx-out .path { color: var(--ink-mid); }
 .fx-out .sep { color: var(--border); }
 .fx-out .stat b { color: var(--ink); font-weight: 600; }
+.fx-out .stat.ok { color: var(--ok); }
 .fx-out .stat.ok b { color: var(--ok); }
 .fx-out .stat.run b { color: var(--accent-text); }
 .out .fx-out { padding: 9px 14px; }
@@ -365,9 +366,8 @@
 
 /* ---- round-1 structural-pass classes (UI-ITERATION §New classes) ---- */
 
-/* orch composer disambiguation from M0's auditor composer: a gate-purple left
-   rail replaces the old `to:` chip at zero height cost (UI-AUDIT §B). */
-.orch-col-wrap .composer { border-left: 2px solid var(--gate); }
+/* orch composer disambiguated from M0's auditor composer by placeholder text +
+   column position — no visual accent needed (UI-AUDIT §B rev). */
 .composer-hint-running a { text-decoration: underline; cursor: pointer; }
 
 /* cc-head error chip (§18) */
@@ -381,7 +381,7 @@
 
 /* PromptCard (§9) */
 .gate-waiting { animation: gate-breathe 2.4s ease-in-out infinite; }
-@keyframes gate-breathe { 50% { box-shadow: inset 3px 0 0 var(--gate), 0 0 0 1px hsl(265 40% 85%); } }
+@keyframes gate-breathe { 50% { box-shadow: 0 0 0 1px hsl(265 40% 85%); } }
 .ask-opts.ask-opts-vert { flex-direction: row; }  /* keep pills; own-row wraps below */
 .ask-opt-key { font: 10px var(--mono); color: var(--ink-faint); margin-right: 2px; }
 .ask-opt-own-wrap {
@@ -395,9 +395,8 @@
   display: inline-flex; align-items: center; justify-content: center;
 }
 .ask-opt-send:disabled { opacity: .35; cursor: default; }
-/* mockup: gated ask_human hides its `.out-head` — question + pills self-identify */
-.out.gated:has(> .ask-q) > .out-head { display: none; }
-.out.gated:has(> .ask-q) .ask-q { padding-top: 14px; }
+/* gated ask_human renders no `.out-head` — question + pills self-identify */
+.out.gated .ask-q { padding-top: 14px; }
 
 /* RunProposalCard (§10) */
 .sp-check { accent-color: var(--gate); margin-right: 8px; }
@@ -434,13 +433,9 @@
 .out-wrap > .out-live {
   position: absolute; top: 4px; right: 6px; z-index: 1; pointer-events: none;
 }
-.out-wrap > .out-live.settled {
-  width: 6px; height: 6px; padding: 0; border-radius: 50%;
-  border: none; background: var(--ink-faint); font-size: 0;
-}
 .out-wrap:has(.out-head .out-live) > .out-live { display: none; }
 .fx-bar {
-  display: inline-block; width: 100px; height: 4px;
+  flex: 1; min-width: 60px; height: 4px;
   background: var(--bg-200); border-radius: 2px; overflow: hidden;
   vertical-align: middle;
 }
@@ -448,6 +443,7 @@
 .out .fx-out .stat.err { display: inline; color: var(--danger); }
 .row-dot {
   font-size: 8px; line-height: 1; flex-shrink: 0;
+  display: inline-block; vertical-align: middle; position: relative; top: -1px;
 }
 .row-dot-running { color: var(--accent-text); animation: pulse 1.4s ease-in-out infinite; }
 .row-dot-done    { color: var(--ok); }
@@ -483,13 +479,12 @@
   margin: 6px 2px 0;
 }
 
-/* bare text/plain (last-expr repr, `display(obj)`): accent left-rail so it
-   reads as the *returned* value alongside grey-rail stdout / red-rail stderr
-   (UI-AUDIT §C — replaces the `.repr` grey pill). `.out-result` marks it so
-   the 20lh soft-cap on other `.out-plain` skips it. */
+/* bare text/plain (last-expr repr, `display(obj)`): full-contrast ink so it
+   reads as the *returned* value against `--ink-mid` stdout — Jupyter-style,
+   distinguished by weight not decoration. `.out-result` also opts it out of
+   the 20lh soft-cap on other `.out-plain`. */
 .out.bare > .out-plain.out-result {
-  display: block; margin: 0; padding: 2px 0 2px 14px;
-  border-left: 2px solid var(--accent);
+  display: block; margin: 0; padding: 2px 0;
   background: none; color: var(--ink);
 }
 .out.bare { margin-top: 10px; }
@@ -497,7 +492,6 @@
 /* cc-head `run in background` — the `bi-layer-backward` glyph reads heavy
    next to 11px text; the label is self-explanatory, so drop the icon. */
 .cc-bg-btn i { display: none; }
-.cc-head .fx-dot { margin-right: 2px; }
 
 /* three-column desk grid */
 .desk-body.has-orch .columns {
@@ -528,6 +522,14 @@
   background: var(--bg-200); color: var(--ink-mid);
 }
 .composer-controls button:disabled { opacity: .4; cursor: default; }
+/* orch composer send button: darker disabled treatment (default `.primary`
+   fades accent to near-invisible pale blue). Hint text ellipsises at narrow
+   widths so the transport cluster doesn't collide with it. */
+.orch-col-wrap .primary-send:disabled { opacity: .35; background: var(--ink-faint); }
+.orch-col-wrap .composer-hint {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 /* -- turn/output additions -- */
 
@@ -543,20 +545,23 @@
 }
 .cc-head .cc-bg-chip,
 .cc-head .cell-status,
-.cc-head .turn-no { flex-shrink: 0; }
+.cc-head .turn-no { flex-shrink: 0; margin-left: 8px; }
 
 /* Traceback summary card */
+.out.traceback .out-kind { text-transform: none; letter-spacing: 0; }
 .tb-body { padding: 10px 14px 8px; }
 .tb-evalue {
   font: 12.5px/1.4 var(--sans); color: var(--danger);
   margin-bottom: 6px; word-break: break-word;
 }
+.tb-at-row { display: flex; align-items: baseline; gap: 12px; }
 .tb-at {
-  display: block; font: 11px var(--mono); color: var(--ink-dim);
+  flex: 1; min-width: 0; font: 11px var(--mono); color: var(--ink-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .tb-toggle {
-  border: none; background: none; padding: 6px 0 0; cursor: pointer;
+  flex-shrink: 0;
+  border: none; background: none; padding: 0; cursor: pointer;
   font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   display: inline-flex; align-items: center; gap: 4px;
 }
@@ -583,7 +588,8 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .gate-resolved b { color: var(--ink); font-weight: 600; }
-.out.answered > .out-head { border-bottom: none; }
+.out.answered { border: none; background: none; }
+.out.answered > .out-head { border-bottom: none; padding-left: 2px; }
 .gate-config {
   padding: 6px 14px 8px; font: 11px var(--mono); color: var(--ink-faint);
   background: var(--bg-000);
@@ -591,12 +597,12 @@
 .gate-claim {
   padding: 10px 14px; font: 13px/1.45 var(--sans); color: var(--ink);
   background: var(--bg-000); border-bottom: 1px solid var(--border);
-  border-left: 2px solid var(--accent);
 }
 /* prompt: `other…` link that expands the free-text row */
 .ask-other {
   align-self: center; font: 11.5px var(--sans); color: var(--ink-faint);
   cursor: pointer; padding: 5px 4px;
+  text-decoration: underline dotted; text-underline-offset: 2px;
 }
 .ask-other:hover { color: var(--accent-text); }
 /* key-hint superscript replaces `[N]` (§C — only shown when opts>3) */
@@ -679,7 +685,7 @@ sup.ask-opt-key {
   text-transform: uppercase; letter-spacing: .04em;
 }
 .rd-turn { display: block; text-transform: none; letter-spacing: 0; }
-.rd-anchor { border-left: 3px solid var(--accent); padding-left: 55px; }
+.rd-anchor { background: var(--gate-dim); }
 .rd-empty { color: var(--ink-faint); font-style: italic; }
 .rd-foot {
   display: flex; align-items: center; gap: 8px;

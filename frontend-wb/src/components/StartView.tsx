@@ -21,6 +21,9 @@ export function StartView(): JSX.Element {
           onClick={() => setTab("desk")}
         >
           Desk
+          <span className="start-tab-sub">
+            drive a single audit conversation by hand
+          </span>
         </button>
         <button
           type="button"
@@ -28,6 +31,9 @@ export function StartView(): JSX.Element {
           onClick={() => setTab("orch")}
         >
           Orchestrator
+          <span className="start-tab-sub">
+            an agent runs audits, analyzes results, and drafts findings for you
+          </span>
         </button>
       </div>
       {tab === "desk" ? <DeskStartCard /> : <OrchStartCard />}

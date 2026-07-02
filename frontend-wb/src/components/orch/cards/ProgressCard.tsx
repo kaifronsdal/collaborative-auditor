@@ -183,9 +183,15 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
       {payload.description && <div className="gate-desc">{payload.description}</div>}
 
       <div className="fx-out">
-        <span className="fx-bar">
-          <i style={{ width: `${pct}%` }} />
-        </span>
+        {payload.finished && !payload.error ? (
+          <span className="stat ok">
+            <i className="bi bi-check2" /> done
+          </span>
+        ) : (
+          <span className="fx-bar">
+            <i style={{ width: `${pct}%` }} />
+          </span>
+        )}
         <span className="stat">
           <b>{payload.done}</b>/{payload.total || "?"}
         </span>

@@ -38,9 +38,9 @@ def install_template() -> None:
     if "workbench" in pio.templates and pio.templates.default == "workbench":
         return
     axis = dict(
-        gridcolor="#d9d9d9",
-        linecolor="#d9d9d9",
-        zeroline=False,
+        gridcolor="#e8e8ec",
+        linecolor="#e8e8ec",
+        zerolinecolor="#d4d4d8",
         tickfont=dict(color=INK["faint"], size=10),
     )
     pio.templates["workbench"] = go.layout.Template(
@@ -50,31 +50,28 @@ def install_template() -> None:
                 size=12,
                 color=INK["mid"],
             ),
-            paper_bgcolor="#fff",
-            plot_bgcolor="#fff",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             margin=dict(l=40, r=20, t=30, b=40),
             height=320,
-            colorway=[INK["mid"], INK["dim"], INK["ink"], INK["faint"]],
+            # App palette (styles.css `--accent`/`--ok`/`--danger`) first so
+            # single-series charts pick up the accent, not grey.
+            colorway=[ACCENT, OK, "#ff9f43", DANGER, "#a855f7", "#06b6d4"],
             colorscale=dict(sequential=[[0, INK["faint"]], [1, INK["ink"]]]),
             xaxis=axis,
             yaxis=axis,
             hoverlabel=dict(
                 bgcolor="#fff",
-                bordercolor="#d9d9d9",
+                bordercolor="#e8e8ec",
                 font=dict(color=INK["mid"]),
             ),
             modebar=dict(remove=["toImage", "autoScale2d", "resetScale2d"]),
             showlegend=False,
         ),
         data=dict(
-            bar=[go.Bar(marker=dict(color=INK["mid"], line=dict(width=0)))],
-            scatter=[
-                go.Scatter(
-                    marker=dict(color=INK["mid"]),
-                    line=dict(color=INK["mid"], dash="solid"),
-                )
-            ],
-            histogram=[go.Histogram(marker=dict(color=INK["mid"]))],
+            bar=[go.Bar(marker=dict(line=dict(width=0)))],
+            scatter=[go.Scatter(line=dict(dash="solid"))],
+            histogram=[go.Histogram()],
         ),
     )
     pio.templates.default = "workbench"

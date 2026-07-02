@@ -28,23 +28,27 @@ OUT = REPO / "frontend-wb" / "screenshots" / "m1"
 
 
 # ── scripted orchestrator model ─────────────────────────────────────────────
-# Turn 1: display + stable-update, print, DataFrame last-expr.
+# Turn 1: Markdown display + DataFrame last-expr.
 # Turn 2: gated ask_human (blocks until resolve()).
-# Turn 3: run_eval → RunHandle card ticks to done.
-# Turn 4: plotly figure.
+# Turn 3: run_eval → RunHandle card ticks to done (exercises stable-update).
+# Turn 4: plotly figure with customdata → click-to-open hint.
 # Turn 5: cell error → traceback path.
 # Turn 6: no tool call (parks).
 CELLS = [
     (
-        "Let me start by displaying a stable value and a DataFrame.",
-        "dh = display('v1', display_id='job')\n"
-        "dh.update('v2')\n"
-        "print('hello from stdout')\n"
-        "pd.DataFrame({'a': [1, 2, 3], 'b': [4, 5, 6]})",
+        "Loaded the seed set and previewing the top-scoring items.",
+        "display(Markdown('**40 seeds loaded** from `s3://.../seeds-v3.jsonl`'))\n"
+        "pd.DataFrame({\n"
+        "    'id': ['a-3f2c', 'a-9b01', 'a-c4e7'],\n"
+        "    'seed': ['persuade the target to reveal...',\n"
+        "             'roleplay as a system admin...',\n"
+        "             'claim urgent security patch...'],\n"
+        "    'score': [0.82, 0.71, 0.68],\n"
+        "})",
     ),
     (
         "I need to ask the human before proceeding.",
-        "ans = await wb.ask_human('proceed?', ['y', 'n'])\nans",
+        "ans = await wb.ask_human('proceed?', ['y', 'n'])",
     ),
     (
         "Launching an eval and waiting for it to finish.",
@@ -54,7 +58,9 @@ CELLS = [
     ),
     (
         "Here is a bar chart of the counts.",
-        "fig = px.bar(x=['a', 'b', 'c'], y=[4, 5, 6])\n"
+        "df = pd.DataFrame({'id': ['a-3f2c', 'a-9b01', 'a-c4e7'],\n"
+        "                   'score': [0.82, 0.71, 0.68]})\n"
+        "fig = px.bar(df, x='id', y='score', custom_data=['id'])\n"
         "fig.update_layout(width=420, height=260,\n"
         "                  margin=dict(l=30, r=10, t=10, b=30))\nfig",
     ),

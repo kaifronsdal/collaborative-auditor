@@ -9,6 +9,7 @@
  * stays inspectable.
  */
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { marked } from "marked";
 
 import { useSession } from "../../store/session";
 import { cards } from "./cards";
@@ -49,21 +50,17 @@ export function Output({ id, bundle, meta, stable, settled }: OutputProps): JSX.
 
   const inner = renderBundle(id, bundle, send);
   if (inner == null) return null;
-  // UI-AUDIT §C: only badge outputs that were meaningfully live. A stable
-  // handle that displayed once and never updated (`updates < 2` at settle)
-  // is just a value — no `updated 1×` noise.
-  if (!stable) return inner;
-  if (settled && updates.current < 2) return inner;
+  // Gated cards have interactive controls → self-evidently live; no badge.
+  if (bundle[WB_MIME]?.pending) return inner;
+  // UI-AUDIT §C: only badge stable outputs while their cell is still running;
+  // once settled, no more updates can land, so drop the badge entirely.
+  if (!stable || settled) return inner;
   return (
     <div className="out-wrap" data-stable data-updates={updates.current}>
       {inner}
-      {settled ? (
-        <span className="out-live settled" title={`updated ${updates.current}×`} />
-      ) : (
-        <span className="out-live" title={`live — updated ${updates.current}×`}>
-          live
-        </span>
-      )}
+      <span className="out-live" title={`live — updated ${updates.current}×`}>
+        live
+      </span>
     </div>
   );
 }
@@ -86,6 +83,17 @@ function renderBundle(
 
   const html = bundle["text/html"];
   if (html != null) return <HtmlOutput html={html} />;
+
+  // `display(Markdown(…))` — computed prose. Same treatment as `.asst-prose`.
+  const md = bundle["text/markdown"];
+  if (md != null) {
+    return (
+      <div
+        className="out bare asst-prose md"
+        dangerouslySetInnerHTML={{ __html: marked.parse(md, { async: false }) }}
+      />
+    );
+  }
 
   const svg = bundle["image/svg+xml"];
   if (svg != null) {
@@ -144,6 +152,8 @@ function TracebackCard({ id, wb }: { id: string; wb: WbPayload }): JSX.Element {
   const evalue = typeof wb.evalue === "string" ? wb.evalue : null;
   const frames = Array.isArray(wb.frames) ? (wb.frames as TbFrame[]) : null;
   const last = frames?.[frames.length - 1];
+  // IPython names the synthetic file `<ipython-input-N-hash>` — noise here.
+  const at = last && last.file.replace(/^<ipython-input-[^>]*>$/, "cell");
   return (
     <div className="out traceback" data-display-id={id}>
       <div className="out-head">
@@ -154,17 +164,19 @@ function TracebackCard({ id, wb }: { id: string; wb: WbPayload }): JSX.Element {
         <>
           <div className="tb-body">
             <div className="tb-evalue">{evalue}</div>
-            <code className="tb-at">
-              at {last.file}:{last.lineno} · {last.line}
-            </code>
-            <button
-              type="button"
-              className="tb-toggle"
-              onClick={() => setOpen((v) => !v)}
-            >
-              <i className={`bi bi-chevron-${open ? "up" : "down"}`} />{" "}
-              {frames.length} frame{frames.length === 1 ? "" : "s"}
-            </button>
+            <div className="tb-at-row">
+              <code className="tb-at">
+                at {at}:{last.lineno} · {last.line}
+              </code>
+              <button
+                type="button"
+                className="tb-toggle"
+                onClick={() => setOpen((v) => !v)}
+              >
+                <i className={`bi bi-chevron-${open ? "up" : "down"}`} />{" "}
+                {frames.length} frame{frames.length === 1 ? "" : "s"}
+              </button>
+            </div>
           </div>
           {open && <pre className="out-plain err">{text}</pre>}
         </>

@@ -103,13 +103,11 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
     );
   }
 
-  // `prompt` has no gate-bar — the option buttons *are* the approve.
+  // `prompt` has no gate-bar — the option buttons *are* the approve. The
+  // purple `.gated` tint identifies it, so no icon head.
   if (payload.kind === "prompt") {
     return (
       <div className="out gated gate-waiting" data-display-id={displayId}>
-        <div className="out-head">
-          <i className="bi bi-person-raised-hand" style={{ color: "var(--gate-text)" }} />
-        </div>
         <PromptBody payload={payload} resolve={resolve} />
       </div>
     );
@@ -120,10 +118,10 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
 
   return (
     <div className="out gated gate-waiting" data-display-id={displayId}>
-      <div className="out-head">
-        <i className={`bi ${v.icon}`} style={{ color: "var(--gate-text)" }} />
+      <div className="gate-desc">
+        <i className={`bi ${v.icon}`} style={{ color: "var(--gate-text)", marginRight: 8 }} />
+        {v.desc}
       </div>
-      <div className="gate-desc">{v.desc}</div>
       {payload.kind === "run_proposal" ? (
         <SeedBody payload={payload} struck={struck} toggle={toggle} />
       ) : (
