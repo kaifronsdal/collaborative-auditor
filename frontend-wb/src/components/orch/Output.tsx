@@ -24,15 +24,50 @@ export type OutputProps = {
   bundle: DisplayBundle;
   meta: Record<string, unknown>;
   stable: boolean;
+  /** The owning cell's `ToolEvent` is no longer `pending` — no more
+   *  `dh.update()`s will land, so the `live` badge freezes to `updated N×`. */
+  settled: boolean;
 };
 
 /** Kinds whose fallback shell gets the gate treatment. */
 const GATED = new Set(["run_proposal", "cite_proposal", "prompt"]);
 
-export function Output({ id, bundle, meta, stable }: OutputProps): JSX.Element | null {
+export function Output({ id, bundle, meta, stable, settled }: OutputProps): JSX.Element | null {
   const send = useSession((s) => s.send);
   void meta;
 
+  // §15: count `dh.update()`s. The store's `update` reducer replaces the
+  // `InfoEvent` in place by uuid, so `outputs` only ever holds the latest
+  // bundle — but this component is stable-keyed by that uuid, so each update
+  // arrives here as a new `bundle` reference. Count reference changes.
+  const updates = useRef(-1);
+  const lastBundle = useRef<DisplayBundle | null>(null);
+  if (lastBundle.current !== bundle) {
+    lastBundle.current = bundle;
+    updates.current += 1;
+  }
+
+  const inner = renderBundle(id, bundle, send);
+  if (inner == null) return null;
+  if (!stable) return inner;
+  return (
+    <div className="out-wrap" data-stable data-updates={updates.current}>
+      {inner}
+      <span
+        className={`out-live${settled ? " settled" : ""}`}
+        title={settled ? `updated ${updates.current}×` : `live — updated ${updates.current}×`}
+      >
+        {settled ? `updated ${updates.current}×` : "live"}
+      </span>
+    </div>
+  );
+}
+
+function renderBundle(
+  id: string,
+  bundle: DisplayBundle,
+  send: ReturnType<typeof useSession.getState>["send"]
+): JSX.Element | null {
   const wb = bundle[WB_MIME];
   if (wb != null) {
     // `kernel._settle` emits `{kind:"traceback", ename, text}` as a display so
@@ -58,7 +93,7 @@ export function Output({ id, bundle, meta, stable }: OutputProps): JSX.Element |
   }
 
   const html = bundle["text/html"];
-  if (html != null) return <HtmlOutput html={html} stable={stable} />;
+  if (html != null) return <HtmlOutput html={html} />;
 
   const svg = bundle["image/svg+xml"];
   if (svg != null) {
@@ -111,7 +146,7 @@ type PlotlyDiv = HTMLDivElement & {
 };
 type PlotlyClick = { points: Array<{ customdata?: unknown[] }> };
 
-function HtmlOutput({ html, stable }: { html: string; stable: boolean }): JSX.Element {
+function HtmlOutput({ html }: { html: string }): JSX.Element {
   const send = useSession((s) => s.send);
   const hostRef = useRef<HTMLDivElement>(null);
   const isPlotly = html.includes("plotly-graph-div");
@@ -135,41 +170,49 @@ function HtmlOutput({ html, stable }: { html: string; stable: boolean }): JSX.El
   // the network fetch the screenshot harness can't make. Then wire
   // `plotly_click` → `customdata[0]` (the audit id the workbench styler
   // stashes per-point) navigates the desk.
+  //
+  // §17: `Plotly.newPlot` is synchronous and heavy, so paint a
+  // `.plotly-loading` placeholder first, yield one frame via rAF, then mount.
+  // Re-fires on `html` change (a stable figure that's `dh.update()`d).
   useEffect(() => {
     if (!isPlotly) return;
     const host = hostRef.current;
     if (!host) return;
-    host.innerHTML = html;
-    for (const s of Array.from(host.querySelectorAll("script"))) {
-      if (s.src) continue;
-      const live = document.createElement("script");
-      live.textContent = s.textContent;
-      s.replaceWith(live);
-    }
-    const gd = host.querySelector<PlotlyDiv>(".plotly-graph-div");
-    // `.on` is only patched onto the div after `Plotly.newPlot` runs (which
-    // the inline script above does synchronously) — guard in case the bundle
-    // hasn't attached it yet.
-    if (gd && typeof gd.on === "function") {
-      gd.on("plotly_click", (d) => {
-        const raw = String(d.points[0]?.customdata?.[0] ?? "");
-        const bare = raw.replace(/^wb:\/\/[^/]+\//, "");
-        if (!bare) return;
-        send({ t: "import_running", sample_id: bare });
-      });
-    }
-    return () => gd?.removeAllListeners?.("plotly_click");
+    host.innerHTML = '<div class="plotly-loading">rendering figure…</div>';
+    const raf = requestAnimationFrame(() => {
+      host.innerHTML = html;
+      for (const s of Array.from(host.querySelectorAll("script"))) {
+        if (s.src) continue;
+        const live = document.createElement("script");
+        live.textContent = s.textContent;
+        s.replaceWith(live);
+      }
+      const gd = host.querySelector<PlotlyDiv>(".plotly-graph-div");
+      // `.on` is only patched onto the div after `Plotly.newPlot` runs (which
+      // the inline script above does synchronously) — guard in case the bundle
+      // hasn't attached it yet.
+      if (gd && typeof gd.on === "function") {
+        gd.on("plotly_click", (d) => {
+          const raw = String(d.points[0]?.customdata?.[0] ?? "");
+          const bare = raw.replace(/^wb:\/\/[^/]+\//, "");
+          if (!bare) return;
+          send({ t: "import_running", sample_id: bare });
+        });
+      }
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      host
+        .querySelector<PlotlyDiv>(".plotly-graph-div")
+        ?.removeAllListeners?.("plotly_click");
+    };
   }, [isPlotly, html, send]);
 
   if (isPlotly) {
     return <div ref={hostRef} className="out bare plotly-host" />;
   }
   return (
-    <div
-      className="out html"
-      {...(stable ? { "data-display-id": "stable" } : {})}
-      dangerouslySetInnerHTML={{ __html: processed }}
-    />
+    <div className="out html" dangerouslySetInnerHTML={{ __html: processed }} />
   );
 }
 

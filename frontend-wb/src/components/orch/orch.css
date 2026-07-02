@@ -516,6 +516,21 @@
   background: var(--accent-dim); color: var(--accent-text);
   border: 1px solid hsl(215 50% 80%);
 }
+/* §15: `.out-wrap` — every stable output gets a corner `live` badge that
+   freezes to `updated N×` once the cell settles. RunCard already renders its
+   own inline `.out-live` in `.out-head`; hide the wrapper's when so. */
+.out-wrap { position: relative; }
+.out-wrap > .out { margin-top: 0; }
+.out-wrap { margin-top: 10px; }
+.out-wrap + .out-wrap, .out + .out-wrap, .out-wrap + .out { margin-top: 8px; }
+.out-wrap > .out-live {
+  position: absolute; top: 4px; right: 6px; z-index: 1; pointer-events: none;
+}
+.out-wrap > .out-live.settled {
+  background: var(--bg-200); color: var(--ink-faint);
+  border-color: var(--border); text-transform: none; letter-spacing: 0;
+}
+.out-wrap:has(.out-head .out-live) > .out-live { display: none; }
 .fx-bar {
   display: inline-block; width: 100px; height: 4px;
   background: var(--bg-200); border-radius: 2px; overflow: hidden;
@@ -552,8 +567,12 @@
 
 /* plotly figure host: `.out { overflow: hidden }` clips the modebar and the
    x-axis label row that plotly draws at the div's bottom edge. */
-.out.plotly-host { overflow: visible; margin-top: 12px; }
+.out.plotly-host { overflow: visible; margin-top: 12px; min-height: 60px; }
 .out.plotly-host .plotly-graph-div { margin: 0 auto; }
+.plotly-loading {
+  padding: 24px 0; text-align: center;
+  font: italic var(--fs-xs) var(--sans); color: var(--ink-faint);
+}
 
 /* pandas' trailing "N rows × M columns" caption — a `<p>` after the table. */
 .out.html table.dataframe + p,

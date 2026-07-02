@@ -34,6 +34,23 @@ after each fix batch.
 - **r2 (css)** `.out.bare > .out-plain` as `.repr`-style inline block;
   pandas caption `<p>` xs/faint; `.plotly-host { overflow: visible }`;
   `.cc-bg-btn i` sized to 10px.
+- **r4** item 15 stable-update badge threaded through all `Output` branches:
+  `.out-wrap[data-stable]` wraps every stable output with a corner
+  `.out-live` badge (`live` while the cell runs, `updated N×` once
+  settled). Update count tracked in `Output` via a bundle-ref counter
+  (store replaces the event in place, so each `dh.update()` lands as a
+  new `bundle` reference on the same stable-keyed component). Hidden
+  when the child card renders its own inline `.out-live` (RunCard).
+- **r4** item 17 plotly loading placeholder: `HtmlOutput`'s effect now
+  paints `<div class="plotly-loading">rendering figure…</div>` then
+  defers the `innerHTML`+`newPlot` mount by one rAF so the placeholder
+  is visible for the (heavy, sync) plotly render. Re-shows on `html`
+  change. `.plotly-loading` CSS: centered, faint, italic.
+- **r4** item 4 verified: `⏹` interrupt button in `OrchColumn` header
+  already wired to `{t:"cancel_cell", turn}`.
+- **r4** StartView Orchestrator tab: added the missing `system_prompt`
+  textarea (wire type already had it; card was empty above the
+  `.start-controls` separator). `.start-textarea { min-height: 4em }`.
 - **r1 (infra)** `_screenshot_m1` was broken by `a73f0d5`'s lockfile shrink:
   `frontend-wb`'s `pnpm install` (which owns ts-mono packages via
   `pnpm-workspace.yaml`) emptied their `node_modules/`. Fixed by re-running
@@ -152,12 +169,8 @@ Emitted by the tsx pass; need styling. Grouped by component.
   `.row-dot-{running,done,error,stopped}` (8px, running pulses),
   `.ar-in-desk` (transient chip, orch accent, fade-out ~2s).
 
-## Open after r3 (screenshot review — <3 actionable, iteration stopped)
+## Open after r4
 
-- **01** StartView Orchestrator tab: instruction textarea renders
-  zero-height (out of orch-column scope; `StartView.tsx` owner).
-- Deferred to `Output.tsx` owner: items 15 (stable-update `live` badge
-  threaded through all branches) and 17 (plotly loading placeholder).
 - `wb.plots.*` should default `layout.margin` so small figures don't
   self-clip (backend).
 

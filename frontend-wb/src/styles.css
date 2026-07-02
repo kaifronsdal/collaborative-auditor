@@ -260,7 +260,7 @@ body {
 }
 
 .start-textarea {
-  width: 100%; border: none; outline: none; resize: none;
+  width: 100%; min-height: 4em; border: none; outline: none; resize: none;
   background: transparent; font: inherit; color: var(--ink);
   font-size: 15px; line-height: 1.55;
 }

@@ -73,6 +73,7 @@ export function OrchTurn({ data, bgCells }: Props): JSX.Element {
           bundle={ev.data.bundle}
           meta={ev.data.meta}
           stable={ev.data.stable}
+          settled={!running && !detached}
         />
       ))}
       {py?.error && !hasTbCard && <Traceback err={py.error} />}

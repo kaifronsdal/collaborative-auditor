@@ -35,10 +35,11 @@ export function StartView(): JSX.Element {
   );
 }
 
-/** M1 orchestrator launcher — model dropdown + Start. */
+/** M1 orchestrator launcher — system-prompt override + model dropdown + Start. */
 function OrchStartCard(): JSX.Element {
   const send = useSession((s) => s.send);
   const [model, setModel] = useState(DEFAULT_AUDITOR);
+  const [systemPrompt, setSystemPrompt] = useState("");
   const [isStarting, setIsStarting] = useState(false);
 
   function handleStart(): void {
@@ -47,11 +48,22 @@ function OrchStartCard(): JSX.Element {
     // Clear the new-audit shield so the incoming `state` broadcast (which
     // carries `orchestrator != null`) flips App into DeskView.
     useSession.setState({ pendingNewAudit: false });
-    send({ t: "start_orchestrator", model });
+    send({
+      t: "start_orchestrator",
+      model,
+      ...(systemPrompt.trim() ? { system_prompt: systemPrompt.trim() } : {}),
+    });
   }
 
   return (
     <div className="start-card">
+      <textarea
+        className="start-textarea"
+        rows={4}
+        placeholder="Optional: override the orchestrator's system prompt…"
+        value={systemPrompt}
+        onChange={(e) => setSystemPrompt(e.target.value)}
+      />
       <div className="start-controls">
         <label className="mp-field">
           <span className="mp-role">orchestrator</span>
