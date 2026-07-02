@@ -60,7 +60,7 @@ class CiteProposal:
     verdict: dict[str, Any] | None = None
 
     def resolve(self, verdict: Any) -> None:
-        v = verdict or {}
+        v = verdict if isinstance(verdict, dict) else {}
         self.verdict = v
         edits = v.get("edits") or {}
         if (c := edits.get("claim")) is not None:
@@ -148,16 +148,17 @@ async def cite(
     ``id`` so a later ``display(finding, display_id=finding.id)`` updates
     the same card slot.
     """
+    quotes = [_as_quote(q) for q in quotes]
     prop = CiteProposal(
         claim=claim,
-        quotes=list(quotes),
+        quotes=quotes,
         grades_ref=grades_ref,
         description=description,
     )
-    verdict = await kernel.gate(prop)
+    await kernel.gate(prop)
     # ``gate()`` has already called ``prop.resolve(verdict)`` — claim/quotes
-    # now reflect any human edits.
-    signed_by = str(verdict.get("by")) if prop.signed else None
+    # now reflect any human edits; read the normalized ``prop.verdict``.
+    signed_by = (prop.verdict.get("by") or None) if prop.signed else None
     return Finding(
         claim=prop.claim,
         quotes=prop.quotes,

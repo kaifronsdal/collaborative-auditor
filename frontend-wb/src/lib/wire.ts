@@ -170,7 +170,7 @@ export type Up =
   | { t: "approve"; display_id: string; verdict?: unknown }
   | { t: "detach_cell" }
   | { t: "cancel_cell"; turn: number }
-  | { t: "import_running"; sample_id: string };
+  | { t: "import_running"; sample_id: string; log?: string };
 
 /** One entry from `GET /sessions` — a persisted session on disk. */
 export type SavedSession = {

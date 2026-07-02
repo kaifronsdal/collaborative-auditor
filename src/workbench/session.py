@@ -442,7 +442,7 @@ class Session:
         self,
         *,
         model: str,
-        system_prompt: str = "",
+        system_prompt: str | None = None,
         model_args: dict[str, Any] | None = None,
         max_turns: int = 10_000,
         resume_messages: list[ChatMessage] | None = None,

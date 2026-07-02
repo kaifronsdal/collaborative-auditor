@@ -128,20 +128,31 @@ function HtmlOutput({ html, stable }: { html: string; stable: boolean }): JSX.El
     if (!host) return;
     // Run each embedded script by cloning it into a fresh <script> node —
     // browsers only execute scripts that are *created*, not innerHTML'd.
+    let cdn: HTMLScriptElement | null = null;
     for (const s of Array.from(host.querySelectorAll("script"))) {
       const live = document.createElement("script");
       for (const { name, value } of Array.from(s.attributes)) live.setAttribute(name, value);
       live.textContent = s.textContent;
       s.replaceWith(live);
+      if (live.src.includes("plotly")) cdn = live;
     }
-    if (window.Plotly == null) return; // CDN not loaded yet — leave static HTML
     const gd = host.querySelector<PlotlyDiv>(".plotly-graph-div");
-    if (!gd) return;
-    gd.on("plotly_click", (d) => {
-      const id = d.points[0]?.customdata?.[0];
-      if (typeof id === "string") send({ t: "import_running", sample_id: id });
-    });
-    return () => gd.removeAllListeners?.("plotly_click");
+    const attachClick = (): void => {
+      if (!gd) return;
+      gd.on("plotly_click", (d) => {
+        const raw = String(d.points[0]?.customdata?.[0] ?? "");
+        const bare = raw.replace(/^wb:\/\/[^/]+\//, "");
+        if (!bare) return;
+        send({ t: "import_running", sample_id: bare });
+      });
+    };
+    if (window.Plotly == null) {
+      // CDN not loaded yet — wire the click once it lands.
+      if (cdn) cdn.onload = () => attachClick();
+    } else {
+      attachClick();
+    }
+    return () => gd?.removeAllListeners?.("plotly_click");
   }, [isPlotly, html, send]);
 
   return (

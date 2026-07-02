@@ -15,6 +15,7 @@ without cooperation.
 from __future__ import annotations
 
 import asyncio
+import os
 import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -213,6 +214,7 @@ SampleStatus = Literal["running", "done", "error", "stopped"]
 class SampleRow:
     id: str
     status: SampleStatus
+    epoch: int = 1
     input: str = ""
     turns: int | None = None
     scores: dict[str, Any] = field(default_factory=dict)
@@ -359,6 +361,16 @@ class RunHandle(_PollingHandle):
     # -- hooks ------------------------------------------------------------
 
     async def _poll(self) -> None:
+        if self._log_file is None:
+            # ``list_eval_logs`` (not ``active_samples()[i].log_location``)
+            # because the latter is set before the first flush — reading a
+            # mid-write zip raises ``EOCD not found``. The directory walk
+            # only returns files the recorder has actually copied out.
+            self._log_file = next((i.name for i in list_eval_logs(self.log_dir)), None)
+        if self._log_file is not None:
+            summaries = await read_eval_log_sample_summaries_async(self._log_file)
+            for s in summaries:
+                self.rows[f"{s.id}#{s.epoch}"] = self._row(s)
         # In-flight samples (not yet flushed) come from the process-local
         # registry; filter to this run's log_dir and skip any that already
         # landed in ``self.rows`` (brief overlap at completion).
@@ -366,24 +378,14 @@ class RunHandle(_PollingHandle):
             SampleRow(
                 id=str(s.sample.id),
                 status="running",
+                epoch=s.epoch,
                 input=str(s.sample.input)[:80],
                 turns=s.total_messages // 2,
             )
             for s in active_samples()
-            if s.log_location.startswith(self.log_dir)
-            and str(s.sample.id) not in self.rows
+            if s.log_location.startswith(self.log_dir + os.sep)
+            and f"{s.sample.id}#{s.epoch}" not in self.rows
         ]
-        if self._log_file is None:
-            # ``list_eval_logs`` (not ``active_samples()[i].log_location``)
-            # because the latter is set before the first flush — reading a
-            # mid-write zip raises ``EOCD not found``. The directory walk
-            # only returns files the recorder has actually copied out.
-            self._log_file = next((i.name for i in list_eval_logs(self.log_dir)), None)
-            if self._log_file is None:
-                return
-        summaries = await read_eval_log_sample_summaries_async(self._log_file)
-        for s in summaries:
-            self.rows[str(s.id)] = self._row(s)
 
     def _signature(self) -> tuple[Any, ...]:
         return (
@@ -396,8 +398,8 @@ class RunHandle(_PollingHandle):
         # Drop this run's control entries — sample ids can collide across
         # runs, and ``_row`` reads ``CONTROL[id].stop`` to distinguish
         # stopped from errored.
-        for sid in self.rows:
-            CONTROL.pop(sid, None)
+        for r in self.rows.values():
+            CONTROL.pop(r.id, None)
 
     def _row(self, s: EvalSampleSummary) -> SampleRow:
         status: SampleStatus = "done"
@@ -411,6 +413,7 @@ class RunHandle(_PollingHandle):
         return SampleRow(
             id=str(s.id),
             status=status,
+            epoch=s.epoch,
             input=str(s.input)[:80],
             turns=turns,
             scores={k: v.value for k, v in (s.scores or {}).items()},

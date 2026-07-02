@@ -698,13 +698,21 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
                 )
                 return
             await session.start_orchestrator(
-                model=data["model"], system_prompt=data.get("system_prompt", "")
+                model=data["model"], system_prompt=data.get("system_prompt")
             )
 
         case "import_running":
             # Punch down into a running batch sample: adopt it as an M0
-            # `Branch` at its current turn (M1-RUN-AUDITS.md §Desk).
-            history, meta = await adopt_running(data["sample_id"])
+            # `Branch` at its current turn (M1-RUN-AUDITS.md §Desk). If the
+            # sample isn't in ``active_samples()`` (already finished/flushed),
+            # fall back to a plain ``import_eval`` from the provided log.
+            try:
+                history, meta = await adopt_running(data["sample_id"])
+            except ValueError:
+                if data.get("log"):
+                    history, meta = import_eval(data["log"], data["sample_id"])
+                else:
+                    raise
             await _import(session, history, meta)
 
         case "orch_send":

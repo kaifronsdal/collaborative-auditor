@@ -108,7 +108,7 @@ class Orchestrator(StepGated):
         session: "Session",
         *,
         model: str,
-        system_prompt: str = "",
+        system_prompt: str | None = None,
         model_args: dict[str, Any] | None = None,
         max_turns: int = 10_000,
         resume_messages: list[ChatMessage] | None = None,
@@ -125,7 +125,9 @@ class Orchestrator(StepGated):
         self.session = session
         self.model_name = model
         self.model_args = model_args or {}
-        self.system_prompt = system_prompt or ORCHESTRATOR_SYSTEM_PROMPT
+        self.system_prompt = (
+            ORCHESTRATOR_SYSTEM_PROMPT if system_prompt is None else system_prompt
+        )
         self.max_turns = max_turns
         #: Persistence (M1.3): pre-save chat history to prepend on resume,
         #: and any ``RunHandle.log_dir``s the pre-save cells produced.
@@ -144,6 +146,7 @@ class Orchestrator(StepGated):
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
         self.kernel.shell.user_ns["wb"] = Workbench(self.kernel, session)
+        self.kernel.shell.user_ns.update(_seed_analysis_ns())
         self._init_gate()
         self.status: Status = "idle"
         self.queued: list[ChatMessage] = []
@@ -228,10 +231,7 @@ class Orchestrator(StepGated):
             dirs = ", ".join(self.run_log_dirs) or "(none)"
             note = ChatMessageUser(content=KERNEL_RESTART_NOTE.format(dirs=dirs))
             return [*self._resume_messages, note]
-        msgs: list[ChatMessage] = []
-        if self.system_prompt:
-            msgs.append(ChatMessageSystem(content=self.system_prompt))
-        return msgs
+        return [ChatMessageSystem(content=self.system_prompt)]
 
     # -- view (for Session.view()) --------------------------------------------
 
@@ -318,6 +318,43 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
         return execute
 
     return _factory()
+
+
+# -- seeded namespace (M1-NOTEBOOK.md §Environment) --------------------------
+
+
+def _seed_analysis_ns() -> dict[str, Any]:
+    """Analysis names the prompt promises are pre-bound in ``user_ns``.
+
+    Imported lazily and guarded so a missing optional (e.g. ``inspect_scout``
+    on a lean install) degrades to "not seeded" rather than blocking
+    orchestrator construction.
+    """
+    import json  # noqa: PLC0415
+
+    ns: dict[str, Any] = {"json": json, "get_model": get_model}
+    try:
+        import numpy as np  # noqa: PLC0415
+        import pandas as pd  # noqa: PLC0415
+        import plotly.express as px  # noqa: PLC0415
+        import plotly.graph_objects as go  # noqa: PLC0415
+
+        ns.update(pd=pd, np=np, px=px, go=go)
+    except ImportError:
+        pass
+    try:
+        from inspect_petri import audit_scanner  # noqa: PLC0415
+
+        ns["audit_scanner"] = audit_scanner
+    except ImportError:
+        pass
+    try:
+        from inspect_scout import llm_scanner, scanner  # noqa: PLC0415
+
+        ns.update(llm_scanner=llm_scanner, scanner=scanner)
+    except ImportError:
+        pass
+    return ns
 
 
 # -- pre-warm (call once at kernel init; M1-RUN-AUDITS.md §Required) ----------

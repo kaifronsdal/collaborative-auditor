@@ -90,7 +90,9 @@ def link(
 
     Prefer passing ``custom_data=["audit_id"]`` to ``px.*`` directly; this
     is for figures built without it. Assumes single-trace or traces that
-    share ``ids`` order — for split traces, use ``px``'s ``custom_data=``.
+    share ``ids`` order — for figures with ``color=``/``facet=``
+    (multi-trace), pass ``custom_data=[id_col]`` to ``px.*`` directly
+    instead.
     """
     refs = np.asarray([[f"{scheme}{i}"] for i in ids])
     for tr in fig.data:
@@ -102,15 +104,14 @@ def link(
 
 
 def annotate_top(
-    fig: go.Figure, df: pd.DataFrame, y: str, label: str, n: int = 3
+    fig: go.Figure, df: pd.DataFrame, x: str, y: str, label: str, n: int = 3
 ) -> go.Figure:
-    """Label the top-``n`` rows by ``y`` with a greedy vertical stagger."""
+    """Label the top-``n`` rows by ``y`` at their ``(x, y)`` data position."""
     top = df.nlargest(n, y)
-    for i, (_, r) in enumerate(top.iterrows()):
+    for _, r in top.iterrows():
         fig.add_annotation(
-            x=r[y],
-            y=1.0 - i * 0.09,
-            yref="paper",
+            x=r[x],
+            y=r[y],
             text=str(r[label]),
             showarrow=True,
             arrowhead=2,

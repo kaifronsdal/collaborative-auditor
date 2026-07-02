@@ -68,8 +68,8 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
     last_turn_count = -1
     while time.monotonic() < deadline:
         for gid in list(orch.kernel.pending):
-            print(f"  auto-resolving pending gate {gid[:8]} → 'yes'")
-            orch.kernel.resolve(gid, "yes")
+            print(f"  auto-resolving pending gate {gid[:8]} → {{}}")
+            orch.kernel.resolve(gid, {})
         turns = _n_assistant_turns(session)
         if turns != last_turn_count:
             print(
