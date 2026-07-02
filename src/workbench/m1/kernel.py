@@ -25,6 +25,7 @@ import asyncio
 import contextvars
 import functools
 import sys
+import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -96,6 +97,8 @@ class TurnResult:
     error: BaseException | None = None
     #: names newly bound in ``user_ns`` by this cell (for the ``[done]`` chip)
     new_names: list[str] = field(default_factory=list)
+    #: wall-clock seconds from ``run_turn`` entry to settle (M1-FEATURES §5).
+    duration: float = 0.0
 
 
 # -- gating -------------------------------------------------------------------
@@ -232,6 +235,9 @@ class OrchestratorKernel:
         #: turns whose ``[done]`` chip should be enqueued (backgrounded or
         #: detached mid-run — not fg cells the agent already saw settle).
         self._detached: set[int] = set()
+        #: turns cancelled via ``interrupt()`` (M1-FEATURES §11) — ``_settle``
+        #: renders ``[interrupted by user …]`` instead of a traceback.
+        self._user_interrupted: set[int] = set()
 
         self._turn_counter = 0
         self._current_turn: contextvars.ContextVar[int | None] = contextvars.ContextVar(
@@ -259,6 +265,10 @@ class OrchestratorKernel:
             **(extra_ns or {}),
         )
         self.shell.user_ns.update(seeded)
+        #: names present before any user cell — excluded from ``_ns_summary``
+        #: (M1-FEATURES §7). Re-snapshotted on ``__enter__`` so anything the
+        #: ``Orchestrator`` seeds between construction and ``run()`` is caught.
+        self._seeded: set[str] = set(self.shell.user_ns)
 
     # -- context manager ------------------------------------------------------
 
@@ -269,6 +279,7 @@ class OrchestratorKernel:
                 "(InteractiveShell is a singleton)"
             )
         OrchestratorKernel._instance = self
+        self._seeded |= set(self.shell.user_ns)
         # Local import: ``hooks`` imports ``DisplayEvent``/``STREAM_MIME``
         # from this module, so a top-level import would be circular.
         from workbench.m1.hooks import _CellStream, install_workbench_hooks  # noqa: PLC0415
@@ -352,6 +363,7 @@ class OrchestratorKernel:
         self.outputs[turn_id] = []
         detach = asyncio.Event()
         self._current_detach = detach
+        t0 = time.monotonic()
 
         cell_task: asyncio.Task[ExecutionResult] = asyncio.create_task(
             self._run_cell(turn_id, code)
@@ -370,16 +382,18 @@ class OrchestratorKernel:
                 text=f"<cell-{turn_id} backgrounded>",
                 outputs=self.outputs[turn_id],
                 detached=True,
+                duration=time.monotonic() - t0,
             )
 
         detach_task = asyncio.create_task(detach.wait())
         done, _ = await asyncio.wait(
             {cell_task, detach_task}, return_when=asyncio.FIRST_COMPLETED
         )
+        dur = time.monotonic() - t0
         if cell_task in done:
             detach_task.cancel()
-            r = cell_task.result()
-            return self._settle(turn_id, code, r)
+            r = None if cell_task.cancelled() else cell_task.result()
+            return self._settle(turn_id, code, r, duration=dur)
 
         # detached mid-run
         self._detached.add(turn_id)
@@ -391,6 +405,7 @@ class OrchestratorKernel:
             ),
             outputs=self.outputs[turn_id],
             detached=True,
+            duration=dur,
         )
 
     async def _run_cell(self, turn_id: int, code: str) -> ExecutionResult:
@@ -455,6 +470,7 @@ class OrchestratorKernel:
         # IPython's ``run_code`` catches ``CancelledError`` and returns it
         # as ``error_in_exec``, so ``task.cancelled()`` alone isn't enough.
         if task.cancelled() or isinstance(err, asyncio.CancelledError):
+            self._user_interrupted.discard(turn_id)
             self.notify(f"[cell-{turn_id} cancelled]")
             return
         bound = _bound_names(code, self.shell.user_ns)
@@ -474,9 +490,34 @@ class OrchestratorKernel:
             f"result: {result}]"
         )
 
-    def _settle(self, turn_id: int, code: str, r: ExecutionResult) -> TurnResult:
-        err = r.error_before_exec or r.error_in_exec
+    def _settle(
+        self, turn_id: int, code: str, r: ExecutionResult | None, *, duration: float
+    ) -> TurnResult:
+        err = None if r is None else (r.error_before_exec or r.error_in_exec)
         new = _bound_names(code, self.shell.user_ns)
+        # Cancellation (M1-FEATURES §11): IPython's ``run_code`` catches
+        # ``CancelledError`` and returns it as ``error_in_exec``; a cancel that
+        # lands earlier gives ``r is None``. Either way — no traceback card,
+        # just ``[interrupted/cancelled after Ns]`` + whatever partial output
+        # already landed.
+        if r is None or isinstance(err, asyncio.CancelledError):
+            interrupted = turn_id in self._user_interrupted
+            self._user_interrupted.discard(turn_id)
+            verb = "interrupted by user" if interrupted else "cancelled"
+            partial = self._render_outputs(turn_id)
+            text = f"[{verb} after {duration:.1f}s]"
+            if partial:
+                text = f"{text}\n{partial}"
+            self._emit_cell_done(turn_id, duration, new, interrupted=interrupted)
+            return TurnResult(
+                turn_id=turn_id,
+                text=text,
+                outputs=self.outputs[turn_id],
+                success=False,
+                error=None,
+                new_names=new,
+                duration=duration,
+            )
         if err is not None:
             # Emit the traceback as a display card so the frontend renders
             # it under this turn (otherwise it only reaches the model via
@@ -514,6 +555,7 @@ class OrchestratorKernel:
         text = self._render_outputs(turn_id)
         if not text:
             text = f"<ok · bound: {', '.join(new)}>" if new else "<no output>"
+        self._emit_cell_done(turn_id, duration, new)
         return TurnResult(
             turn_id=turn_id,
             text=text,
@@ -522,7 +564,48 @@ class OrchestratorKernel:
             success=err is None,
             error=err,
             new_names=new,
+            duration=duration,
         )
+
+    def _emit_cell_done(
+        self,
+        turn_id: int,
+        duration: float,
+        new_names: list[str],
+        *,
+        interrupted: bool = False,
+    ) -> None:
+        """Forward one wire-only ``cell_done`` card (M1-FEATURES §5/§7).
+
+        Not appended to ``self.outputs`` — it's frontend metadata (timing chip,
+        variable-inspector tooltip), not model-facing output, so the smoke
+        tests' ``r.outputs`` assertions and ``_render_outputs`` are unaffected.
+        Reconnect still carries it: ``_forward`` → ``on_display`` →
+        ``session.emit(InfoEvent)`` lands it in ``session.events``.
+        """
+        ev = DisplayEvent(
+            id=uuid4().hex,
+            bundle={
+                WB_MIME: {
+                    "kind": "cell_done",
+                    "turn": turn_id,
+                    "duration": duration,
+                    "new_names": new_names,
+                    "interrupted": interrupted,
+                    "ns": self._ns_summary(),
+                }
+            },
+        )
+        ev.turn_id = turn_id
+        self._forward(ev)
+
+    def _ns_summary(self) -> dict[str, str]:
+        """``{name: "TypeName · short repr"}`` for user-bound names (§7)."""
+        return {
+            name: f"{type(v).__name__} · {_short_repr(v)}"
+            for name, v in self.shell.user_ns.items()
+            if not name.startswith("_") and name not in self._seeded
+        }
 
     def _render_outputs(self, turn_id: int) -> str:
         """Model-facing text: outputs in emission order, updates collapsed.
@@ -561,6 +644,20 @@ class OrchestratorKernel:
         task = self.bg.get(turn_id)
         if task is None:
             return False
+        task.cancel()
+        return True
+
+    def interrupt(self, turn_id: int) -> bool:
+        """User-initiated cancel (M1-FEATURES §11 interrupt-and-send).
+
+        Same mechanics as ``cancel()`` but ``_settle`` renders the tool result
+        as ``[interrupted by user after Ns]`` (no traceback) so the model reads
+        the human's intent, not a ``CancelledError`` it might try to debug.
+        """
+        task = self.bg.get(turn_id)
+        if task is None:
+            return False
+        self._user_interrupted.add(turn_id)
         task.cancel()
         return True
 
@@ -613,6 +710,31 @@ def _bound_names(code: str, ns: dict[str, Any]) -> list[str]:
 
 def _truncate(s: str, n: int = 60) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+#: Type names whose ``_short_repr`` is ``{n_done}/{total}`` (M1-FEATURES §7).
+_HANDLE_TYPES = {"RunHandle", "AuditRunHandle", "ScanHandle"}
+
+
+def _short_repr(v: Any) -> str:
+    """Compact one-line summary for the variable-inspector tooltip (§7).
+
+    Guarded because ``user_ns`` holds arbitrary user objects — a broken
+    ``__repr__`` or unexpected attribute must not crash ``_settle``.
+    """
+    tn = type(v).__name__
+    try:
+        if tn in _HANDLE_TYPES:
+            state = "done" if v.finished else "running"
+            return f"{v.n_done}/{v.total} {state}"
+        if tn == "DataFrame":
+            r, c = v.shape
+            return f"{r}×{c}"
+        if isinstance(v, (list, tuple, set, dict)):
+            return f"len {len(v)}"
+        return _truncate(repr(v), 50)
+    except Exception:  # noqa: BLE001
+        return "<unrepr>"
 
 
 def _assign_targets(code: str) -> set[str]:

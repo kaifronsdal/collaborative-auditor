@@ -141,6 +141,15 @@ class Orchestrator(StepGated):
         self._init_gate()
         self._status: Status = "idle"
         self.queued: list[ChatMessage] = []
+        #: kernel ``turn_id`` → the assistant ``ChatMessage.id`` whose
+        #: ``python`` tool_call produced it. ``rewind(N)`` uses this to find
+        #: where in ``state.messages`` (and ``session.events``) turn N starts.
+        self._turn_msg: dict[int, str] = {}
+        #: Set by ``rewind()``; ``_apply_rewind`` truncates ``state.messages``
+        #: at the top of the next agent-loop iteration (deferred so the
+        #: cancelled cell's tool-result extend, which happens in the orch task
+        #: after ``rewind()`` returns, is dropped too).
+        self._rewind_to: int | None = None
         #: The live agent state; set once ``run()`` enters its span. Read by
         #: ``m1.persist.save_orchestrator`` for the resume ``messages``.
         self.state: AgentState | None = None
@@ -276,6 +285,73 @@ class Orchestrator(StepGated):
         self.queued.append(ChatMessageUser(content=text))
         self.step()
 
+    # -- rewind (M1-FEATURES §2) ---------------------------------------------
+
+    async def rewind(self, turn: int) -> None:
+        """Discard turn ``N`` onward: cancel cells, mark events, park.
+
+        Event marking is immediate (frontend filters on ``rewound``); the
+        ``state.messages`` truncate is deferred to ``_apply_rewind`` at the top
+        of the next agent-loop iteration so the cancelled cell's tool-result
+        (which the orch task appends *after* this returns) is dropped too.
+        Kernel ``user_ns`` is *not* rolled back — same as Jupyter "run all
+        above".
+        """
+        self.pause()
+        # Cancel every running cell and let the orch task drain ``_settle``'s
+        # emits (traceback / ``cell_done``) so ``mark_rewound`` catches them.
+        tasks = list(self.kernel.bg.values())
+        for tid in list(self.kernel.bg):
+            self.kernel.cancel(tid)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+            for _ in range(5):
+                await asyncio.sleep(0)
+        self.queued.clear()
+        msg_id = self._turn_msg.get(turn)
+        if msg_id is None:
+            logger.warning("rewind(%d): no assistant message mapping", turn)
+            return
+        from_uuid = self._find_model_event_uuid(msg_id)
+        if from_uuid is not None:
+            self.session.mark_rewound(self.span_id, from_uuid)
+        marker = InfoEvent(
+            source=ORCH_SOURCE, data={"kind": "rewind_marker", "to_turn": turn}
+        )
+        # Emitted from the WS task, outside the orch span — set span_id
+        # explicitly so ``session._resolve`` routes it to ``("orch","orch")``.
+        marker.span_id = self.span_id
+        self.session.emit(marker)
+        self._rewind_to = turn
+        await self.session.broadcast_status()
+
+    def _apply_rewind(self) -> None:
+        assert self._rewind_to is not None and self.state is not None
+        turn, self._rewind_to = self._rewind_to, None
+        msg_id = self._turn_msg.get(turn)
+        if msg_id is not None:
+            idx = next(
+                (i for i, m in enumerate(self.state.messages) if m.id == msg_id), None
+            )
+            if idx is not None:
+                del self.state.messages[idx:]
+        for t in [t for t in self.kernel.outputs if t >= turn]:
+            del self.kernel.outputs[t]
+        for t in [t for t in self._turn_msg if t >= turn]:
+            del self._turn_msg[t]
+
+    def _find_model_event_uuid(self, msg_id: str) -> str | None:
+        """The ``ModelEvent.uuid`` whose output message id is ``msg_id``."""
+        for ev_uuid in self.session._by_role.get(("orch", "orch"), []):  # noqa: SLF001
+            e = self.session.events.get(ev_uuid)
+            if e is None or e.get("event") != "model":
+                continue
+            out = e.get("output") or {}
+            choices = out.get("choices") or [{}]
+            if (choices[0].get("message") or {}).get("id") == msg_id:
+                return ev_uuid
+        return None
+
 
 # -- the agent ---------------------------------------------------------------
 
@@ -298,8 +374,14 @@ def python_tool(orch: Orchestrator) -> Tool:
             """
             notes = orch.kernel.drain_notifications()
             r = await orch.kernel.run_turn(code, background=background)
+            # Map kernel turn → this generate's assistant message (for §2
+            # rewind). ``state.output`` is the message ``execute_tools`` is
+            # currently servicing.
+            if orch.state is not None and orch.state.output is not None:
+                orch._turn_msg[r.turn_id] = orch.state.output.message.id  # noqa: SLF001
             head = ("\n".join(notes) + "\n\n") if notes else ""
-            return head + r.text
+            tail = "" if r.detached else f"\n[{r.duration:.1f}s]"
+            return head + r.text + tail
 
         return execute
 
@@ -316,6 +398,8 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
         async def execute(state: AgentState) -> AgentState:
             for turn in range(orch.max_turns):
                 await orch.await_step()
+                if orch._rewind_to is not None:  # noqa: SLF001
+                    orch._apply_rewind()  # noqa: SLF001
                 state.messages.extend(orch.queued)
                 orch.queued.clear()
 

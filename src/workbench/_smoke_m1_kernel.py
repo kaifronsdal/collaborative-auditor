@@ -271,7 +271,43 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
     assert "gone" not in r.text and "kept" in r.text, r.text
     print("✓ clear_output honoured in model-facing render")
 
-    # ---- 20. on_display forwarded everything ------------------------------
+    # ---- 20. interrupt (M1-FEATURES §11) ----------------------------------
+    turn = asyncio.create_task(k.run_turn("print('partial')\nawait asyncio.sleep(10)"))
+    await asyncio.sleep(0.05)
+    tid = k._turn_counter
+    assert k.interrupt(tid)
+    r = await turn
+    assert not r.success and r.error is None, (r.success, r.error)
+    assert "[interrupted by user after " in r.text and "partial" in r.text, r.text
+    assert not any(
+        ev.bundle.get(WB_MIME, {}).get("kind") == "traceback" for ev in r.outputs
+    ), "interrupt emitted a traceback card"
+    assert r.duration >= 0.04, r.duration
+    # cell_done went to on_display (not r.outputs) with interrupted=True
+    done_ev = next(
+        ev
+        for ev in reversed(wire)
+        if ev.bundle.get(WB_MIME, {}).get("kind") == "cell_done"
+    )
+    assert done_ev.bundle[WB_MIME]["interrupted"] is True
+    assert done_ev.bundle[WB_MIME]["turn"] == tid
+    print("✓ interrupt: [interrupted by user …] + partial, no traceback, cell_done")
+
+    # ---- 21. cell_done + ns_summary (M1-FEATURES §5/§7) --------------------
+    r = await k.run_turn("summary_var = [1, 2, 3]")
+    done_ev = next(
+        ev
+        for ev in reversed(wire)
+        if ev.bundle.get(WB_MIME, {}).get("kind") == "cell_done"
+    )
+    cd = done_ev.bundle[WB_MIME]
+    assert cd["turn"] == r.turn_id and cd["duration"] == r.duration
+    assert cd["new_names"] == ["summary_var"]
+    assert cd["ns"]["summary_var"] == "list · len 3", cd["ns"]["summary_var"]
+    assert "KERNEL" not in cd["ns"] and "asyncio" not in cd["ns"]
+    print("✓ cell_done: duration + new_names + ns_summary (seeded names excluded)")
+
+    # ---- 22. on_display forwarded everything ------------------------------
     assert len(wire) >= sum(len(v) for v in k.outputs.values())
     assert all(ev.turn_id != -1 for ev in wire if not ev.meta.get("sys")), (
         "some in-cell output emitted with turn_id=-1"

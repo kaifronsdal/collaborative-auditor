@@ -107,6 +107,12 @@ export type Down =
       raw?: string;
       error?: string;
     }
+  // §2 rewind: backend marks every event in `span`'s role bucket at/after
+  // `from_uuid` (insertion order) as rewound; the frontend adds their uuids to
+  // `state.rewound` and `eventsToOrchTurns` skips them. On reconnect each such
+  // event carries a top-level `rewound: true` (works for ModelEvent/ToolEvent
+  // too, which have no `.data`).
+  | { t: "rewound"; v: number; span: string; from_uuid: string }
   | { t: "error"; v: number; message: string };
 
 export type Up =
@@ -174,6 +180,9 @@ export type Up =
   | { t: "approve"; display_id: string; verdict?: unknown }
   | { t: "detach_cell" }
   | { t: "cancel_cell"; turn: number }
+  | { t: "rewind"; turn: number }
+  | { t: "interrupt_and_send"; turn: number; text: string }
+  | { t: "stop_sample"; id: string; hard?: boolean }
   | { t: "import_running"; sample_id: string; log?: string };
 
 /** One entry from `GET /sessions` — a persisted session on disk. */

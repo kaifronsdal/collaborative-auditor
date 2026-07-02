@@ -117,8 +117,10 @@ async def _amain() -> None:  # noqa: PLR0915
     assert tool_evs, "no python ToolEvent in session.events"
     result_text = _tool_result_text(tool_evs[0])
     assert "'v2'" in result_text and "'v1'" not in result_text, result_text
-    assert "hello" in result_text and result_text.strip().endswith("2"), result_text
-    print("✓ tool result = collapsed model-facing text")
+    # Last-expr `2` present; §5 timing suffix `[N.Ns]` is the final line.
+    assert "hello" in result_text and "\n2\n" in result_text, result_text
+    assert result_text.strip().endswith("s]"), result_text
+    print("✓ tool result = collapsed model-facing text + [duration]")
 
     # ---- turn 2: gate → view() → resolve() ---------------------------------
     orch.step()

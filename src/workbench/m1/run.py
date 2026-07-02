@@ -287,6 +287,14 @@ class RunProposal:
 SampleStatus = Literal["running", "done", "error", "stopped"]
 
 
+def _first_numeric(scores: dict[str, Any]) -> float | None:
+    """First numeric score value in ``scores`` (M1-FEATURES §8 histogram)."""
+    for v in scores.values():
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+    return None
+
+
 @dataclass
 class SampleRow:
     id: str
@@ -530,28 +538,32 @@ class RunHandle(_PollingHandle):
         state = "done" if self.finished else "running"
         if self.error:
             state = self.error
+        wb: dict[str, Any] = {
+            "kind": self.kind,
+            "id": self.id,
+            "task": self.task_name,
+            "description": self.description,
+            "log_dir": self.log_dir,
+            "log": self._log_file,
+            "total": self.total,
+            "done": self.n_done,
+            "finished": self.finished,
+            "error": self.error,
+            "elapsed": f"{time.monotonic() - self._started:.0f}s",
+            "rows": {
+                "running": [vars(r) for r in self._running],
+                "done": [vars(r) for r in self.rows.values()],
+            },
+        }
+        if self.finished:
+            # M1-FEATURES §8: per-row first-numeric score for the sparkline.
+            wb["scores"] = [_first_numeric(r.scores) for r in self.rows.values()]
         return {
             "text/plain": (
                 f"<{type(self).__name__} {self.task_name} · "
                 f"{self.n_done}/{self.total} · {state}>"
             ),
-            WB_MIME: {
-                "kind": self.kind,
-                "id": self.id,
-                "task": self.task_name,
-                "description": self.description,
-                "log_dir": self.log_dir,
-                "log": self._log_file,
-                "total": self.total,
-                "done": self.n_done,
-                "finished": self.finished,
-                "error": self.error,
-                "elapsed": f"{time.monotonic() - self._started:.0f}s",
-                "rows": {
-                    "running": [vars(r) for r in self._running],
-                    "done": [vars(r) for r in self.rows.values()],
-                },
-            },
+            WB_MIME: wb,
         }
 
 

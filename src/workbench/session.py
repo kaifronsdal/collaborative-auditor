@@ -478,11 +478,46 @@ class Session:
         ``transcript()`` contextvar — an emit from a foreign context (WS
         handler, thread) would otherwise land on a fresh unsubscribed
         ``Transcript`` and be silently lost.
+
+        A stable-id re-``display()`` (e.g. ``RunProposal`` → ``AuditRunHandle``
+        reusing ``prop.id``) arrives with ``update=False`` but a uuid the
+        transcript already holds; ``_event`` would raise ``Duplicate event
+        uuid``. The intent of a stable id *is* "same slot", so route those to
+        ``_event_updated`` regardless.
         """
-        if update:
+        if update or (ev.uuid is not None and ev.uuid in self.events):
             self.transcript._event_updated(ev)  # noqa: SLF001
         else:
             self.transcript._event(ev)  # noqa: SLF001
+
+    def mark_rewound(self, span_id: str, from_uuid: str) -> None:
+        """Flag every event in ``span_id``'s role bucket at/after ``from_uuid``.
+
+        Events are never removed (wire is version-monotonic — M1-FEATURES §2);
+        the frontend filters on the top-level ``rewound`` key. Broadcasts
+        ``{"t":"rewound", span, from_uuid}`` so live clients can filter without
+        a full re-fetch; reconnect reads the flag from ``push_full_state``.
+        """
+        key = self.span_role.get(span_id)
+        if key is None:
+            return
+        ordered = self._by_role.get(key, [])
+        try:
+            idx = ordered.index(from_uuid)
+        except ValueError:
+            return
+        for uuid in ordered[idx:]:
+            if (e := self.events.get(uuid)) is not None:
+                e["rewound"] = True
+        self.version += 1
+        self._enqueue(
+            {
+                "t": "rewound",
+                "v": self.version,
+                "span": span_id,
+                "from_uuid": from_uuid,
+            }
+        )
 
     # -- persistence (#4) -----------------------------------------------------
 

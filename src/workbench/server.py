@@ -32,7 +32,7 @@ from inspect_petri.target import Step
 from shortuuid import uuid
 
 from workbench.export import export_branch, import_eval
-from workbench.m1.run import adopt_running, snapshot_running
+from workbench.m1.run import adopt_running, snapshot_running, stop
 from workbench.run import (
     Branch,
     edited_auditor_step,
@@ -454,6 +454,8 @@ UNLOCKED = {
     "approve",
     "detach_cell",
     "cancel_cell",
+    "interrupt_and_send",
+    "stop_sample",
 }
 
 
@@ -749,6 +751,29 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
         case "cancel_cell":
             if session.orchestrator is not None:
                 session.orchestrator.kernel.cancel(int(data["turn"]))
+
+        case "interrupt_and_send":
+            # M1-FEATURES §11: kill the running cell (tool result becomes
+            # ``[interrupted by user …]``), queue the human's text, release
+            # one turn so both reach the *same* next generate. Not
+            # ``orch.send()`` — that would ``detach()``, which can win the
+            # race against the cancel and background the cell instead.
+            orch = session.orchestrator
+            if orch is None:
+                return
+            orch.kernel.interrupt(int(data["turn"]))
+            orch.queued.append(ChatMessageUser(content=data["text"]))
+            orch.step()
+            await session.broadcast_status()
+
+        case "rewind":
+            # M1-FEATURES §2: discard orchestrator turn N onward.
+            if session.orchestrator is not None:
+                await session.orchestrator.rewind(int(data["turn"]))
+
+        case "stop_sample":
+            # M1-FEATURES §9: per-sample stop from a ``ProgressCard`` row.
+            stop([data["id"]], hard=bool(data.get("hard", True)))
 
         case "switch":
             branch_id = data["branch"]
