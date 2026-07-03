@@ -3,9 +3,11 @@
    app-level styles.css :root. */
 
 :root {
-  --gate: hsl(265 55% 55%);
-  --gate-dim: hsl(265 55% 96%);
-  --gate-text: hsl(265 50% 42%);
+  /* Gate = "action required". Was a distinct purple; user found it jarring,
+     so alias to the app accent — one CTA colour everywhere. */
+  --gate: var(--accent);
+  --gate-dim: hsl(214 60% 96%);
+  --gate-text: var(--accent-text);
 }
 
 /* ---- column shell ---- */
@@ -182,28 +184,22 @@
 .out.html { padding: var(--sp-2) 14px; overflow-x: auto; }
 
 /* ---- GateCard: pending "request from agent" shell ------------------------ */
-/* Reads as a review-request card (Linear/GitHub idiom): thin purple header
-   strip → white body (icon + question + peek) → right-aligned action footer.
+/* Neutral card (Linear/GitHub confirm-dialog idiom): white body with a
+   subtle shadow lift → question + peek → right-aligned action footer with
+   accent-blue primary. No colour-coded chrome — the column header's
+   `● N waiting on you` pill + the shadow + big buttons signal "act on this".
    Detail overflow (`view all N …`) opens a `<Modal>`. */
 .out.gated {
-  background: var(--bg-000); border-color: hsl(265 30% 84%);
-  box-shadow: 0 2px 12px hsl(265 40% 50% / .10);
+  background: var(--bg-000);
+  box-shadow: 0 1px 3px hsl(0 0% 0% / .06), 0 6px 16px hsl(0 0% 0% / .05);
 }
-.gate-head {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 14px;
-  font: 500 11px/1.6 var(--sans); letter-spacing: .02em;
-  color: var(--gate-text); background: var(--gate-dim);
-  border-bottom: 1px solid hsl(265 30% 88%);
-}
-.gate-head .rl-dot { margin: 0; position: static; }
-.gate-body { padding: 14px 16px 6px; }
+.gate-body { padding: 12px 14px 4px; }
 .gate-title {
   display: flex; align-items: flex-start; gap: 10px;
   font: 14px/1.45 var(--sans); color: var(--ink);
 }
 .gate-title > i.bi {
-  color: var(--gate-text); font-size: 15px; flex-shrink: 0;
+  color: var(--ink-dim); font-size: 15px; flex-shrink: 0;
   position: relative; top: 2px;
 }
 .gate-title > span { flex: 1; min-width: 0; word-break: break-word; }
@@ -223,16 +219,16 @@
 .gate-actions {
   display: flex; align-items: center; justify-content: flex-end; gap: 8px;
   flex-wrap: wrap;
-  padding: 12px 16px 14px;
+  padding: 8px 14px 12px;
 }
 .gate-btn {
-  border: 1px solid hsl(265 30% 78%); border-radius: var(--r-sm);
-  background: var(--bg-000); padding: 8px 18px;
-  font: 500 12.5px var(--sans); color: var(--gate-text); cursor: pointer;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  background: var(--bg-000); padding: 7px 16px;
+  font: 500 12.5px var(--sans); color: var(--ink-mid); cursor: pointer;
 }
-.gate-btn:hover { background: var(--gate-dim); }
+.gate-btn:hover { background: var(--bg-100); }
 .gate-btn.primary {
-  background: var(--gate); border-color: var(--gate); color: #fff;
+  background: var(--accent); border-color: var(--accent); color: #fff;
 }
 .gate-btn.primary:hover { filter: brightness(1.08); }
 .gate-btn.primary:disabled { opacity: .4; cursor: default; filter: none; }
@@ -258,7 +254,7 @@
   padding: 8px 12px; font: 13px var(--sans); color: var(--ink);
   background: var(--bg-000); outline: none;
 }
-.ask-own:focus { border-color: var(--gate); }
+.ask-own:focus { border-color: var(--accent); }
 /* legacy: non-gated cards (ProgressCard etc.) still use `.gate-desc` for the
    description subtitle line. */
 .gate-desc {
@@ -435,7 +431,7 @@
 
 /* GateCard pending: subtle breathe on the header dot only (the card
    itself already carries a purple shadow). */
-.gate-waiting .gate-head .rl-dot { animation: pulse 1.6s ease-in-out infinite; }
+/* (`.gate-head` strip removed — column header pill is the "waiting" signal.) */
 
 .sp-check { accent-color: var(--gate); margin: 0; flex-shrink: 0; }
 .gate-deny-reason {
@@ -682,7 +678,7 @@
    still contains the prose margins so `.turn-sep` rhythm stays symmetric. */
 .ba-host:has(> .asst-prose) { display: flow-root; }
 .ba-host:has(> .asst-prose) > .block-actions {
-  top: 2px; right: 0; bottom: auto; left: auto; gap: 4px;
+  top: 0; right: 0; bottom: auto; left: auto; gap: 4px;
 }
 .ba-host:has(> .asst-prose) > .block-actions button {
   width: auto; height: auto; border: none; background: none;
@@ -707,21 +703,26 @@
 
 /* -- cards additions -- */
 
-/* GateCard resolved: compact receipt chip (`✓ … · you answered … · HH:MM`). */
+/* GateCard resolved: compact receipt chip. Structured — icon | label
+   (ink-dim) | value (ink bold) | … | time (faint, right) — no `·`
+   separators; flex gap does the spacing. */
 .out.answered { border: none; background: none; overflow: visible; }
 .gate-receipt {
   display: flex; align-items: center; gap: 10px;
-  padding: 8px 14px; border-radius: var(--r-md);
+  padding: 7px 12px; border-radius: var(--r-md);
   background: var(--bg-100); border: 1px solid var(--bg-200);
   font: 12px var(--sans); color: var(--ink-dim);
 }
 .gate-receipt > i.bi { color: var(--ok); font-size: 13px; flex-shrink: 0; }
 .gate-receipt.denied > i.bi { color: var(--danger); }
-.gate-receipt-text {
-  flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+.gate-receipt-label {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.gate-receipt-text b { color: var(--ink); font-weight: 600; }
+.gate-receipt-value { color: var(--ink); font-weight: 600; flex-shrink: 0; }
+.gate-receipt-time {
+  margin-left: auto; color: var(--ink-faint); font: 10.5px var(--mono);
+  flex-shrink: 0;
+}
 
 /* key-hint superscript (§C — only shown when opts>3) */
 sup.ask-opt-key {

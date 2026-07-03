@@ -111,7 +111,6 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
   if (payload.kind === "prompt") {
     return (
       <div className="out gated gate-waiting" data-display-id={displayId}>
-        <GateHead />
         <PromptBody payload={payload} resolve={resolve} />
       </div>
     );
@@ -122,7 +121,6 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
 
   return (
     <div className="out gated gate-waiting" data-display-id={displayId}>
-      <GateHead />
       <div className="gate-body">
         <div className="gate-title">
           <i className={`bi ${v.icon}`} />
@@ -186,13 +184,6 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
   );
 }
 
-const GateHead = (): JSX.Element => (
-  <div className="gate-head">
-    <span className="rl-dot rl-dot-gate" />
-    waiting on you
-  </div>
-);
-
 // -- variant config -----------------------------------------------------------
 
 type Variant = {
@@ -243,47 +234,32 @@ function variant(p: RunProposalPayload | CiteProposalPayload, struck: Set<string
 // -- resolved receipt chip ----------------------------------------------------
 
 function Receipt({ payload: p, displayId }: { payload: GatePayload; displayId: string }): JSX.Element {
-  let ok: boolean;
-  let text: JSX.Element;
+  // Structured — no `·` separators. `label` (ink-dim) | `value` (ink bold)
+  // | spacer | `time` (right, faint). The chip reads as a single fact.
+  let ok: boolean, label: string, value: string, time: string | null;
   if (p.kind === "prompt") {
     ok = true;
-    text = (
-      <>
-        {ellipsis(p.question, 60)} · you answered <b>{p.answer}</b>
-        {p.answered_at && ` · ${hhmm(p.answered_at)}`}
-      </>
-    );
+    label = ellipsis(p.question, 60);
+    value = String(p.answer);
+    time = p.answered_at ? hhmm(p.answered_at) : null;
   } else if (p.kind === "run_proposal") {
     ok = !p.verdict?.denied;
-    text = ok ? (
-      <>
-        {ellipsis(p.description, 40)} · you approved <b>{p.n}</b> audits
-      </>
-    ) : (
-      <>
-        {ellipsis(p.description, 40)} · you denied
-        {p.verdict?.reason && ` · ${p.verdict.reason}`}
-      </>
-    );
+    label = ellipsis(p.description, 40);
+    value = ok ? `approved ${p.n}` : (p.verdict?.reason || "denied");
+    time = null;
   } else {
     ok = !!p.verdict?.signed;
-    text = ok ? (
-      <>
-        {ellipsis(p.claim, 40)} · signed{p.verdict?.by && ` by ${p.verdict.by}`} ·{" "}
-        <b>{p.quotes.length}</b> quotes
-      </>
-    ) : (
-      <>
-        {ellipsis(p.claim, 40)} · you denied
-        {p.verdict?.reason && ` · ${p.verdict.reason}`}
-      </>
-    );
+    label = ellipsis(p.claim, 40);
+    value = ok ? `signed ${p.quotes.length}` : (p.verdict?.reason || "denied");
+    time = null;
   }
   return (
     <div className="out answered" data-display-id={displayId}>
       <div className={`gate-receipt${ok ? "" : " denied"}`}>
         <i className={`bi ${ok ? "bi-check-lg" : "bi-x-lg"}`} />
-        <span className="gate-receipt-text">{text}</span>
+        <span className="gate-receipt-label">{label}</span>
+        <b className="gate-receipt-value">{value}</b>
+        {time && <span className="gate-receipt-time">{time}</span>}
       </div>
     </div>
   );
