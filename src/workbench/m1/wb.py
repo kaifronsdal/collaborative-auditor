@@ -14,6 +14,7 @@ from inspect_ai import Task
 from inspect_ai.log._samples import active_samples  # noqa: PLC2701
 from IPython.display import Markdown, display
 
+from workbench.m1.attach import AttachedRun
 from workbench.m1.cite import Finding, Quote, cite
 from workbench.m1.kernel import Prompt
 from workbench.m1.plots import Plots
@@ -58,9 +59,14 @@ class Workbench:
 
     def __repr__(self) -> str:
         return (
-            "<wb · run_audits run_eval steer stop ask_human "
+            "<wb · attach run_audits run_eval steer stop ask_human "
             "scan cite excerpt transcript read_transcript>"
         )
+
+    #: Read-only handle on an out-of-process eval's ``log_dir`` (M1-HYBRID
+    #: §``wb.attach``). Displays a live ``ProgressCard``; ``await h.wait()``
+    #: for the ``.eval`` to settle; ``h.audits`` for the DataFrame.
+    attach = staticmethod(AttachedRun.attach)
 
     # -- gated launchers --------------------------------------------------
 
