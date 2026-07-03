@@ -189,7 +189,9 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
             page.on("pageerror", lambda e: errors.append(str(e)))
             page.on(
                 "console",
-                lambda m: m.type == "error" and errors.append(f"console: {m.text}"),
+                lambda m: (
+                    errors.append(f"console: {m.text}") if m.type == "error" else None
+                ),
             )
 
             print("Capturing M1 screenshots:")
