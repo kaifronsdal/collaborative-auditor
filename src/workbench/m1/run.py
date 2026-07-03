@@ -477,6 +477,11 @@ class RunHandle(_PollingHandle):
         )
         if id is not None:
             h.id = id
+        # ``ctl_server=False``: each in-process eval would otherwise bind
+        # its own AF_UNIX ``ControlServer`` + discovery file; the workbench
+        # polls the ``.eval`` log directly and never consumes ctl
+        # (CONCURRENT-EVAL-DESIGN.md §Workbench).
+        eval_kw.setdefault("ctl_server", False)
         return h._start(eval_async(task, log_dir=log_dir, log_buffer=1, **eval_kw))
 
     # -- hooks ------------------------------------------------------------
