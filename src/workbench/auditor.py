@@ -6,8 +6,8 @@ where operator messages are drained from and whether a step-gate blocks:
 
 - M0: ``Branch`` implements ``TurnHooks`` — ``pre_turn`` awaits the desk gate,
   drains ``branch.queued["auditor"]``, and flips ``branch.generating``.
-- M1 batch: ``BatchHooks`` (in ``m1/run.py``) drains ``CONTROL[sample_id]``
-  and never blocks.
+- M1 batch (subprocess ``_audit_task.py``): ``_NoHooks`` — ``pre_turn``
+  returns ``([], False)``; the subprocess runs unattended.
 
 Everything else — divergent-serve emit, the ``if not tape.pending`` replay
 burn-through, the ``TURN_END_SOURCE`` anchor — is replay mechanics, not an
@@ -83,9 +83,10 @@ def workbench_auditor(
     """An auditor ``Agent`` for ``run_audit(auditor=…)`` / ``audit_solver``.
 
     ``hooks`` supplies the two lines that differ between the M0 desk
-    (``Branch``) and M1 batch (``BatchHooks``); everything else is petri's
-    own machinery. ``compaction``/``realism_filter`` default off for the
-    desk and are set by ``wb.run_audits`` for unattended batches.
+    (``Branch``) and M1 batch (``_audit_task._NoHooks``); everything else
+    is petri's own machinery. ``compaction``/``realism_filter`` default
+    off for the desk and are set by ``_audit_task.audit`` for unattended
+    subprocess batches.
     """
     tools = auditor_tools(prefill=True)
 

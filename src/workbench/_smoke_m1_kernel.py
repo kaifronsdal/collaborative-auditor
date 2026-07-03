@@ -435,15 +435,15 @@ async def _check_short_repr() -> None:  # noqa: PLR0915
     print(f"✓ short_repr: {len(checks)} core types")
 
     # -- workbench handles (dataclass, so construct a minimal one) ----------
-    from workbench.m1.run import RunHandle  # noqa: PLC0415
+    from workbench.m1.attach import AttachedRun  # noqa: PLC0415
 
-    h = RunHandle(task_name="audit-a5b59a", log_dir="/tmp", total=12)
+    h = AttachedRun(task_name="audit-a5b59a", log_dir="/tmp", total=12)
     h.rows = {f"s{i}": _row("done") for i in range(3)}
     got = short_repr(h)
-    assert "RunHandle · 3/12 running · audit-a5b59a" == got, got
+    assert got == "AttachedRun · 3/12 running · audit-a5b59a", got
     h.finished = True
     assert "3/12 done" in short_repr(h)
-    print("✓ short_repr: RunHandle")
+    print("✓ short_repr: AttachedRun")
 
     # -- petri (optional) ---------------------------------------------------
     try:
@@ -460,8 +460,8 @@ async def _check_short_repr() -> None:  # noqa: PLR0915
         print("· inspect_petri not installed, skipping")
 
     # -- awaitables ---------------------------------------------------------
-    t = asyncio.create_task(asyncio.sleep(0), name="run_eval")
-    assert short_repr(t) == "Task · pending · run_eval", short_repr(t)
+    t = asyncio.create_task(asyncio.sleep(0), name="scan-x")
+    assert short_repr(t) == "Task · pending · scan-x", short_repr(t)
     await t
     assert "done" in short_repr(t)
     fut: asyncio.Future[None] = asyncio.get_running_loop().create_future()

@@ -1,6 +1,6 @@
-"""M1 feature smokes not covered by ``_smoke_m1_{kernel,orchestrator,run}``.
+"""M1 feature smokes not covered by ``_smoke_m1_{kernel,orchestrator,hybrid}``.
 
-Five self-contained tests, each on a fresh ``Session`` / kernel:
+Three self-contained tests, each on a fresh ``Session`` / kernel:
 
 1. **Rewind end-to-end** — ``play()`` 4 tool turns → park → ``rewind(2)`` →
    events at/after turn-2's ``ModelEvent`` carry ``rewound=True``, a
@@ -16,13 +16,10 @@ Five self-contained tests, each on a fresh ``Session`` / kernel:
    releases one turn. The next generate's ``input`` carries both the
    ``[interrupted by user …]`` tool result *and* the queued user message;
    partial displays emitted before the sleep survive in ``kernel.outputs``.
-4. **``snapshot_running``** — launch ``wb.run_eval`` in-cell with a solver
-   that checkpoints ``AuditTape.trajectories`` into its store; while running,
-   ``snapshot_running(sample_id)`` returns ``(History, BranchMeta)`` without
-   interrupting; the sample runs to completion.
-5. **``stop_sample`` wire** — ``_dispatch({"t":"stop_sample", …, hard:True})``
-   → ``ActiveSample.interrupt("score")`` → gone from ``active_samples()``
-   within 2s.
+
+The old ``snapshot_running`` / in-process ``stop_sample`` checks are gone
+(M1-HYBRID step 6 — evals run in subprocesses now); the ACP per-sample
+interrupt path is covered by ``_smoke_m1_hybrid._run_interrupt``.
 
 Run:  ``uv run python -m workbench._smoke_m1_features``
 """
@@ -35,26 +32,16 @@ from pathlib import Path
 from typing import Any
 
 import anyio
-from inspect_ai import Task
-from inspect_ai.dataset import Sample
-from inspect_ai.log._samples import active_samples  # noqa: PLC2701
 from inspect_ai.model import (
     ChatMessage,
     ChatMessageUser,
     GenerateConfig,
     ModelOutput,
 )
-from inspect_ai.solver import Generate, TaskState, solver
 from inspect_ai.tool import ToolCall, ToolChoice, ToolInfo
-from inspect_petri._auditor import AuditTape
-from inspect_petri.target import History
 
 from workbench._smoke_util import FakeConn
-from workbench.m1.kernel import OrchestratorKernel
 from workbench.m1.orchestrator import ORCH_SOURCE
-from workbench.m1.run import CONTROL, snapshot_running
-from workbench.m1.wb import Workbench
-from workbench.run import BranchMeta
 from workbench.server import _dispatch  # noqa: PLC2701
 from workbench.session import Session
 
@@ -330,136 +317,12 @@ async def _test_interrupt_and_send() -> None:
     await session.close()
 
 
-# ── 4 + 5: snapshot_running / stop_sample against a live in-cell eval ──────
-
-
-@solver
-def slow_with_tape(per_turn: float = 0.4):
-    """A 3-turn mockllm solver that checkpoints an ``AuditTape`` each turn.
-
-    ``AuditTape()`` binds to the sample's ``Store`` (via the contextvar),
-    which the inspect fork exposes as ``ActiveSample.store`` — so
-    ``snapshot_running`` reads a non-empty ``trajectories`` without falling
-    through to ``adopt_running``.
-    """
-
-    async def solve(state: TaskState, generate: Generate) -> TaskState:
-        tape = AuditTape()
-        tape.seed_instructions = state.input_text
-        tape.trajectories = History().dump()
-        for _ in range(3):
-            await asyncio.sleep(per_turn)
-            state = await generate(state)
-            tape.trajectories = History().dump()
-        return state
-
-    return solve
-
-
-def make_task_tape(tag: str, n: int, per_turn: float = 0.4) -> Task:
-    return Task(
-        dataset=[Sample(input=f"{tag}-{i}", id=f"{tag}-{i}") for i in range(n)],
-        solver=slow_with_tape(per_turn),
-        name=f"t-{tag}",
-    )
-
-
-async def _test_snapshot_and_stop() -> None:  # noqa: PLR0915
-    from workbench.m1.orchestrator import _prewarm  # noqa: PLC0415, PLC2701
-
-    _prewarm()
-    # bare session for the ``stop_sample`` dispatch (handler is stateless)
-    session = Session()
-    await session.start()
-
-    with OrchestratorKernel() as k:
-        k.shell.user_ns["wb"] = Workbench(k.gate, session=None)
-        k.shell.user_ns["make_task_tape"] = make_task_tape
-
-        # ---- 4. snapshot_running: read live store, sample keeps running ----
-        r = await k.run_turn(
-            "h = wb.run_eval(make_task_tape('imp', 2, 0.35), model='mockllm/model')"
-        )
-        assert r.success, r.text
-        h = k.shell.user_ns["h"]
-        assert await _wait_for(
-            lambda: any(str(s.sample.id) == "imp-0" for s in active_samples()),
-            timeout=5.0,
-        ), "imp-0 never appeared in active_samples()"
-        # give the solver a tick to write ``trajectories`` before snapshotting
-        await asyncio.sleep(0.05)
-
-        s0 = next(s for s in active_samples() if str(s.sample.id) == "imp-0")
-        # ``ActiveSample.store`` is a fork feature (@536002a8) that a later
-        # merge regressed — probe defensively so this smoke reports the
-        # fallthrough rather than ``AttributeError``.
-        store = getattr(s0, "store", None)
-        store_populated = bool(store and AuditTape(store=store).trajectories)
-        history, meta = await snapshot_running("imp-0")
-        assert isinstance(history, History) and isinstance(meta, BranchMeta)
-        assert meta.seed == "imp-0", meta.seed
-        if store_populated:
-            # v2 path: sample must NOT have been interrupted
-            still_running = any(
-                str(s.sample.id) == "imp-0" for s in active_samples()
-            )
-            assert still_running, (
-                "snapshot_running interrupted the sample "
-                "(should read live store and leave it running)"
-            )
-            await h.wait()
-            assert h.n_done == 2 and h.finished, (h.n_done, h.finished)
-            print(
-                "✓ snapshot_running: (History, BranchMeta) via live "
-                f"ActiveSample.store; batch ran to completion ({h.n_done}/2)"
-            )
-        else:
-            # fell through to adopt_running (interrupt + flush)
-            await h.wait()
-            print(
-                "· snapshot_running fell through to adopt_running "
-                "(store not populated pre-snapshot) — (History, BranchMeta) OK"
-            )
-
-        # ---- 5. stop_sample wire: hard interrupt via _dispatch -------------
-        r = await k.run_turn(
-            "hs = wb.run_eval(make_task_tape('stp', 3, 0.5), model='mockllm/model')"
-        )
-        assert r.success, r.text
-        hs = k.shell.user_ns["hs"]
-        assert await _wait_for(
-            lambda: any(str(s.sample.id) == "stp-1" for s in active_samples()),
-            timeout=5.0,
-        ), "stp-1 never appeared in active_samples()"
-
-        await _dispatch(session, {"t": "stop_sample", "id": "stp-1", "hard": True})
-        gone = await _wait_for(
-            lambda: not any(str(s.sample.id) == "stp-1" for s in active_samples()),
-            timeout=2.0,
-        )
-        assert gone, "stp-1 still in active_samples() 2s after hard stop_sample"
-        # siblings unaffected
-        assert any(
-            str(s.sample.id) in {"stp-0", "stp-2"} for s in active_samples()
-        ), "stop_sample took out siblings"
-        await hs.wait()
-        assert hs.finished
-        CONTROL.clear()
-        print(
-            f"✓ stop_sample wire: stp-1 gone from active_samples() within 2s; "
-            f"siblings ran to completion ({hs.n_done}/{hs.total})"
-        )
-
-    await session.close()
-
-
 # ── entrypoint ─────────────────────────────────────────────────────────────
 
 
 async def _amain() -> None:
     await _test_rewind_and_persist()
     await _test_interrupt_and_send()
-    await _test_snapshot_and_stop()
     print("\n✓ all M1 feature smokes passed")
 
 

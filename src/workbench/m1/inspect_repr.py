@@ -28,8 +28,8 @@ from typing import Any
 
 _CAP = 80
 
-#: Workbench live handles (``m1/run.py``) — ``{done}/{total} state · task``.
-_HANDLE_TYPES = {"RunHandle", "AuditRunHandle", "ScanHandle"}
+#: Workbench live handles — ``{done}/{total} state · task``.
+_HANDLE_TYPES = {"AttachedRun", "ScanHandle"}
 
 #: inspect_ai ``ChatMessage*`` — role + truncated text.
 _CHAT_TYPES = {

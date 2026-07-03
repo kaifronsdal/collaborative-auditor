@@ -1,4 +1,10 @@
-"""M1 real-model end-to-end: orchestrator drives ``wb.run_audits`` against a
+"""OBSOLETE (M1-HYBRID step 6): this exercised the in-process
+``wb.run_audits`` / ``eval_async`` path, which was deleted in the hybrid
+pivot. Kept for reference; will not import cleanly. The real-model e2e for
+the subprocess/``bash`` approach lives in ``_smoke_m1_hybrid.py`` (mockllm)
+— a real-model variant is TODO once the ``bash`` prompt (step 7) lands.
+
+M1 real-model end-to-end: orchestrator drives ``wb.run_audits`` against a
 live target, then reads the results.
 
 Unlike the ``_smoke_m1_*`` scripts this hits the real Anthropic API — run it
@@ -16,7 +22,12 @@ on a worker VM, not in CI. It exercises the full vertical:
 Run:  ``uv run python -m workbench._e2e_m1_real``
 """
 
+# ruff: noqa: E402
 from __future__ import annotations
+
+raise SystemExit(
+    "workbench._e2e_m1_real is obsolete (M1-HYBRID step 6) — see module docstring"
+)
 
 import argparse
 import asyncio

@@ -16,15 +16,18 @@ repo root.
 Fork branch: `kaifronsdal/inspect_ai@model-event-output-streaming`
 Merge-base with `UKGovernmentBEIS/inspect_ai@main`: `cc8c367e`
 
-| patch | commit | what | why the workbench needs it | upstream |
-|---|---|---|---|---|
-| `inspect-eval-async-guard.patch` | `fa94cd82` | Lift the `_eval_async_running` reentrancy guard in `eval_async`. | `wb.run_audits` / `wb.run_eval` call `eval_async` from inside the orchestrator kernel while a session `eval_async` may already be live; `gather(run_audits×2)` (M1-RUN-AUDITS §guard) needs overlapping calls. | not yet PR'd |
-| `inspect-init-active-samples-noop.patch` | `4636d9a6` | `init_active_samples()` → no-op. | With the guard lifted, a second concurrent `eval_async` would otherwise `.clear()` the first's `ActiveSample` list and the first eval finishes `status='error'`. Also keeps `active_samples()` usable for reaching into a concurrent eval's samples. | not yet PR'd |
-| `inspect-active-sample-store.patch` | `536002a8` | `ActiveSample` carries the sample's `Store`. | `{t:"import_running"}` snapshots a live petri `AuditTape` (which lives in the sample `Store`) from `active_samples()` without waiting for the `.eval` flush (M1-RUN-AUDITS §Desk). | not yet PR'd |
+Only the `model-event-output-streaming` stack remains on the fork
+(`4a67234b`..`bca65a6c` + merge `a3e631c0`) — 8 commits that stream
+partial `ModelOutput` onto the pending `ModelEvent` for live token
+display. Not workbench-specific; PR pending upstream.
 
-The fork branch also carries the older `model-event-output-streaming`
-commits (`bf845b99`, `8ab09182`, `bca65a6c`) that predate M1; those are
-not workbench-specific and are tracked separately.
+The three concurrent-`eval_async` patches (`inspect-eval-async-guard`,
+`inspect-init-active-samples-noop`, `inspect-active-sample-store` —
+commits `fa94cd82`/`4636d9a6`/`536002a8`/`1a36c4dc`) were **dropped and
+reverted on the fork** at M1-HYBRID step 6: evals now run in
+subprocesses via the `bash` tool, so in-process concurrent `eval_async`
+is no longer needed. See `CONCURRENT-EVAL-DESIGN.md` for the ~10
+process-global hazard sites that made that approach unviable.
 
 ## `inspect_petri`
 

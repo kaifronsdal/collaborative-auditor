@@ -1,18 +1,16 @@
-"""The ``wb`` namespace — side-effects only (M1-NOTEBOOK.md v4 §Revised surface).
+"""The ``wb`` namespace — read/analyze/present + review gates (M1-HYBRID §wb.*).
 
 Constructed by ``Orchestrator`` (which has both ``session`` and ``kernel``)
-and seeded into ``user_ns``. Everything that isn't a side-effect is just
-Python — the agent uses ``pd``/``px``/``display()`` directly.
+and seeded into ``user_ns``. No launching, no steer/stop — evals run in
+subprocesses via the ``bash`` tool; ``wb.attach`` observes them. Everything
+that isn't a side-effect is just Python — the agent uses ``pd``/``px``/
+``display()`` directly.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
-
-from inspect_ai import Task
-from inspect_ai.log._samples import active_samples  # noqa: PLC2701
-from IPython.display import Markdown, display
 
 from workbench.m1.attach import AttachedRun
 from workbench.m1.cite import Finding, Quote, cite
@@ -25,29 +23,19 @@ from workbench.m1.read import (
     read_transcript,
     transcript,
 )
-from workbench.m1.run import (
-    AuditRunHandle,
-    RunHandle,
-    RunProposal,
-    ScanHandle,
-    steer,
-    stop,
-)
+from workbench.m1.run import RunProposal, ScanHandle
 
 if TYPE_CHECKING:
     from workbench.m1.kernel import Gate
     from workbench.session import Session
 
-#: Runs with more audits than this are gated on human approval.
-GATE_THRESHOLD = 8
-
 
 class Workbench:
-    """The ``wb.*`` surface. ~10 helpers, all side-effects.
+    """The ``wb.*`` surface — read helpers + review gates.
 
-    ``run_audits``/``run_eval``/``cite``/``ask_human`` block on a gate;
-    ``steer``/``stop`` mutate running samples; ``scan``/``excerpt``/
-    ``transcript`` are compute/read helpers with a rich repr.
+    ``ask_human``/``review_seeds``/``cite`` block on a gate; ``attach``/
+    ``scan``/``excerpt``/``transcript`` are compute/read helpers with a
+    rich repr.
     """
 
     def __init__(
@@ -57,7 +45,7 @@ class Workbench:
         *,
         session_dir: str | None = None,
     ) -> None:
-        # ``gate`` is the only kernel dependency (``run_audits``/``ask_human``/
+        # ``gate`` is the only kernel dependency (``ask_human``/``review_seeds``/
         # ``cite`` await it); holding just the ``Gate`` keeps ``wb`` decoupled
         # from the turn-lifecycle machinery. ``session`` is unused until a
         # helper needs it. ``session_dir`` is the ``bash`` tool's cwd —
@@ -67,8 +55,8 @@ class Workbench:
 
     def __repr__(self) -> str:
         return (
-            "<wb · attach run_audits run_eval steer stop ask_human "
-            "scan cite excerpt transcript read_transcript>"
+            "<wb · attach ask_human review_seeds cite scan "
+            "excerpt transcript read_transcript plots>"
         )
 
     def attach(self, log_dir: str) -> AttachedRun:
@@ -81,121 +69,34 @@ class Workbench:
         the DataFrame."""
         return AttachedRun.attach(log_dir, session_dir=self._session_dir)
 
-    # -- gated launchers --------------------------------------------------
-
-    async def run_audits(
-        self,
-        seeds: str | Sequence[str],
-        config: dict[str, Any] | None = None,
-        *,
-        description: str,
-        n_per_seed: int = 1,
-        model: str,
-        auditor_model: str | None = None,
-        log_dir: str | None = None,
-    ) -> AuditRunHandle:
-        """Launch a petri audit batch as an inspect eval.
-
-        Gates on approval when ``n > GATE_THRESHOLD``; the human may strike
-        seeds. Returns a live ``AuditRunHandle`` — the card ticks via
-        ``dh.update``; ``await h.wait()`` for the result inline. Shares
-        ``RunHandle.launch`` with ``run_eval``; the petri specifics are the
-        ``RunProposal`` seed-preview and ``AuditRunHandle`` per-audit rows.
-
-        The task is built from petri's public parts (``seeds_dataset`` /
-        ``audit_solver`` / ``audit_judge`` / ``audit_viewer``) with
-        ``workbench_auditor(BatchHooks(), compaction=True, …)`` as the
-        auditor — so ``wb.steer``/``wb.stop`` reach running samples via the
-        same loop that drives the M0 desk, and we control the ``config``
-        surface rather than tracking petri's ``audit()`` kwargs.
-        """
-        from inspect_petri import (  # noqa: PLC0415
-            audit_judge,
-            audit_solver,
-            audit_viewer,
-            seeds_dataset,
-            target_agent,
-        )
-
-        from workbench.auditor import workbench_auditor  # noqa: PLC0415
-        from workbench.m1.run import BatchHooks  # noqa: PLC0415
-
-        seed_list = [seeds] if isinstance(seeds, str) else list(seeds)
-        cfg = dict(config or {})
-        prop = RunProposal(seed_list, cfg, description, n_per_seed, model=model)
-
-        if prop.n > GATE_THRESHOLD:
-            await self._gate(prop)
-            if prop.denied:
-                # A human clicking "deny" is expected control flow, not an
-                # exception — hand back a settled handle so the model reads
-                # one line, not a traceback.
-                reason = (prop.verdict or {}).get("reason", "denied")
-                return AuditRunHandle(
-                    task_name="audit",
-                    log_dir="",
-                    total=prop.n,
-                    id=prop.id,
-                    description=description,
-                    finished=True,
-                    error=f"denied: {reason}",
-                )
-
-        max_turns = int(cfg.pop("max_turns", 30))
-        auditor = workbench_auditor(
-            BatchHooks(),
-            max_turns=max_turns,
-            compaction=cfg.pop("compaction", True),
-            realism_filter=cfg.pop("realism_filter", False),
-        )
-        task = Task(
-            dataset=seeds_dataset(prop.seeds),
-            solver=audit_solver(auditor=auditor, target=target_agent()),
-            scorer=audit_judge(cfg.get("judge_dimensions")),
-            viewer=audit_viewer(cfg.get("judge_dimensions")),
-            name=f"audit-{prop.id[:6]}",
-        )
-        # ``audit_judge`` resolves ``get_model(role="judge", required=True)``
-        # whenever an ``auditor`` role is present — omit it and every sample
-        # errors at scoring with ``Model role 'judge' is required``.
-        model_roles = {
-            "target": model,
-            "auditor": auditor_model or model,
-            "judge": auditor_model or model,
-        }
-        return AuditRunHandle.launch(
-            task,
-            id=prop.id,
-            log_dir=log_dir,
-            total=prop.n,
-            description=description,
-            model=model,
-            model_roles=model_roles,
-            epochs=n_per_seed,
-        )
-
-    def run_eval(
-        self,
-        task: Task,
-        *,
-        model: str,
-        description: str = "",
-        log_dir: str | None = None,
-        **eval_kw: Any,
-    ) -> RunHandle:
-        """Launch any inspect ``Task`` — same launcher as ``run_audits``."""
-        total = len(task.dataset) if task.dataset else 0
-        return RunHandle.launch(
-            task,
-            log_dir=log_dir,
-            total=total,
-            description=description,
-            model=model,
-            **eval_kw,
-        )
+    # -- review gates (in-cell aliases of the review tools) ---------------
 
     async def ask_human(self, question: str, options: list[str] | None = None) -> str:
         return str(await self._gate(Prompt(question, options)))
+
+    async def review_seeds(
+        self,
+        seeds: Sequence[str],
+        description: str,
+        config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Propose a seed list for human approval (in-cell alias of the
+        ``review_seeds`` tool). The human may strike seeds or deny outright;
+        returns ``{"approved": bool, "seeds": list[str], "reason": str|None}``."""
+        cfg = dict(config or {})
+        prop = RunProposal(
+            seeds=list(seeds),
+            config=cfg,
+            description=description,
+            n_per_seed=int(cfg.get("n_per_seed", 1)),
+            model=cfg.get("model"),
+        )
+        await self._gate(prop)
+        return {
+            "approved": not prop.denied,
+            "seeds": prop.seeds,
+            "reason": (prop.verdict or {}).get("reason"),
+        }
 
     async def cite(
         self,
@@ -216,44 +117,24 @@ class Workbench:
     #: template + ``notebook_connected`` renderer are installed at kernel init.
     plots = Plots()
 
-    # -- mutate running samples ------------------------------------------
-
-    def steer(self, ids: str | Iterable[str], message: str) -> None:
-        """Queue an operator message for each sample's next turn.
-
-        Always emits a receipt. Writes to ``CONTROL`` for *every* id (a
-        sample may not have started yet); the running count is advisory.
-        """
-        want = [ids] if isinstance(ids, str) else [str(i) for i in ids]
-        running = {str(s.sample.id) for s in active_samples()}
-        n_matched = sum(1 for i in want if i in running)
-        n_missed = len(want) - n_matched
-        steer(want, message)
-        note = f" ({n_missed} not running)" if n_missed else ""
-        display(Markdown(f"→ steered {n_matched}/{len(want)} running samples{note}"))
-
-    def stop(self, ids: str | Iterable[str], *, hard: bool = False) -> None:
-        """Ask each sample to end (``hard=True`` interrupts immediately)."""
-        stop([ids] if isinstance(ids, str) else ids, hard=hard)
-
     # -- read transcripts -------------------------------------------------
 
     def transcript(
-        self, log: str | RunHandle, sample_id: str, *, at: int | None = None
+        self, log: str | AttachedRun, sample_id: str, *, at: int | None = None
     ) -> TranscriptRef:
         """Embed an inspect-view of one sample. The model sees a one-line
         summary; use ``excerpt``/``read_transcript`` to read content."""
         return transcript(log, sample_id, at=at)
 
     async def excerpt(
-        self, log: str | RunHandle, sample_id: str, *, at: int, around: int = 1
+        self, log: str | AttachedRun, sample_id: str, *, at: int, around: int = 1
     ) -> Excerpt:
         """Render ``messages[at-around : at+around+1]`` inline."""
         return await excerpt(log, sample_id, at=at, around=around)
 
     async def read_transcript(
         self,
-        log: str | RunHandle,
+        log: str | AttachedRun,
         sample_id: str,
         *,
         range: tuple[int, int] | None = None,  # noqa: A002
@@ -265,7 +146,7 @@ class Workbench:
 
     async def scan(
         self,
-        logs: str | RunHandle | list[str],
+        logs: str | AttachedRun | list[str],
         scanner: Any,
         *,
         description: str = "",
@@ -274,18 +155,18 @@ class Workbench:
     ) -> ScanHandle:
         """Run scout scanners over eval logs — returns a live ``ScanHandle``.
 
-        ``logs`` may be a ``RunHandle`` (uses ``.log_dir``), a path, or a list
-        of paths. ``scanner`` may be a single ``Scanner``, a list, or a
+        ``logs`` may be an ``AttachedRun`` (uses ``.log_dir``), a path, or a
+        list of paths. ``scanner`` may be a single ``Scanner``, a list, or a
         ``{name: Scanner}`` dict. Each call gets a fresh ``scans_dir`` so
         ``ScanHandle._poll`` can resolve the one scan location inside it via
-        ``scan_list_async`` (mirrors ``RunHandle`` resolving its ``.eval``).
+        ``scan_list_async``.
         """
         import tempfile  # noqa: PLC0415
 
         from inspect_scout import ScanJob, transcripts_from  # noqa: PLC0415
         from inspect_scout.aio import scan_async  # noqa: PLC0415
 
-        if isinstance(logs, RunHandle):
+        if isinstance(logs, AttachedRun):
             logs = logs.log_dir
         transcripts = transcripts_from(logs)
 

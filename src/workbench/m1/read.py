@@ -20,8 +20,8 @@ from inspect_ai.log import EvalSample, read_eval_log, read_eval_log_sample
 from inspect_ai.model import ChatMessage
 from inspect_scout import MessagesPreprocessor, messages_as_str, span_messages
 
+from workbench.m1.attach import AttachedRun
 from workbench.m1.kernel import WB_MIME
-from workbench.m1.run import RunHandle
 
 #: Render everything — the ``at`` index is into the raw message list, so
 #: dropping system messages here would desync what you asked for from what
@@ -29,8 +29,8 @@ from workbench.m1.run import RunHandle
 _PP = MessagesPreprocessor(exclude_system=False)
 
 
-def _resolve_log(log: str | RunHandle) -> str:
-    if isinstance(log, RunHandle):
+def _resolve_log(log: str | AttachedRun) -> str:
+    if isinstance(log, AttachedRun):
         loc = log.location
         if loc is None:
             raise ValueError(f"{log!r} has no log file yet")
@@ -145,7 +145,7 @@ class Excerpt:
 
 
 def transcript(
-    log: str | RunHandle, sample_id: str, *, at: int | None = None
+    log: str | AttachedRun, sample_id: str, *, at: int | None = None
 ) -> TranscriptRef:
     loc = _resolve_log(log)
     return TranscriptRef(
@@ -154,7 +154,7 @@ def transcript(
 
 
 async def excerpt(
-    log: str | RunHandle, sample_id: str, *, at: int, around: int = 1
+    log: str | AttachedRun, sample_id: str, *, at: int, around: int = 1
 ) -> Excerpt:
     loc = _resolve_log(log)
     msgs = _load_messages(loc, sample_id)
@@ -171,7 +171,7 @@ async def excerpt(
 
 
 async def read_transcript(
-    log: str | RunHandle,
+    log: str | AttachedRun,
     sample_id: str,
     *,
     range: tuple[int, int] | None = None,  # noqa: A002

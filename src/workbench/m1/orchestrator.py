@@ -90,11 +90,11 @@ def _wire_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
 #: Appended to a resumed agent's history (M1.3 persistence): the kernel's
 #: ``user_ns`` doesn't survive ``Session.save``/``load`` — same as a Jupyter
 #: kernel restart — so any names the pre-save cells bound are gone. The note
-#: points at ``RunHandle.log_dir``s seen in the saved event stream so the
-#: agent can re-read results without re-running the evals.
+#: points at eval ``log_dir``s seen in the saved event stream so the agent
+#: can re-read results without re-running the evals.
 KERNEL_RESTART_NOTE = (
-    "[kernel restarted — previous Python bindings lost. RunHandle logs at: "
-    "{dirs}. Re-read via audits_df(log_dir) or wb.run_eval results.]"
+    "[kernel restarted — previous Python bindings lost. Eval logs at: "
+    "{dirs}. Re-read via wb.attach(log_dir).audits or audits_df(log_dir).]"
 )
 
 
