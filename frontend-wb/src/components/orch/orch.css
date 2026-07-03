@@ -673,12 +673,12 @@
 .code-cell ~ .ba-host > .out-stream { margin-top: 0; }
 /* Prose is often one line — an absolute overlay would sit on the text. Match
    the M0 `.actions` idiom instead: a bare-icon row under the prose,
-   left-aligned. Absolute at `bottom: 0` so it takes no layout height (no jump
-   on hover, no permanent empty row); `flow-root` on the host contains the
-   prose's 14px bottom margin, giving the row that space to sit in. */
-.ba-host:has(> .asst-prose) { display: flow-root; margin-bottom: 6px; }
+   right-aligned at the top, overlapping the prose's right margin (claude.ai
+   pattern). Zero vertical cost — no clearance row needed below. `flow-root`
+   still contains the prose margins so `.turn-sep` rhythm stays symmetric. */
+.ba-host:has(> .asst-prose) { display: flow-root; }
 .ba-host:has(> .asst-prose) > .block-actions {
-  bottom: 0; left: 0; right: auto; gap: 10px;
+  top: 2px; right: 0; bottom: auto; left: auto; gap: 4px;
 }
 .ba-host:has(> .asst-prose) > .block-actions button {
   width: auto; height: auto; border: none; background: none;
