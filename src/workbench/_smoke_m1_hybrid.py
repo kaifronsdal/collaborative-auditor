@@ -28,6 +28,7 @@ they're implemented. Run:  ``uv run python -m workbench._smoke_m1_hybrid``
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import sys
@@ -158,7 +159,7 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
     assert len(k.gate.pending) == 1, "review_seeds gate not registered"
     (pid,) = k.gate.pending
     assert k.gate.resolve(pid, {"surviving": ["s0", "s1"]})
-    result = await task
+    result = json.loads(await task)  # ToolResult has no dict — encoded
     assert result["approved"] is True, result
     assert result["seeds"] == ["a", "b"], result
     assert result["reason"] is None, result
@@ -175,7 +176,7 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
             break
     (pid,) = k.gate.pending
     k.gate.resolve(pid, {"denied": True, "reason": "too broad"})
-    result = await task
+    result = json.loads(await task)
     assert result == {"approved": False, "seeds": ["x"], "reason": "too broad"}, result
     print("✓ review_seeds: denied → approved=False, reason carried")
 
@@ -204,7 +205,7 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
             break
     (pid,) = k.gate.pending
     k.gate.resolve(pid, {"signed": True, "by": "tester"})
-    result = await task
+    result = json.loads(await task)
     assert result["signed"] is True and result["quotes"][0]["sample_id"] == "s0", result
     print("✓ review_finding: gate → signed")
 
