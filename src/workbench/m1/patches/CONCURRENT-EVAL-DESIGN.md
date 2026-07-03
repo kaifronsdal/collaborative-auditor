@@ -63,36 +63,54 @@ single loop; out of scope.
 | ctl server bind | Yes for bind; **no** for state registration | First eval binds one process-scoped `ControlServer`; nested evals `register_eval` but don't bind. `/evals` shows the union. |
 | `set_model_cost()` | N/A — idempotent in practice | Document as process-global |
 
-## What goes in #4411 (rework — simplest form, no new abstractions)
+## What goes in #4411 (rework — idempotent init + per-eval cleanup)
 
-**One primitive:** `_eval_async_running: bool` → `_active_eval_count:
-int` (a refcount, *not* a "depth" — concurrent calls are siblings, not
-nested), exposed as `active_eval_count() -> int`. Increment on entry
-before any init, decrement in `finally`. Each hazard site reads it
-directly — no `nested: bool` threading, no per-module CM.
+Three mechanisms, each where it semantically fits. No new
+abstractions; each change is local to its module.
 
-Init sites check `active_eval_count() > 1` (I'm not the first → skip
-reset). Cleanup sites check `active_eval_count() > 0` after decrement
-(I'm not the last → skip teardown).
+### 1. Idempotent init (create-if-missing — no refcount coupling)
 
 | File | Change |
 |---|---|
-| `_eval/eval.py` | `_eval_async_running: int`; `active_eval_count()` accessor; guard raises on `> 0` unless `INSPECT_ALLOW_CONCURRENT_EVAL_ASYNC`; gate `reset_keep_alive()` + `clear_all_eval_states()` + park on `depth == 0` (in `finally`, *after* decrement) |
-| `util/_concurrency.py` | `init_concurrency()`: `if active_eval_count() > 1: return` at top |
-| `log/_samples.py` | `init_active_samples()`: same one-line guard (or delete body — already a no-op on our fork) |
-| `log/_refusal.py` | `init_refusal_tracking()`: same guard on the `_refusal_count = 0` line |
-| `_eval/run.py` | Move `await logger.init()` **out** of the `with chdir(…):` block (chdir wraps only the sync `TaskLogger()` ctor). Module-level `_sandbox_lock = anyio.Lock()`; `async with _sandbox_lock:` around the `chdir + environ_vars + await task_init/task_cleanup` blocks. `cleanup_s3_sessions()`: `if active_eval_count() > 0: return` before closing. |
-| tests | Keep `test_concurrent_eval_async_opt_in`; add one asserting `id(_concurrency_registry)` unchanged across a nested eval. |
+| `util/_concurrency.py` | `init_concurrency()`: `if _concurrency_registry is not None: return` at top. Registry is process-lifetime; controllers keyed by API URL accumulate naturally. (Tests that want a fresh registry call a new `_reset_concurrency_for_tests()`.) |
+| `log/_samples.py` | `init_active_samples()`: delete body (entries are already per-sample CM append/remove). |
+| `log/_refusal.py` | `init_refusal_tracking()`: drop the `_refusal_count = 0` reset (display resets when it opens). Keep the `_log_refusals` set. |
 
-That's it. No `concurrency_scope()` CM, no `clear_eval_states_for_run()`
-(depth-gate the existing `clear_all` instead — per-run is a follow-up),
-no ContextVar for `_log_refusals` (depth-gate the reset instead), no
-sandbox-config absolutization (the lock covers it). Every change is
-"add one `if depth: return` line" or "move one `await` one level out".
+No import from `_eval/eval.py` → no circular-dep risk.
 
-The cleaner refactors (per-run eval-state cleanup, `_log_refusals`
-ContextVar, sandbox `run_dir=` kwarg, `task_screen()` join) are
-follow-up PRs — each independently reviewable.
+### 2. Per-eval cleanup (remove-your-own — no resource creep)
+
+| File | Change |
+|---|---|
+| `_control/eval_state.py` | New `clear_eval_states_for_run(run_id: str)` — deletes only entries whose `state.run_id == run_id`. `_eval/eval.py` `finally` calls this instead of `clear_all_eval_states()`. |
+| `util/_concurrency.py` | `DynamicSampleLimiter.close()` → `_controller_created_observers.remove(self._on_...)` (suppressed). `_eval/task/run.py` calls it in the `finally` around the task body where the limiter is created. |
+| `log/_samples.py` | Already per-entry (`active_sample()` CM). ✓ |
+
+Long-running processes (workbench, notebooks) don't accumulate stale
+`_eval_states` entries or dead observer callbacks across sessions.
+
+### 3. Refcount-gated (last-out — genuinely process-singular)
+
+`_eval_async_running: bool` → `_active_eval_count: int` +
+`active_eval_count()` accessor. Only ~3 sites read it — the things
+that *can't* be per-eval:
+
+| File | Change |
+|---|---|
+| `_eval/eval.py` | Increment before init, decrement in `finally`. Guard raises on `> 0` (before increment) unless `INSPECT_ALLOW_CONCURRENT_EVAL_ASYNC`. In `finally` after decrement, `if _active_eval_count == 0:` gates keep-alive park. `reset_keep_alive()` gated on `== 0` before increment. |
+| `_eval/run.py` | `cleanup_s3_sessions()`: `if active_eval_count() > 0: return` at top (fsspec cache is process-shared; can't close per-eval). |
+
+### 4. chdir hazards (unchanged from earlier)
+
+| File | Change |
+|---|---|
+| `_eval/run.py` | Move `await logger.init()` outside the `with chdir(…):` (chdir wraps only sync `TaskLogger()`). Module-level `_sandbox_lock = anyio.Lock()`; `async with _sandbox_lock:` around `chdir + environ_vars + await task_init/task_cleanup`. |
+
+### Tests
+
+- `test_concurrent_eval_async_opt_in` (existing)
+- `test_concurrent_eval_shares_concurrency_registry` — `id(_concurrency_registry)` unchanged across two overlapping evals
+- `test_concurrent_eval_cleans_own_eval_states` — after eval A finishes (B still running), `_eval_states` has only B's entries
 
 ## Follow-up PRs (separate, can iterate)
 
