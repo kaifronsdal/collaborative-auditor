@@ -538,8 +538,7 @@
    ink-faint icon, bg-200 hover pill. */
 .composer-controls { display: inline-flex; gap: 4px; margin-left: -7px; }
 .composer-controls button {
-  width: 32px; height: 32px;
-  width: 28px; height: 28px; padding: 0;
+  width: 32px; height: 32px; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
   border: none; border-radius: 50%;
   background: none; cursor: pointer;
