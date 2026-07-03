@@ -65,12 +65,19 @@ mounts a `ProgressCard` with `display_id = eval_id`; subsequent
 `eval_progress`/`sample_done` lines `dh.update()` the same card.
 `eval_done` settles it.
 
-Registration: `wb_display.py` uses `entry_points` group
-`inspect_ai.display` (check inspect's registration mechanism) or
-monkeypatches `_display._displays["workbench"] = WorkbenchDisplay`.
-The agent sets it via `INSPECT_DISPLAY=workbench` in the `bash` env
-(so the agent doesn't have to remember `--display workbench` on
-every command).
+Registration: `INSPECT_DISPLAY=workbench` **cannot work** — the CLI's
+`--display` is a `click.Choice` bound to that env var, so click
+rejects the value before any Python runs. Instead `wb_display.py`
+registers via the `[project.entry-points.inspect_ai]` group (loaded
+during model-provider lookup) and monkeypatches `_display.core.
+active._active_display` when `WORKBENCH_DISPLAY=1` is set. The
+`bash` tool sets that env var; `_audit_task.py` also calls
+`register()` directly.
+
+Task spec: `inspect eval` doesn't resolve `workbench.m1._audit_task:
+audit` (module form) — use `src/workbench/m1/_audit_task.py@audit`.
+`--model-role target=…` is required in addition to `auditor`/`judge`
+(petri's `target_agent()` reads it explicitly).
 
 **Also renders:**
 ```
@@ -158,6 +165,52 @@ per-sample) → wait for flush → `import_eval`. Drop
   `.bash-cell` alongside `.code-cell` — head shows `$ {cmd}`,
   body streams stdout with WB_MIME cards inline). `ProgressCard`
   reads either `attach`-payload or `eval_progress`-payload shape.
+
+## Step-6 deletion checklist
+
+**`m1/run.py`** — delete: `RunHandle.launch` classmethod (the
+`eval_async` call), `AuditRunHandle.launch`, `CONTROL`,
+`SampleControl`, `steer()`, `stop()`, `drain_control()`,
+`BatchHooks`, `snapshot_running()`, `adopt_running()`. Keep:
+`RunProposal` (used by `review_seeds`), `SampleRow`,
+`_PollingHandle` (base for `AttachedRun`/`ScanHandle`), `ScanHandle`
+(scout runs in-process — no eval_async), `_finite_or_none`. The
+`RunHandle`/`AuditRunHandle` classes become thin aliases of
+`AttachedRun` (or delete and update imports).
+
+**`m1/wb.py`** — delete: `run_audits()`, `run_eval()`, `steer()`,
+`stop()`, `GATE_THRESHOLD`. Keep: `attach`, `ask_human`, `cite`,
+`review_seeds` (add — wraps `RunProposal` via gate), `plots`,
+`transcript`/`excerpt`/`read_transcript`, `scan`.
+
+**`auditor.py`** — `workbench_auditor(hooks, ...)`: `hooks` becomes
+optional (M0 desk still passes `Branch`; batch subprocess uses
+`_NoHooks` from `_audit_task.py`). Drop the `TurnHooks` protocol's
+batch-side implementation notes.
+
+**`server.py`** — `_dispatch` `case "import_running"`: rewrite to
+use `AttachedRun.interrupt_sample(id)` (ACP) + wait-for-flush +
+`import_eval`. Drop the in-process `snapshot_running` path. `case
+"stop_sample"`: same — ACP interrupt via `AttachedRun` if the
+sample belongs to a subprocess run.
+
+**Smokes** — `_smoke_m1_run.py`: cells 1 (in-process `run_eval`
+card ticks), 2 (steer/stop), 3 (concurrent `eval_async`), 5
+(RunProposal gate) all test the deleted path — drop or rewrite as
+`bash("inspect eval …")` + `wb.attach`. Cell 4 (cancel) → subprocess
+`.terminate()`. Cell 6 (`wb.scan`) stays. `_smoke_m1_features.py`:
+rewind/interrupt-and-send/persist stay (kernel-level, not eval);
+`snapshot_running` check → drop; `stop_sample` → ACP.
+`_smoke_m1_streaming.py` stays (orchestrator's own generate).
+
+**Fork** (`~/GitHub/inspect_ai` `model-event-output-streaming`) —
+revert `1a36c4dc` (concurrent-eval refcount), `536002a8`
+(`ActiveSample.store`), `4636d9a6` (`init_active_samples` no-op),
+`fa94cd82` (guard removal). Keep: 8 streaming commits + merge.
+Regenerate `m1/patches/` (only the streaming diff remains).
+
+**Frontend** — `wire.ts`: drop `stop_sample` (or repoint to ACP);
+`import_running` payload gains `log_dir` (to find the ACP socket).
 
 ## Migration order
 
