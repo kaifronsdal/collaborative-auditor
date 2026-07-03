@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import logging
+import zipfile
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -32,7 +33,8 @@ from inspect_petri.target import Step
 from shortuuid import uuid
 
 from workbench.export import export_branch, import_eval
-from workbench.m1.run import adopt_running, snapshot_running, stop
+from workbench.m1.attach import AttachedRun
+from workbench.m1.run import stop
 from workbench.run import (
     Branch,
     edited_auditor_step,
@@ -704,26 +706,45 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             )
 
         case "import_running":
-            # Punch down into a running batch sample as an M0 `Branch`
-            # at its current turn (M1-RUN-AUDITS.md §Desk). Default v2
-            # ``snapshot`` reads the live ``AuditTape`` from
-            # ``ActiveSample.store`` — the batch sample keeps running,
-            # the desk gets a fork; it falls back to adopt internally
-            # if the tape hasn't been checkpointed yet. Explicit
-            # ``snapshot=False`` opts into v1 adopt (interrupt + flush;
-            # the batch loses the sample). Either way, if the sample
-            # isn't in ``active_samples()`` (already finished/flushed),
-            # fall back to a plain ``import_eval`` from the provided
-            # log.
-            snapshot = data.get("snapshot", True)
-            fetch = snapshot_running if snapshot else adopt_running
-            try:
-                history, meta = await fetch(data["sample_id"])
-            except ValueError:
-                if data.get("log"):
-                    history, meta = import_eval(data["log"], data["sample_id"])
-                else:
-                    raise
+            # M1-HYBRID §Import-to-auditor: the eval is a *subprocess*
+            # (``bash("inspect eval …")``), so there is no in-process
+            # ``ActiveSample`` to snapshot. Instead: attach to
+            # ``log_dir``, per-sample ``inspect/cancel_sample`` over
+            # the eval's ACP socket, wait for the recorder to flush
+            # that sample to the ``.eval``, then ``import_eval`` it —
+            # same ``(History, BranchMeta)`` tail as the plain
+            # ``import`` case. Siblings keep running.
+            #
+            # If ``interrupt_sample`` returns ``False`` (no ACP server
+            # — eval wasn't launched with ``--acp-server``, or already
+            # exited) the flush poll may still succeed if the sample
+            # finished on its own; otherwise the timeout surfaces as
+            # ``{t:"error"}`` via the outer ``_dispatch`` guard.
+            from inspect_ai.log._file import (  # noqa: PLC0415, PLC2701
+                read_eval_log_sample_summaries_async,
+            )
+
+            sample_id = str(data["sample_id"])
+            h = AttachedRun(log_dir=data["log_dir"], description=data["log_dir"])
+            await h._poll()  # noqa: SLF001 — discover .eval + ctl eval_id
+            await h.interrupt_sample(sample_id)
+            if h.location is None:
+                raise ValueError(f"no .eval in {data['log_dir']!r}")
+            deadline = asyncio.get_running_loop().time() + 5.0
+            while True:
+                try:
+                    summaries = await read_eval_log_sample_summaries_async(h.location)
+                except (zipfile.BadZipFile, ValueError):
+                    summaries = []
+                if any(str(s.id) == sample_id for s in summaries):
+                    break
+                if asyncio.get_running_loop().time() >= deadline:
+                    raise TimeoutError(
+                        f"sample {sample_id!r} did not flush within 5s "
+                        f"(acp={h._acp!r})"  # noqa: SLF001
+                    )
+                await asyncio.sleep(0.1)
+            history, meta = import_eval(h.location, sample_id)
             await _import(session, history, meta)
 
         case "orch_send":

@@ -23,16 +23,21 @@ Two data sources per poll:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import time
 import zipfile
 from dataclasses import dataclass, field
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 import httpx
 from inspect_ai._control.discovery import (  # noqa: PLC2701
     DiscoveredControlServer,
     list_discovered_servers,
+)
+from inspect_ai.agent._acp.discovery import (  # noqa: PLC2701
+    DiscoveredEval,
+    list_discovered_evals,
 )
 from inspect_ai.log import EvalSampleSummary, list_eval_logs
 from inspect_ai.log._file import (  # noqa: PLC2701
@@ -72,6 +77,9 @@ class AttachedRun(_PollingHandle):
     _ctl: tuple[DiscoveredControlServer, str] | None | bool = field(
         default=None, repr=False
     )
+    #: ACP discovery entry for this eval (``--acp-server``); ``False`` once
+    #: we've decided none exists. Same tri-state as ``_ctl``.
+    _acp: DiscoveredEval | None | bool = field(default=None, repr=False)
 
     # -- construction -----------------------------------------------------
 
@@ -215,6 +223,96 @@ class AttachedRun(_PollingHandle):
                     return server, str(e["eval_id"])
         return None
 
+    # -- ACP (per-sample interrupt) ---------------------------------------
+
+    async def _discover_acp(self) -> DiscoveredEval | None:
+        """Find this eval's ``--acp-server`` socket via ACP discovery.
+
+        The ACP discovery file's ``eval_id`` is the *run* id (what
+        ``acp_server(eval_id=…)`` is called with — one server per
+        ``inspect eval`` process), which is the same value ctl exposes
+        as :attr:`DiscoveredControlServer.run_id`. So: reuse the ctl
+        server we already found for this ``log_dir`` and match ACP
+        entries on its ``run_id``. If ctl hasn't been discovered yet,
+        try once now; without it there's no way to disambiguate
+        concurrent evals, so return ``None``.
+        """
+        if not isinstance(self._ctl, tuple):
+            self._ctl = await self._discover_ctl()
+        if not isinstance(self._ctl, tuple):
+            return None
+        server, _ = self._ctl
+        for entry in list_discovered_evals():
+            if entry.eval_id == server.run_id:
+                return entry
+        return None
+
+    async def interrupt_sample(
+        self, sample_id: str, *, action: Literal["score", "error"] = "score"
+    ) -> bool:
+        """Cancel one running sample via ``inspect/cancel_sample`` over ACP.
+
+        Opens a fresh connection to the eval's ACP UNIX socket, resolves
+        ``sample_id`` → ``sessionId`` via ``inspect/list_samples``, binds
+        with ``session/load`` (``inspect/cancel_sample`` requires a bound
+        connection — the wire ``sessionId`` is validated against the
+        binding), then issues the cancel. ``action="score"`` runs the
+        scorer on whatever landed; the sample flushes to ``.eval`` under
+        ``--log-buffer 1`` so ``import_eval`` can read it.
+
+        Returns ``True`` on a successful cancel; ``False`` if no ACP
+        server is discoverable (eval not started with ``--acp-server``,
+        already exited, or the sample isn't running) — the caller falls
+        back to whole-eval terminate or a plain log import.
+        """
+        if self._acp is None:
+            self._acp = await self._discover_acp() or False
+        if not isinstance(self._acp, DiscoveredEval):
+            return False
+        sock = self._acp.target.socket_path
+        if sock is None:
+            return False
+        try:
+            reader, writer = await asyncio.open_unix_connection(str(sock))
+        except OSError:
+            self._acp = False
+            return False
+        try:
+            listing = await _acp_request(reader, writer, 1, "inspect/list_samples", {})
+            session_id = next(
+                (
+                    s["sessionId"]
+                    for s in listing.get("samples", [])
+                    if str(s.get("sampleId")) == str(sample_id) and s.get("sessionId")
+                ),
+                None,
+            )
+            if session_id is None:
+                return False
+            await _acp_request(
+                reader,
+                writer,
+                2,
+                "session/load",
+                {"sessionId": session_id, "cwd": "/", "mcpServers": []},
+            )
+            await _acp_request(
+                reader,
+                writer,
+                3,
+                "inspect/cancel_sample",
+                {"sessionId": session_id, "action": action},
+            )
+            return True
+        except (_AcpError, OSError):
+            return False
+        finally:
+            writer.close()
+            try:  # noqa: SIM105
+                await writer.wait_closed()
+            except OSError:
+                pass
+
     def _signature(self) -> tuple[Any, ...]:
         return (
             len(self.rows),
@@ -295,3 +393,51 @@ async def _ctl_get(server: DiscoveredControlServer, path: str) -> list[Any] | No
     except (httpx.HTTPError, OSError, ValueError):
         return None
     return body if isinstance(body, list) else None
+
+
+# -- ACP JSON-RPC over UDS ----------------------------------------------------
+
+
+class _AcpError(Exception):
+    """A JSON-RPC error response, timeout, or EOF on the ACP connection."""
+
+
+async def _acp_request(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    req_id: int,
+    method: str,
+    params: dict[str, Any],
+) -> Any:
+    """One JSON-RPC 2.0 request/response over a newline-delimited stream.
+
+    Inspect's ACP server (and the underlying ``acp.Connection``) frames
+    messages as one JSON object per line — no LSP ``Content-Length:``
+    headers. The server also pushes ``session/update`` notifications and
+    (post-bind) transcript replay unsolicited, so read lines until the
+    matching response arrives: a message with our ``id`` and no
+    ``method`` field. Everything else (notifications have ``method`` but
+    no ``id``; server→client requests have both) is skipped.
+    """
+    writer.write(
+        (
+            json.dumps(
+                {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
+            )
+            + "\n"
+        ).encode()
+    )
+    await writer.drain()
+    while True:
+        try:
+            line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        except asyncio.TimeoutError as exc:
+            raise _AcpError(f"{method}: timeout") from exc
+        if not line:
+            raise _AcpError(f"{method}: connection closed")
+        msg = json.loads(line)
+        if "method" in msg or msg.get("id") != req_id:
+            continue
+        if "error" in msg:
+            raise _AcpError(f"{method}: {msg['error']}")
+        return msg.get("result", {})

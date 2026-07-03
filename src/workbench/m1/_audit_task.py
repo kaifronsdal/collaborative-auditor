@@ -27,6 +27,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import anyio
 import shortuuid
 from inspect_ai import Task, task
 from inspect_ai.dataset import Sample
@@ -102,9 +103,13 @@ def audit(seeds_file: str, config: str | dict[str, Any] = "{}") -> Task:
 
 
 @solver
-def _echo() -> Solver:
+def _slow(turns: int = 1, turn_sleep: float = 0.0) -> Solver:
     async def solve(state: TaskState, generate: Generate) -> TaskState:
-        return await generate(state)
+        for _ in range(turns):
+            if turn_sleep:
+                await anyio.sleep(turn_sleep)
+            state = await generate(state)
+        return state
 
     return solve
 
@@ -118,12 +123,14 @@ def _always_one() -> Any:
 
 
 @task
-def demo(n: int = 3) -> Task:
-    """Trivial task: N samples, one generate, constant score. Enough to
-    exercise ``eval_start`` / ``eval_progress`` / ``eval_sample_done`` /
-    ``eval_done`` under ``mockllm/model``."""
+def demo(n: int = 3, turns: int = 1, turn_sleep: float = 0.0) -> Task:
+    """Trivial task: N samples, ``turns`` generates each with an optional
+    per-turn sleep, constant score. With ``turn_sleep=0`` (default) it
+    exercises ``eval_start`` / ``eval_progress`` / ``eval_sample_done`` /
+    ``eval_done`` under ``mockllm/model``; with ``turns>1, turn_sleep>0``
+    it holds samples running long enough for the ACP-interrupt smoke."""
     return Task(
         dataset=[Sample(input=f"seed {i}", id=f"s{i}") for i in range(n)],
-        solver=_echo(),
+        solver=_slow(turns, turn_sleep),
         scorer=_always_one(),
     )
