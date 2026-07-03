@@ -17,14 +17,15 @@
 /* `.column-head` (styles.css) forces uppercase 11px on the whole header; keep
    that only on `.head-title` and let the meta chunks read as lowercase mono. */
 .orch-head .head-left {
-  display: inline-flex; align-items: center; gap: 7px; min-width: 0;
+  display: inline-flex; align-items: center; gap: 7px;
+  min-width: 0; min-height: 20px;
   text-transform: none; letter-spacing: 0; font-weight: 400;
 }
 .orch-head .head-title {
   font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
   color: var(--ink-faint);
 }
-.orch-head .rl-dot { margin: 0 -1px 0 2px; }
+.orch-head .rl-dot { margin: 0 0 0 2px; position: relative; top: -1px; }
 /* extend styles.css `.rl-dot-*` set for the tri-state (§3) */
 .rl-dot-idle   { background: transparent; border: 1.5px solid var(--ink-faint); box-sizing: border-box; }
 .rl-dot-gen    { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
@@ -35,7 +36,7 @@
 .head-gate-jump {
   border: 1px solid var(--gate); border-radius: var(--r-pill);
   background: var(--gate-dim); color: var(--gate-text);
-  font: 11px var(--sans); padding: 2px 10px; cursor: pointer;
+  font: 11px/1.6 var(--sans); padding: 0 10px; cursor: pointer;
 }
 .head-gate-jump:hover { filter: brightness(.97); }
 .head-gate-pop {
@@ -64,7 +65,7 @@
 }
 
 /* ---- one turn ---- */
-.orch-col .turn { margin: 0 0 22px; }
+.orch-col .turn { margin: 0; }  /* dead — .turn-sep controls the rhythm */
 .turn-sep { height: 1px; background: var(--border); margin: 34px -8px; }
 /* prose mt can't collapse through .ba-host flow-root — zero it so the
    sep controls the rhythm symmetrically (SPACING-FIXES). */
@@ -87,7 +88,7 @@
 /* Full-contrast ink at 15px so the model's narration reads as the primary
    voice — outputs (`.out-plain`, `.out-stream`) sit at ink-mid/ink-dim. */
 .asst-prose {
-  margin: 18px 2px 20px;
+  margin: 18px 0 20px;
   font: 15px/1.55 var(--sans);
   color: var(--ink);
 }
@@ -108,25 +109,24 @@
 .code-cell {
   position: relative;
   border: 1px solid var(--border); border-radius: var(--r-md);
-  background: var(--bg-000); overflow: hidden; margin-bottom: 14px;
+  background: var(--bg-000); overflow: hidden; margin-bottom: 10px;
 }
 /* background/detached cells are labeled by `.cc-bg-chip`, no left rail */
 .code-cell .cc-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px var(--sp-2) 5px;
+  min-height: 30px; padding: 5px 12px; box-sizing: border-box;
   font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   border-bottom: 1px solid var(--border);
   background: var(--bg-100);
 }
 .code-cell .cc-head .lang { display: none; }  /* every cell is python */
-.code-cell .cc-head .turn-no { margin-left: auto; }
 .cc-bg-chip {
   font: 9.5px var(--mono); padding: 0 5px; border-radius: var(--r-pill);
   border: 1px solid var(--accent); color: var(--accent-text);
 }
 .code-cell pre {
   position: relative;
-  margin: 0; padding: var(--sp-2) 14px;
+  margin: 0; padding: var(--sp-2) 34px var(--sp-2) 14px;  /* right: block-actions overlap */
   font: 12px/1.6 var(--mono); color: var(--ink-mid);
   white-space: pre; overflow-x: auto;
 }
@@ -134,7 +134,7 @@
 /* collapsed cells render no `<pre>` at all (UI-AUDIT §C); the head is the row. */
 .cc-bg-btn {
   border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-000); padding: 2px 9px;
+  background: var(--bg-000); padding: 1px 8px;
   font: 11px var(--sans); color: var(--ink-mid); cursor: pointer;
   display: inline-flex; align-items: center; gap: 2px;
 }
@@ -204,7 +204,7 @@
 
 /* print() / stdout — plain pre, distinguished from result by lower contrast */
 .out-stream {
-  margin: 10px 0 0; padding: 4px 2px 2px;
+  margin: 10px 0 0; padding: 4px 0 2px;
   font: 12px/1.5 var(--mono); color: var(--ink-mid); white-space: pre-wrap;
 }
 .out-stream.err { color: var(--danger); }
@@ -371,6 +371,8 @@
 .out.bare table.dataframe td {
   padding: 4px 10px; border: 1px solid var(--border); text-align: left;
 }
+.out.bare table.dataframe th:first-child,
+.out.bare table.dataframe td:first-child { padding: 4px 6px; }
 .out.bare table.dataframe thead th { background: var(--bg-100); font-weight: 600; }
 .out.bare table.dataframe tbody tr:hover { background: var(--bg-100); }
 
@@ -494,7 +496,7 @@
 .out.bare table.dataframe + p,
 .out.html > p:last-child {
   font: var(--fs-xs) var(--sans); color: var(--ink-faint);
-  margin: 6px 2px 0;
+  margin: 6px 0 0;
 }
 
 /* bare text/plain (last-expr repr, `display(obj)`): full-contrast ink so it
@@ -525,8 +527,13 @@
 }
 .head-gate-jump .rl-dot { margin: 0; flex-shrink: 0; }
 
+/* Orch composer overrides (`.composer` base is M0's, in styles.css):
+   symmetric 10/14 padding + `position: relative` so `.scroll-new` (moved into
+   the composer DOM) can pin `top: -40px` regardless of textarea auto-grow. */
+.orch-col-wrap .composer { position: relative; padding: var(--sp-2) 14px; }
+
 /* Composer transport cluster (⏹ ⏭ ▶/⏸) — relocated from the header per
-   "location follows interaction". Borderless 28px circles so they read as the
+   "location follows interaction". Borderless 32px circles so they read as the
    same species as M0's `.primary` (32px filled circle), just secondary:
    ink-faint icon, bg-200 hover pill. */
 .composer-controls { display: inline-flex; gap: 4px; margin-left: -7px; }
@@ -554,11 +561,11 @@
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* §4: floating `↓ N new` pill. Absolute to `.orch-col-wrap` (which also hosts
-   the composer) so it hovers just above the composer regardless of the
-   textarea's auto-grow height. */
+/* §4: floating `↓ N new` pill. Lives inside `.composer` (position:relative)
+   and pins above it via `top: -40px`, so it hovers just above the composer
+   regardless of textarea auto-grow height. */
 .scroll-new {
-  position: absolute; left: 50%; bottom: 96px; transform: translateX(-50%);
+  position: absolute; left: 50%; top: -40px; bottom: auto; transform: translateX(-50%);
   z-index: 4;
   display: inline-flex; align-items: center; gap: 6px;
   padding: 5px 14px; border: none; border-radius: var(--r-pill);
@@ -576,7 +583,10 @@
    so drop its bottom border. */
 .cc-head[role="button"] { cursor: pointer; user-select: none; }
 .code-cell.collapsed .cc-head { border-bottom: none; }
-.cc-chev { font-size: 10px; color: var(--ink-faint); flex-shrink: 0; width: 10px; }
+.cc-chev {
+  font-size: 10px; color: var(--ink-faint); flex-shrink: 0; width: 10px;
+  position: relative; top: 0.5px;
+}
 .cc-gist {
   flex: 1; min-width: 0;
   font: 11.5px var(--mono); color: var(--ink-faint);
@@ -647,6 +657,7 @@
    `.code-cell ~` so the prose wrapper (which precedes the cell and carries
    its own margins via `.asst-prose`) isn't double-spaced. */
 .code-cell ~ .ba-host { margin-top: 10px; }
+.code-cell ~ .ba-host + .ba-host { margin-top: 8px; }  /* 10/8 rhythm — `.out+.out` never matches through the wrapper */
 .code-cell ~ .ba-host > .out,
 .code-cell ~ .ba-host > .out-wrap,
 .code-cell ~ .ba-host > .out-stream { margin-top: 0; }
@@ -657,7 +668,7 @@
    prose's 14px bottom margin, giving the row that space to sit in. */
 .ba-host:has(> .asst-prose) { display: flow-root; margin-bottom: 6px; }
 .ba-host:has(> .asst-prose) > .block-actions {
-  bottom: 0; left: 2px; right: auto; gap: 10px;
+  bottom: 0; left: 0; right: auto; gap: 10px;
 }
 .ba-host:has(> .asst-prose) > .block-actions button {
   width: auto; height: auto; border: none; background: none;
@@ -666,6 +677,9 @@
 .ba-host:has(> .asst-prose) > .block-actions button:hover {
   background: none; color: var(--ink-mid);
 }
+/* Bare outputs (dataframe, result repr, stream) have no bottom border for the
+   row to sit on — nudge below the content so it doesn't overlap the last line. */
+.ba-host:has(> .out.bare) > .block-actions { bottom: -4px; right: 0; }
 
 /* Plotly click-to-open affordance — only shown when a trace has customdata. */
 .plotly-host .scatterlayer .points path,

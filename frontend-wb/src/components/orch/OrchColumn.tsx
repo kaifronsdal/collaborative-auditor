@@ -228,13 +228,12 @@ export function OrchColumn(): JSX.Element {
         {isRunning && !last?.model.pending && <ShimmerBubble />}
       </div>
 
-      {unseen > 0 && (
-        <button type="button" className="scroll-new" onClick={scrollToTail}>
-          <i className="bi bi-arrow-down" /> {unseen} new
-        </button>
-      )}
-
       <div className="composer">
+        {unseen > 0 && (
+          <button type="button" className="scroll-new" onClick={scrollToTail}>
+            <i className="bi bi-arrow-down" /> {unseen} new
+          </button>
+        )}
         <textarea
           className="composer-input"
           rows={1}
