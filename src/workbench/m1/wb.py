@@ -50,12 +50,20 @@ class Workbench:
     ``transcript`` are compute/read helpers with a rich repr.
     """
 
-    def __init__(self, gate: "Gate", session: "Session | None") -> None:  # noqa: ARG002
+    def __init__(
+        self,
+        gate: "Gate",
+        session: "Session | None",  # noqa: ARG002
+        *,
+        session_dir: str | None = None,
+    ) -> None:
         # ``gate`` is the only kernel dependency (``run_audits``/``ask_human``/
         # ``cite`` await it); holding just the ``Gate`` keeps ``wb`` decoupled
         # from the turn-lifecycle machinery. ``session`` is unused until a
-        # helper needs it.
+        # helper needs it. ``session_dir`` is the ``bash`` tool's cwd —
+        # threaded to ``attach`` so relative ``log_dir``s resolve there.
         self._gate = gate
+        self._session_dir = session_dir
 
     def __repr__(self) -> str:
         return (
@@ -63,10 +71,15 @@ class Workbench:
             "scan cite excerpt transcript read_transcript>"
         )
 
-    #: Read-only handle on an out-of-process eval's ``log_dir`` (M1-HYBRID
-    #: §``wb.attach``). Displays a live ``ProgressCard``; ``await h.wait()``
-    #: for the ``.eval`` to settle; ``h.audits`` for the DataFrame.
-    attach = staticmethod(AttachedRun.attach)
+    def attach(self, log_dir: str) -> AttachedRun:
+        """Read-only handle on an out-of-process eval's ``log_dir``
+        (M1-HYBRID §``wb.attach``). Relative paths resolve against the
+        orchestrator's session dir — the same cwd the ``bash`` tool runs
+        in — so ``bash("inspect eval … --log-dir runs/r1")`` and
+        ``wb.attach("runs/r1")`` agree. Displays a live ``ProgressCard``;
+        ``await h.wait()`` for the ``.eval`` to settle; ``h.audits`` for
+        the DataFrame."""
+        return AttachedRun.attach(log_dir, session_dir=self._session_dir)
 
     # -- gated launchers --------------------------------------------------
 

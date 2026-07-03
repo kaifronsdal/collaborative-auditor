@@ -54,6 +54,7 @@ from workbench.gate import StepGated
 from workbench.m1.kernel import DisplayEvent, OrchestratorKernel
 from workbench.m1.plots import install_template
 from workbench.m1.prompt import ORCHESTRATOR_SYSTEM_PROMPT
+from workbench.m1.tools import _session_dir, make_tools  # noqa: PLC2701
 from workbench.m1.wb import Workbench
 from workbench.view import Status
 
@@ -126,6 +127,11 @@ class Orchestrator(StepGated):
 
         self.span_id = span_id or uuid()
         session.span_role[self.span_id] = ("orch", "orch")
+        #: cwd for the ``bash``/file tools (M1-HYBRID §bash) and the base
+        #: for relative ``wb.attach("runs/…")`` paths — same dir both sides
+        #: so ``bash("… --log-dir runs/r1")`` and ``wb.attach("runs/r1")``
+        #: agree without the agent thinking about paths.
+        self.session_dir = _session_dir(self)
 
         # Pay inspect's cold-start cost (display type, hooks banner) once,
         # before the first cell runs — otherwise the first in-cell
@@ -136,7 +142,9 @@ class Orchestrator(StepGated):
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
         self.kernel.gate.on_change = self._broadcast_status_soon
-        self.kernel.shell.user_ns["wb"] = Workbench(self.kernel.gate, session)
+        self.kernel.shell.user_ns["wb"] = Workbench(
+            self.kernel.gate, session, session_dir=str(self.session_dir)
+        )
         self.kernel.shell.user_ns.update(_seed_analysis_ns())
         self._init_gate()
         self._status: Status = "idle"
@@ -391,7 +399,7 @@ def python_tool(orch: Orchestrator) -> Tool:
 def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
     """The M1 orchestrator's agent loop — ``generate → execute_tools`` gated
     per turn, with human-queued messages drained before each generate."""
-    tools = [python_tool(orch)]
+    tools = [python_tool(orch), *make_tools(orch)]
 
     @agent
     def _factory() -> Agent:

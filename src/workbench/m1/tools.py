@@ -25,6 +25,8 @@ import difflib
 import json
 import os
 from asyncio.subprocess import PIPE, STDOUT
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -46,6 +48,32 @@ def _session_dir(orch: "Orchestrator") -> Path:
     d = Path.home() / ".workbench" / "sessions" / orch.span_id
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+@contextmanager
+def _turn(orch: "Orchestrator") -> Iterator[int]:
+    """Allocate a kernel turn for a non-``python`` tool that emits displays.
+
+    ``kernel._emit`` stamps ``DisplayEvent.turn_id`` from the ``_current_turn``
+    contextvar, which only ``run_turn`` sets. ``bash`` and the review tools
+    emit outside any cell, so without this their outputs land at
+    ``turn_id=-1`` and the frontend can't group them under the tool call
+    that produced them (nor can ``rewind()`` find them). Bumping the shared
+    ``_turn_counter`` keeps one contiguous numbering across ``python`` and
+    non-``python`` calls; the ``_turn_msg`` write mirrors ``python_tool`` so
+    rewind covers these turns too.
+    """
+    k = orch.kernel
+    k._turn_counter += 1  # noqa: SLF001
+    tid: int = k._turn_counter  # noqa: SLF001
+    k.outputs.setdefault(tid, [])
+    if orch.state is not None and orch.state.output is not None:
+        orch._turn_msg[tid] = orch.state.output.message.id  # noqa: SLF001
+    tok = k._current_turn.set(tid)  # noqa: SLF001
+    try:
+        yield tid
+    finally:
+        k._current_turn.reset(tok)  # noqa: SLF001
 
 
 def make_tools(orch: "Orchestrator") -> list[Tool]:
@@ -204,43 +232,47 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
             # ``inspect_ai`` entry point) monkeypatches the active display
             # when ``WORKBENCH_DISPLAY`` is set instead.
             env = {**os.environ, "WORKBENCH_DISPLAY": "1"}
-            proc = await asyncio.create_subprocess_shell(
-                cmd, cwd=session_dir, env=env, stdout=PIPE, stderr=STDOUT
-            )
-            plain: list[str] = []
-            seen: set[str] = set()
+            with _turn(orch):
+                proc = await asyncio.create_subprocess_shell(
+                    cmd, cwd=session_dir, env=env, stdout=PIPE, stderr=STDOUT
+                )
+                plain: list[str] = []
+                seen: set[str] = set()
 
-            if background:
-                bg_id = uuid4().hex[:6]
+                if background:
+                    bg_id = uuid4().hex[:6]
 
-                async def _bg() -> None:
-                    code = await _pump(proc, plain, seen)
-                    kernel._emit(  # noqa: SLF001
-                        DisplayEvent(
-                            id=uuid4().hex,
-                            bundle={
-                                "text/plain": f"[bg-{bg_id} done · exit {code}]",
-                                WB_MIME: {
-                                    "kind": "bg_done",
-                                    "id": bg_id,
-                                    "pid": proc.pid,
-                                    "exit": code,
+                    async def _bg() -> None:
+                        code = await _pump(proc, plain, seen)
+                        kernel._emit(  # noqa: SLF001
+                            DisplayEvent(
+                                id=uuid4().hex,
+                                bundle={
+                                    "text/plain": f"[bg-{bg_id} done · exit {code}]",
+                                    WB_MIME: {
+                                        "kind": "bg_done",
+                                        "id": bg_id,
+                                        "pid": proc.pid,
+                                        "exit": code,
+                                    },
                                 },
-                            },
+                            )
                         )
-                    )
-                    kernel.notify(f"[bg-{bg_id} done · exit {code} · {cmd[:60]!r}]")
+                        kernel.notify(f"[bg-{bg_id} done · exit {code} · {cmd[:60]!r}]")
 
-                asyncio.create_task(_bg())  # noqa: RUF006
-                return f"[bg-{bg_id} started · pid {proc.pid}]"
+                    # ``_bg`` copies context at creation, so the ``_turn``
+                    # contextvar carries into the detached pump even though
+                    # the with-block exits immediately below.
+                    asyncio.create_task(_bg())  # noqa: RUF006
+                    return f"[bg-{bg_id} started · pid {proc.pid}]"
 
-            try:
-                code = await asyncio.wait_for(_pump(proc, plain, seen), timeout)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return _tail(plain, f"timeout after {timeout}s")
-            return _tail(plain, code)
+                try:
+                    code = await asyncio.wait_for(_pump(proc, plain, seen), timeout)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                    return _tail(plain, f"timeout after {timeout}s")
+                return _tail(plain, code)
 
         return execute
 
@@ -334,7 +366,8 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 question: The question to render on the gate card.
                 options: Optional fixed choices (rendered as buttons).
             """
-            return str(await kernel.gate(Prompt(question, options)))
+            with _turn(orch):
+                return str(await kernel.gate(Prompt(question, options)))
 
         return execute
 
@@ -362,7 +395,8 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 n_per_seed=int(cfg.get("n_per_seed", 1)),
                 model=cfg.get("model"),
             )
-            await kernel.gate(prop)
+            with _turn(orch):
+                await kernel.gate(prop)
             # inspect's ``ToolResult`` doesn't include ``dict`` — encode.
             return json.dumps({
                 "approved": not prop.denied,
@@ -391,7 +425,8 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 grades_ref=None,
                 description=description,
             )
-            await kernel.gate(prop)
+            with _turn(orch):
+                await kernel.gate(prop)
             return json.dumps({
                 "signed": prop.signed,
                 "quotes": [vars(q) for q in prop.quotes],
