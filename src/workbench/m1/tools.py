@@ -63,24 +63,94 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
             )
         )
 
-    def _card(payload: dict[str, Any], seen: set[str]) -> None:
+    #: Accumulated ``RunPayload`` per ``eval_id`` — each ``{"wb":"eval_*"}``
+    #: line folds into this and re-emits the *whole* snapshot, so the
+    #: frontend's ``ProgressCard`` sees the same ``kind:"eval_run"`` shape as
+    #: ``AttachedRun`` produces (M1-HYBRID.md step 5: one payload shape).
+    _evals: dict[str, dict[str, Any]] = {}
+
+    def _fold_eval(line: dict[str, Any]) -> dict[str, Any]:
+        """Fold one ``eval_*`` protocol line into its accumulated snapshot."""
+        eid = line["eval_id"]
+        p = _evals.setdefault(
+            eid,
+            {
+                "kind": "eval_run",
+                "id": eid,
+                "task": line.get("task", "eval"),
+                "description": "",
+                "log_dir": line.get("log_dir", ""),
+                "log": None,
+                "total": line.get("total", 0),
+                "done": 0,
+                "finished": False,
+                "error": None,
+                "rows": {"running": [], "done": []},
+            },
+        )
+        wb = line["wb"]
+        if wb == "eval_start":
+            p["task"] = line["task"]
+            p["total"] = line["total"]
+            p["log_dir"] = line.get("log_dir", "")
+            p["description"] = str(line.get("model") or "")
+        elif wb == "eval_progress":
+            p["done"] = line["done"]
+            p["elapsed"] = f"{line['elapsed']:.0f}s"
+            # ``running`` rows have no ``input`` in the protocol — the
+            # display driver only sees id/epoch/turns/tokens. Leave it
+            # empty; the ``.ar-seed`` column just collapses.
+            p["rows"]["running"] = [
+                {
+                    "id": str(r["id"]),
+                    "status": "running",
+                    "input": "",
+                    "turns": r.get("turns"),
+                    "scores": {},
+                }
+                for r in line.get("running", [])
+            ]
+        elif wb == "eval_sample_done":
+            p["rows"]["done"].append({
+                "id": str(line["id"]),
+                "status": "error" if line.get("error") else "done",
+                "input": "",
+                "turns": None,
+                "error": line.get("error"),
+                "scores": line.get("scores") or {},
+            })
+        elif wb == "eval_done":
+            p["finished"] = True
+            p["done"] = line["done"]
+            p["log"] = line.get("location")
+            p["rows"]["running"] = []
+            if line.get("errors") and not p["rows"]["done"]:
+                p["error"] = f"{line['errors']} errors"
+        return p
+
+    def _card(line: dict[str, Any], seen: set[str]) -> None:
         """One ``{"wb":…}`` line → a WB_MIME ``DisplayEvent``.
 
-        ``eval_id`` is the stable ``display_id``: the first line for a given
-        eval mounts the card, subsequent ones ``update=True`` it in place
-        (M1-HYBRID.md §``bash`` tool). Non-eval lines (``file``/``ref``) get a
-        fresh id each.
+        ``eval_*`` lines are folded into a per-``eval_id`` ``RunPayload``
+        snapshot (``kind:"eval_run"``) so successive updates replace the
+        same stable card. Non-eval lines (``file``/``ref``/``bg_done``)
+        pass through under a fresh id with ``kind = wb``.
         """
-        kind = str(payload["wb"]).removeprefix("eval_")
-        did = payload.get("eval_id") or uuid4().hex
+        wb = str(line["wb"])
+        if wb.startswith("eval_"):
+            payload = _fold_eval(line)
+            did = line["eval_id"]
+        else:
+            payload = {"kind": wb, **line}
+            did = line.get("id") or uuid4().hex
         update = did in seen
         seen.add(did)
         kernel._emit(  # noqa: SLF001
             DisplayEvent(
                 id=did,
                 bundle={
-                    "text/plain": f"<{payload['wb']} · {json.dumps(payload)[:80]}>",
-                    WB_MIME: {"kind": kind, **payload},
+                    "text/plain": f"<{wb} · {json.dumps(line)[:80]}>",
+                    WB_MIME: payload,
                 },
                 stable=True,
                 update=update,

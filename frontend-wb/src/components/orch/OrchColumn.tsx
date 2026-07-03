@@ -76,7 +76,7 @@ export function OrchColumn(): JSX.Element {
   const bgCells = orch?.bg_cells ?? EMPTY_BG;
   const notifications = orch?.notifications ?? EMPTY_NOTIF;
   const last = turns.at(-1);
-  const cellRunning = last?.py?.pending === true;
+  const cellRunning = last?.tools.some((t) => t.pending) ?? false;
   const statusText = STATUS_TEXT[status];
 
   // Header pill: derive pending gates from the live event stream, not
@@ -422,9 +422,9 @@ function OrchHeader({
 /**
  * Group the orch span's flat event stream into `OrchTurnData[]`.
  *
- * A `ModelEvent` opens a turn. Any following `ToolEvent` with
- * `function === "python"` is that turn's code cell (there is at most one — the
- * agent has a single tool). `InfoEvent(source="orchestrator")` are bucketed by
+ * A `ModelEvent` opens a turn. Every following `ToolEvent` (any `function`)
+ * belongs to that turn (M1-HYBRID.md — the agent has 8 tools and may call
+ * several per generate). `InfoEvent(source="orchestrator")` are bucketed by
  * `data.turn` rather than stream position, so a backgrounded cell's late
  * outputs land under the turn that emitted them (M1-NOTEBOOK.md §Background).
  *
@@ -457,14 +457,14 @@ export function eventsToOrchTurns(
         turn,
         model: ev,
         userInput: tail as ChatMessage[],
-        py: undefined,
+        tools: [],
         outputs: [],
       };
       turns.push(data);
       byTurn.set(turn, data);
-    } else if (ev.event === "tool" && ev.function === "python") {
+    } else if (ev.event === "tool") {
       const cur = turns[turns.length - 1];
-      if (cur) cur.py = ev;
+      if (cur) cur.tools.push(ev);
     } else if (ev.event === "info" && ev.source === ORCH_SOURCE) {
       const de = ev as DisplayInfoEvent;
       // Not every orch InfoEvent is a display — `rewind_marker` (§2) carries

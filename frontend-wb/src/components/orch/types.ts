@@ -74,10 +74,9 @@ export const WB_MIME = "application/vnd.workbench.v1+json";
 export const STREAM_MIME = "application/vnd.jupyter.stream+json";
 
 /**
- * One rendered orchestrator turn: assistant prose → code cell → outputs →
- * traceback. Derived from the orch span's `ModelEvent` + its
- * `ToolEvent(function="python")` + every `DisplayInfoEvent` whose
- * `data.turn` matches.
+ * One rendered orchestrator turn: assistant prose → tool cell(s) → outputs →
+ * traceback. Derived from the orch span's `ModelEvent` + every following
+ * `ToolEvent` + every `DisplayInfoEvent` whose `data.turn` matches.
  */
 export type OrchTurnData = {
   /** 1-based turn ordinal (backend counts from 1; matches `data.turn`). */
@@ -85,9 +84,11 @@ export type OrchTurnData = {
   model: ModelEvent;
   /** The user message(s) that preceded this generate — the human's ask. */
   userInput: ChatMessage[];
-  /** The `python(code=…)` call. Absent when the model replied without one
-   *  (final "done" turn — prose only). */
-  py?: ToolEvent;
+  /** All tool calls this turn (M1-HYBRID.md — `python`/`bash`/`read_file`/
+   *  `write_file`/`edit_file`/`ask_human`/`review_seeds`/`review_finding`).
+   *  Empty when the model replied without one (final "done" turn — prose
+   *  only). Rendered by `<ToolCell>` dispatching on `.function`. */
+  tools: ToolEvent[];
   /** Display outputs in emission order (already latest-wins for stable ids —
    *  the store's `update` reducer replaces the event in place by uuid). */
   outputs: DisplayInfoEvent[];

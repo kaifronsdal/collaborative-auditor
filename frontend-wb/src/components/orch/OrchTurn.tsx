@@ -1,13 +1,21 @@
 /**
  * `<OrchTurn>` — one orchestrator notebook turn (M1-NOTEBOOK.md §OrchTurn.tsx).
  *
- * Layout: assistant prose (where `wb.report` content went) → the `python`
- * code cell → outputs in emission order → traceback if the cell raised.
+ * Layout: assistant prose (where `wb.report` content went) → tool cell(s) →
+ * outputs in emission order → traceback if the `python` cell raised.
+ *
+ * M1-HYBRID.md widened the tool surface from just `python` to eight tools; a
+ * turn can carry several `ToolEvent`s. `<ToolCell>` dispatches on
+ * `ev.function`: `python` → the existing collapsible `.code-cell`; `bash` →
+ * a sibling `.bash-cell` (`$ cmd` head, stdout body); `read_file`/
+ * `write_file`/`edit_file` → a one-line `.file-receipt`; the three review
+ * tools → a one-line `.tool-receipt` (the actual UI is the `GateCard`
+ * DisplayEvent that `kernel.gate` emits below).
  */
 import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import { marked } from "marked";
 
-import type { ChatMessage, ToolCallError } from "@tsmono/inspect-common";
+import type { ChatMessage, ToolCallError, ToolEvent } from "@tsmono/inspect-common";
 
 import { useSession } from "../../store/session";
 import { BlockActions, CopyBtn } from "./BlockActions";
@@ -39,10 +47,10 @@ type Props = {
 };
 
 export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
-  const { turn, model, userInput, py, outputs } = data;
+  const { turn, model, userInput, tools, outputs } = data;
   const asst = model.output?.choices?.[0]?.message;
-  const code = typeof py?.arguments.code === "string" ? py.arguments.code : "";
-  const running = py?.pending === true;
+  const py = tools.find((t) => t.function === "python");
+  const anyRunning = tools.some((t) => t.pending);
   const detached = bgCells.includes(turn);
   // A cell "errored" as soon as the kernel emits its `{kind:"traceback"}`
   // display card — that lands before `ToolEvent.error` settles, so the
@@ -52,16 +60,12 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
   const hasTbCard = outputs.some(
     (o) => o.data.bundle[WB_MIME]?.kind === "traceback"
   );
-  const errored = py?.error != null || hasTbCard;
   // §5: `kernel._settle` emits a `{kind:"cell_done", turn, duration, ns, …}`
   // display once the cell finishes. It's metadata, not a visible output —
   // pull `duration` for the `.cc-head` chip and drop it from `displays`.
   const cellDone = outputs.find(
     (o) => o.data.bundle[WB_MIME]?.kind === "cell_done"
   )?.data.bundle[WB_MIME];
-  const duration =
-    typeof cellDone?.duration === "number" ? cellDone.duration : undefined;
-  const interrupted = cellDone?.interrupted === true;
 
   // Dedupe (§16) then coalesce adjacent stdout/stderr chunks (UI-AUDIT §C).
   // Coalescing builds fresh event objects (never mutate store state); memoise
@@ -120,20 +124,18 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
         pending={!!model.pending}
         turn={turn}
       />
-      {py && (
-        <CodeCell
+      {tools.map((ev, i) => (
+        <ToolCell
+          key={ev.uuid ?? ev.id ?? i}
+          ev={ev}
           turn={turn}
-          code={code}
-          running={running}
           detached={detached}
-          errored={errored}
-          interrupted={interrupted}
-          background={py.arguments.background === true}
           settledBg={settledBg}
-          duration={duration}
           ns={ns}
+          hasTbCard={hasTbCard}
+          cellDone={cellDone}
         />
-      )}
+      ))}
       {displays.map((ev) => (
         <Output
           key={ev.uuid ?? ev.data.id}
@@ -141,12 +143,73 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
           bundle={ev.data.bundle}
           meta={ev.data.meta}
           stable={ev.data.stable}
-          settled={!running && !detached}
+          settled={!anyRunning && !detached}
         />
       ))}
       {py?.error && !hasTbCard && <Traceback err={py.error} />}
     </div>
   );
+}
+
+// ── tool-cell dispatch ──────────────────────────────────────────────────────
+
+const FILE_TOOLS: ReadonlySet<string> = new Set([
+  "read_file",
+  "write_file",
+  "edit_file",
+]);
+const REVIEW_TOOLS: ReadonlySet<string> = new Set([
+  "ask_human",
+  "review_seeds",
+  "review_finding",
+]);
+
+/** Dispatch one `ToolEvent` to its renderer. `python`-only chrome
+ *  (`cell_done` duration/interrupt, kernel detach, `ns` tooltips) is
+ *  threaded through so `CodeCell` stays byte-identical to the pre-hybrid
+ *  render; every other tool derives its own state from the event. */
+function ToolCell({
+  ev,
+  turn,
+  detached,
+  settledBg,
+  ns,
+  hasTbCard,
+  cellDone,
+}: {
+  ev: ToolEvent;
+  turn: number;
+  detached: boolean;
+  settledBg: string | undefined;
+  ns: NsSummary;
+  hasTbCard: boolean;
+  cellDone: Record<string, unknown> | undefined;
+}): JSX.Element {
+  const fn = ev.function;
+  if (fn === "python") {
+    const code = typeof ev.arguments.code === "string" ? ev.arguments.code : "";
+    return (
+      <CodeCell
+        turn={turn}
+        code={code}
+        running={ev.pending === true}
+        detached={detached}
+        errored={ev.error != null || hasTbCard}
+        interrupted={cellDone?.interrupted === true}
+        background={ev.arguments.background === true}
+        settledBg={settledBg}
+        duration={
+          typeof cellDone?.duration === "number" ? cellDone.duration : undefined
+        }
+        ns={ns}
+      />
+    );
+  }
+  if (fn === "bash") return <BashCell ev={ev} turn={turn} />;
+  if (FILE_TOOLS.has(fn)) return <FileReceipt ev={ev} turn={turn} />;
+  if (REVIEW_TOOLS.has(fn)) return <ReviewReceipt ev={ev} turn={turn} />;
+  // Unknown tool — render as a bash-shaped cell so args/result stay visible.
+  return <BashCell ev={ev} turn={turn} />;
 }
 
 // ── assistant prose ─────────────────────────────────────────────────────────
@@ -388,6 +451,148 @@ function CodeCell({
           <CopyBtn text={code} title="copy code" />
         </BlockActions>
       )}
+    </div>
+  );
+}
+
+// ── bash cell (M1-HYBRID.md §`bash` tool) ───────────────────────────────────
+
+function resultText(ev: ToolEvent): string {
+  const r = ev.result;
+  if (typeof r === "string") return r;
+  if (Array.isArray(r))
+    return r.map((c) => ("text" in c ? c.text : `[${c.type}]`)).join("");
+  if (r != null && typeof r === "object" && "text" in r) return String(r.text);
+  return r == null ? "" : String(r);
+}
+
+function BashCell({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Element {
+  const cmd = typeof ev.arguments.cmd === "string" ? ev.arguments.cmd : "";
+  const running = ev.pending === true;
+  const errored = ev.error != null;
+  const background = ev.arguments.background === true;
+  // Non-python tools don't emit `cell_done`, so read wall-clock from the
+  // ToolEvent's own timing (`working_time` settles when `pending` clears).
+  const duration =
+    typeof ev.working_time === "number" ? ev.working_time : undefined;
+  const result = resultText(ev);
+
+  // Same collapsed-first behaviour as `.code-cell`.
+  const forceOpen = running || errored;
+  const [collapsed, setCollapsed] = useState(!forceOpen);
+  const userToggled = useRef(false);
+  useEffect(() => {
+    if (!userToggled.current) setCollapsed(!forceOpen);
+  }, [forceOpen]);
+  const open = forceOpen || !collapsed;
+  const toggle = (): void => {
+    if (forceOpen) return;
+    userToggled.current = true;
+    setCollapsed((v) => !v);
+  };
+
+  const cls =
+    "code-cell bash-cell" + (open ? "" : " collapsed") + (background ? " bg" : "");
+  const gist = open
+    ? `bash${background ? " · bg" : ""}`
+    : firstNonBlankLine(cmd);
+  return (
+    <div className={cls}>
+      <div
+        className="cc-head"
+        {...(!forceOpen && { role: "button", tabIndex: 0, onClick: toggle })}
+      >
+        <i className="bi bi-terminal cc-chev" />
+        <span className="cc-prompt">$</span>
+        {open ? (
+          <span className="cc-gist cc-lang">{gist}</span>
+        ) : (
+          <code className="cc-gist">{gist}</code>
+        )}
+        {errored && !running && (
+          <span className="cell-status err" title="command failed">
+            <i className="bi bi-exclamation-triangle-fill" /> error
+          </span>
+        )}
+        {background && <span className="cc-bg-chip">bg</span>}
+        {duration != null && (
+          <span className="cc-dur" title={`ran for ${duration.toFixed(2)}s`}>
+            {duration.toFixed(1)}s
+          </span>
+        )}
+        <span className="turn-no">turn {turn}</span>
+      </div>
+      {open && (
+        <>
+          <pre>
+            <code>{cmd}</code>
+          </pre>
+          {(result || ev.error) && (
+            <pre className="bash-result">
+              {result}
+              {ev.error && <span className="err">{ev.error.message}</span>}
+            </pre>
+          )}
+          <BlockActions>
+            <CopyBtn text={cmd} title="copy command" />
+          </BlockActions>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── receipts (file + review tools) ──────────────────────────────────────────
+
+const FILE_VERB: Readonly<Record<string, string>> = {
+  read_file: "read",
+  write_file: "write",
+  edit_file: "edit",
+};
+
+/** `read_file`/`write_file`/`edit_file` → one-line `.file-receipt`. No
+ *  expandable body — the tool result is the model's context, not the
+ *  human's; the path + byte count is enough to follow along. */
+function FileReceipt({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Element {
+  const path = typeof ev.arguments.path === "string" ? ev.arguments.path : "?";
+  const verb = FILE_VERB[ev.function] ?? ev.function;
+  // `write_file` returns `[wrote N bytes → path]`; for read/edit fall back
+  // to the argument/result length as a rough size.
+  const content = ev.arguments.content;
+  const bytes =
+    typeof content === "string"
+      ? new TextEncoder().encode(content).length
+      : resultText(ev).length;
+  return (
+    <div
+      className={`file-receipt${ev.error ? " err" : ""}`}
+      title={ev.error ? ev.error.message : resultText(ev)}
+    >
+      <i className="bi bi-file-earmark" />
+      <span className="fr-verb">{verb}</span>
+      <code className="fr-path">{path}</code>
+      {ev.pending ? (
+        <i className="bi bi-record-fill fx-dot pending" />
+      ) : ev.error ? (
+        <span className="fr-err">{ev.error.message}</span>
+      ) : (
+        <span className="fr-meta">{bytes} bytes</span>
+      )}
+      <span className="turn-no">turn {turn}</span>
+    </div>
+  );
+}
+
+/** `ask_human`/`review_seeds`/`review_finding` — the tool call itself is
+ *  just a marker; the real UI is the `GateCard` DisplayEvent that
+ *  `kernel.gate → _emit` mounts among the outputs below. */
+function ReviewReceipt({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Element {
+  return (
+    <div className="file-receipt tool-receipt">
+      <i className="bi bi-question-circle" />
+      <span className="fr-verb">{ev.function}</span>
+      {ev.pending && <i className="bi bi-record-fill fx-dot pending" />}
+      <span className="turn-no">turn {turn}</span>
     </div>
   );
 }

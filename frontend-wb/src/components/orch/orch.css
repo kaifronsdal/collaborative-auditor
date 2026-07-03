@@ -134,6 +134,56 @@
 }
 .code-cell pre code { font: inherit; background: none; padding: 0; }
 /* collapsed cells render no `<pre>` at all (UI-AUDIT §C); the head is the row. */
+
+/* ---- bash cell (M1-HYBRID.md §`bash` tool) ---- */
+/* Sibling shape to `.code-cell` (and rides its base rules), differentiated
+   by a `bi-terminal` head glyph + `$` gutter mark instead of the chevron.
+   The expanded body is `cmd` <pre> + a bordered `.bash-result` <pre> holding
+   the tool result (`stdout tail … [exit N]`); WB_MIME cards the command
+   emitted (`ProgressCard` etc.) render below among `.out`s as usual. */
+.bash-cell .cc-chev { font-size: 11px; width: 12px; top: 0; }
+.bash-cell .cc-prompt {
+  font: 11.5px var(--mono); color: var(--ink-faint); flex-shrink: 0;
+}
+.bash-cell .bash-result {
+  border-top: 1px dashed var(--border);
+  color: var(--ink-dim); white-space: pre-wrap; word-break: break-word;
+  max-height: 20lh; overflow-y: auto;
+}
+.bash-cell .bash-result .err { color: var(--danger); }
+
+/* ---- file/review-tool receipts (M1-HYBRID.md) ---- */
+/* One-line, non-expandable: `bi-file-earmark` | verb | path | meta | turn.
+   `.tool-receipt` (ask_human/review_*) reuses the same shell — the actual
+   UI is the GateCard DisplayEvent that `kernel.gate` mounts below it. */
+.file-receipt {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; margin-bottom: 8px;
+  background: var(--bg-100); border: 1px solid var(--bg-200);
+  border-radius: var(--r-md);
+  font: 12px var(--sans); color: var(--ink-dim);
+}
+.file-receipt + .file-receipt { margin-top: -2px; }
+.file-receipt > i.bi { font-size: 12px; color: var(--ink-faint); flex-shrink: 0; }
+.file-receipt .fr-verb { color: var(--ink-mid); flex-shrink: 0; }
+.file-receipt .fr-path {
+  font: 11.5px var(--mono); color: var(--ink); background: none; padding: 0;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.file-receipt .fr-meta {
+  font: 10.5px var(--mono); color: var(--ink-faint); flex-shrink: 0;
+}
+.file-receipt .fr-meta::before { content: "· "; }
+.file-receipt .fr-err {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--danger); font: 11px var(--mono);
+}
+.file-receipt.err { border-color: hsl(0 40% 82%); }
+.file-receipt .turn-no {
+  margin-left: auto; font: 10.5px var(--mono); color: var(--ink-faint);
+  flex-shrink: 0;
+}
+.tool-receipt .fr-verb { font: 11.5px var(--mono); }
 .cc-bg-btn {
   border: 1px solid var(--border); border-radius: var(--r-sm);
   background: var(--bg-000); padding: 1px 8px;
@@ -666,11 +716,18 @@
    longer match; the wrapper takes over vertical rhythm. Scoped to
    `.code-cell ~` so the prose wrapper (which precedes the cell and carries
    its own margins via `.asst-prose`) isn't double-spaced. */
-.code-cell ~ .ba-host { margin-top: 10px; }
-.code-cell ~ .ba-host + .ba-host { margin-top: 8px; }  /* 10/8 rhythm — `.out+.out` never matches through the wrapper */
+.code-cell ~ .ba-host, .file-receipt ~ .ba-host { margin-top: 10px; }
+.code-cell ~ .ba-host + .ba-host,
+.file-receipt ~ .ba-host + .ba-host { margin-top: 8px; }  /* 10/8 rhythm — `.out+.out` never matches through the wrapper */
 .code-cell ~ .ba-host > .out,
 .code-cell ~ .ba-host > .out-wrap,
-.code-cell ~ .ba-host > .out-stream { margin-top: 0; }
+.code-cell ~ .ba-host > .out-stream,
+.file-receipt ~ .ba-host > .out,
+.file-receipt ~ .ba-host > .out-wrap,
+.file-receipt ~ .ba-host > .out-stream { margin-top: 0; }
+.code-cell + .code-cell,
+.code-cell + .file-receipt,
+.file-receipt + .code-cell { margin-top: 8px; }
 /* Prose is often one line — an absolute overlay would sit on the text. Match
    the M0 `.actions` idiom instead: a bare-icon row under the prose,
    right-aligned at the top, overlapping the prose's right margin (claude.ai

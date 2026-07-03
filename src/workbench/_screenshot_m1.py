@@ -37,8 +37,9 @@ OUT = REPO / "frontend-wb" / "screenshots" / "m1"
 # Turn 5: cell error → traceback path.
 # Turn 6: run_audits → RunProposal gate; approve → AuditRunHandle flip.
 # Turn 7: wb.cite → CiteProposal gate → Finding card.
-# Turn 8: asyncio.sleep(30) → interrupt-and-send target (§11).
-# Turn 9+: no tool call (parks) — reached via §11 and again via §4 scroll-new.
+# Turn 8: write_file + bash → .file-receipt / .bash-cell / ProgressCard (M1-HYBRID).
+# Turn 9: asyncio.sleep(30) → interrupt-and-send target (§11).
+# Turn 10+: no tool call (parks) — reached via §11 and again via §4 scroll-new.
 CELLS = [
     (
         "Loaded the seed set and previewing the top-scoring items.",
@@ -109,13 +110,45 @@ CELLS = [
     ),
 ]
 
+# Turn 8 (M1-HYBRID step 5): a `write_file` + `bash` pair. The bash command
+# emits synthetic ``{"wb":"eval_*"}`` lines so the ``.bash-cell`` renders
+# with a live ``ProgressCard`` output beneath it — no real inspect subprocess.
+# Inserted before the sleep(30) turn so §11 interrupt still targets the tail.
+_WB_LINES = (
+    'echo \'{"wb":"eval_start","eval_id":"e1","task":"audit","total":3,'
+    '"model":"mockllm","log_dir":"runs/r1"}\'\n'
+    'echo \'{"wb":"eval_progress","eval_id":"e1","done":1,'
+    '"running":[{"id":"s1","epoch":1,"turns":2,"tokens":40}],"elapsed":1.2}\'\n'
+    'echo \'{"wb":"eval_sample_done","eval_id":"e1","id":"s0","epoch":1,'
+    '"scores":{"score":0.7},"error":null}\'\n'
+    'echo \'{"wb":"eval_done","eval_id":"e1","location":"runs/r1/x.eval",'
+    '"done":3,"errors":0}\''
+)
+HYBRID_TURN = (
+    "Writing seeds and launching the eval via bash.",
+    [
+        ("write_file", {"path": "seeds.json", "content": '["a","b","c"]'}),
+        ("bash", {"cmd": _WB_LINES}),
+    ],
+)
 
-def _python(prose: str, code: str) -> ModelOutput:
+
+def _call(prose: str, calls: list[tuple[str, dict]]) -> ModelOutput:
     out = ModelOutput.from_content(model="mockllm", content=prose)
     out.choices[0].message.tool_calls = [
-        ToolCall(id="c", function="python", type="function", arguments={"code": code})
+        ToolCall(id=f"c{i}", function=fn, type="function", arguments=args)
+        for i, (fn, args) in enumerate(calls)
     ]
     return out
+
+
+# Full turn schedule: 7 python cells, the hybrid bash turn, then the
+# sleep(30) interrupt target.
+TURNS: list[tuple[str, list[tuple[str, dict]]]] = [
+    *((prose, [("python", {"code": code})]) for prose, code in CELLS[:-1]),
+    HYBRID_TURN,
+    (CELLS[-1][0], [("python", {"code": CELLS[-1][1]})]),
+]
 
 
 def _orch_outputs(
@@ -126,9 +159,9 @@ def _orch_outputs(
 ) -> ModelOutput:
     del tools, tool_choice, config
     n = sum(1 for m in input if m.role == "assistant")
-    if n < len(CELLS):
-        prose, code = CELLS[n]
-        return _python(prose, code)
+    if n < len(TURNS):
+        prose, calls = TURNS[n]
+        return _call(prose, calls)
     return ModelOutput.from_content(
         model="mockllm", content="Acknowledged — waiting on you."
     )
@@ -174,7 +207,7 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
         await session.start_orchestrator(
             model="mockllm/model",
             model_args={"custom_outputs": _orch_outputs},
-            max_turns=len(CELLS) + 4,
+            max_turns=len(TURNS) + 4,
         )
         orch = session.orchestrator
         assert orch is not None
@@ -363,10 +396,24 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
             await _scroll_tail(orch_col)
             await _shot(page, "09b-finding", clip=await orch_col.bounding_box())
 
-            # ── turn 8: §11 interrupt-and-send ──────────────────────────────
+            # ── turn 8: hybrid — write_file + bash (M1-HYBRID step 5) ──────
+            # `.file-receipt` + `.bash-cell` render; the bash command's
+            # synthetic ``{"wb":"eval_*"}`` lines mount a ProgressCard below.
             orch.step()
             await page.wait_for_selector(
-                ".turn[data-turn='8'] .code-cell", timeout=10_000
+                ".turn[data-turn='8'] .bash-cell", timeout=15_000
+            )
+            await page.wait_for_selector(
+                ".turn[data-turn='8'] .file-receipt", timeout=5_000
+            )
+            await asyncio.sleep(0.3)
+            await _scroll_tail(orch_col)
+            await _shot(page, "14-bash-cell", clip=await orch_col.bounding_box())
+
+            # ── turn 9: §11 interrupt-and-send ──────────────────────────────
+            orch.step()
+            await page.wait_for_selector(
+                ".turn[data-turn='9'] .code-cell:not(.bash-cell)", timeout=10_000
             )
             # `.primary-interrupt` only mounts when `cellRunning && hasText` —
             # fill the composer while the sleep(30) cell is executing.
@@ -377,11 +424,11 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
                 ".orch-col-wrap .primary-interrupt", timeout=5_000
             )
             await page.click(".orch-col-wrap .primary-interrupt")
-            # server handler queues the text + `orch.step()` → turn 9 lands
+            # server handler queues the text + `orch.step()` → turn 10 lands
             # with the ask bubble; the interrupted cell's output shows
             # `[interrupted by user after Ns]`.
             await page.wait_for_selector(
-                ".turn[data-turn='9'] .ask-bubble", timeout=15_000
+                ".turn[data-turn='10'] .ask-bubble", timeout=15_000
             )
             await asyncio.sleep(0.3)
             await _scroll_tail(orch_col)
@@ -420,7 +467,7 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
             # ── §4 scroll anchor: scroll away, add a turn, `↓ N new` pill ──
             await orch_col.locator(".column").evaluate("(el) => { el.scrollTop = 0; }")
             await asyncio.sleep(0.2)  # let onScroll flip stick.current
-            orch.step()  # turn 10: "Acknowledged" (no tool call, parks)
+            orch.step()  # turn 11: "Acknowledged" (no tool call, parks)
             await page.wait_for_selector(".orch-col-wrap .scroll-new", timeout=10_000)
             await _shot(page, "13-scroll-new", clip=await orch_col.bounding_box())
 
