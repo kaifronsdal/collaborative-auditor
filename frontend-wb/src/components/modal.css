@@ -1,0 +1,46 @@
+/* Shared `<Modal>` — workbench palette (styles.css :root), not the
+   vscode-var'd tsmono one. */
+
+.wb-modal-overlay {
+  position: fixed; inset: 0; z-index: 1050;
+  display: flex; align-items: center; justify-content: center;
+  background: hsl(0 0% 0% / .4);
+}
+
+.wb-modal {
+  display: flex; flex-direction: column;
+  width: 92vw; max-width: 640px; max-height: 80vh;
+  background: var(--bg-000);
+  border: 1px solid var(--border); border-radius: var(--r-md);
+  box-shadow: 0 20px 60px hsl(0 0% 0% / .28);
+}
+
+.wb-modal-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 12px 12px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.wb-modal-title {
+  flex: 1; min-width: 0;
+  font: 600 13.5px var(--sans); color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.wb-modal-x {
+  width: 28px; height: 28px; padding: 0; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: var(--r-sm);
+  background: none; color: var(--ink-faint); cursor: pointer;
+  font-size: 13px;
+}
+.wb-modal-x:hover { background: var(--bg-200); color: var(--ink); }
+
+.wb-modal-body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  font: 13px/1.5 var(--sans); color: var(--ink-mid);
+}
+
+.wb-modal-foot {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+}

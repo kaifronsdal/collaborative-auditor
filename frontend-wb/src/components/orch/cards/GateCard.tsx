@@ -1,21 +1,28 @@
 /**
- * `GateCard` — the shared `.out.gated` shell for every human-in-the-loop
- * pause (UI-AUDIT.md §D). One component; `payload.kind` selects the body
- * variant and how `approve` builds its verdict:
+ * `GateCard` — the shared human-in-the-loop request card (UI-AUDIT.md §D).
+ * One component; `payload.kind` selects the body variant and how `approve`
+ * builds its verdict.
  *
- * - `prompt`       — `wb.ask_human`. Body = option pills; each pill *is* the
- *                    approve, so no `.gate-bar`. Free-text row only appears
- *                    when `options===null` (or via the `other…` link).
- * - `run_proposal` — `wb.run_audits` pre-launch. Body = config line + seed
- *                    checklist; approve ships `{surviving: [seed.id, …]}`.
- * - `cite_proposal`— `wb.cite`. Body = quote checklist; approve ships
- *                    `{signed: true, edits: {quotes: [checked, …]}}`.
+ * Pending state reads as a **request from the agent to you** (Linear/GitHub
+ * review-request idiom): thin purple `● waiting on you` header strip,
+ * icon+question body, variant-specific preview, right-aligned action footer.
+ * Detail overflow (`view all N seeds`, `view all quotes`) opens a `<Modal>`.
  *
- * Resolved cards collapse to a single `.out-head` line (icon + summary +
- * `HH:MM`); no body. Deny is a return-not-throw on the backend, so denied
- * gates stay visible with the reason.
+ * - `prompt`       — `wb.ask_human`. Options render as the footer buttons
+ *                    (first filled-purple, rest ghost); `other…` link below
+ *                    reveals a free-text row. `options===null` → input+Send.
+ * - `run_proposal` — `wb.run_audits` pre-launch. Body = config line + first
+ *                    3 seeds; modal edits the full checklist. Approve ships
+ *                    `{surviving: [seed.id, …]}`.
+ * - `cite_proposal`— `wb.cite`. Body = claim + first 2 quotes; modal edits
+ *                    the checklist. Approve ships `{signed, edits:{quotes}}`.
+ *
+ * Resolved state collapses to a compact receipt chip
+ * (`✓ {q} · you answered {a} · HH:MM`); denied uses `✕` in `--danger`.
  */
-import { useEffect, useRef, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+
+import Modal from "../../Modal";
 import type { Up } from "../../../lib/wire";
 
 // -- payload shapes -----------------------------------------------------------
@@ -79,11 +86,13 @@ const ellipsis = (s: string, n: number): string =>
 // -- shared shell -------------------------------------------------------------
 
 export default function GateCard({ payload, displayId, send }: Props): JSX.Element {
-  // Checklist state for the two gate-bar variants. Keyed by seed-id / quote
-  // index respectively; hoisted here so `buildVerdict` can read it without
-  // threading refs through the body components.
+  // Checklist state for the two review variants. Keyed by seed-id / quote
+  // index; hoisted here so both the inline peek and the modal edit the same
+  // set, and so `buildVerdict` can read it without threading refs.
   const [struck, setStruck] = useState<Set<string>>(new Set());
-  const [denyReason, setDenyReason] = useState<string | null>(null);
+  const [denyOpen, setDenyOpen] = useState(false);
+  const [denyReason, setDenyReason] = useState("");
+  const [modalOpen, setModalOpen] = useState(false);
 
   const resolve = (verdict: unknown): void =>
     send({ t: "approve", display_id: displayId, verdict });
@@ -96,38 +105,40 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
     });
 
   if (!payload.pending) {
-    return (
-      <div className="out answered" data-display-id={displayId}>
-        <div className="out-head">{resolvedHead(payload)}</div>
-      </div>
-    );
+    return <Receipt payload={payload} displayId={displayId} />;
   }
 
-  // `prompt` has no gate-bar — the option buttons *are* the approve. The
-  // purple `.gated` tint identifies it, so no icon head.
   if (payload.kind === "prompt") {
     return (
       <div className="out gated gate-waiting" data-display-id={displayId}>
+        <GateHead />
         <PromptBody payload={payload} resolve={resolve} />
       </div>
     );
   }
 
   const v = variant(payload, struck);
-  const deny = (reason: string): void => resolve(v.denyVerdict(reason));
+  const deny = (): void => resolve(v.denyVerdict(denyReason));
 
   return (
     <div className="out gated gate-waiting" data-display-id={displayId}>
-      <div className="gate-desc">
-        <i className={`bi ${v.icon}`} />
-        {v.desc}
+      <GateHead />
+      <div className="gate-body">
+        <div className="gate-title">
+          <i className={`bi ${v.icon}`} />
+          <span>{v.title}</span>
+        </div>
+        <div className="gate-sub">{v.subtitle}</div>
+        {payload.kind === "run_proposal" ? (
+          <SeedPeek payload={payload} struck={struck} toggle={toggle} />
+        ) : (
+          <QuotePeek payload={payload} struck={struck} toggle={toggle} />
+        )}
+        <a className="gate-more" onClick={() => setModalOpen(true)}>
+          view all {v.n} {v.noun} <i className="bi bi-arrow-right" />
+        </a>
       </div>
-      {payload.kind === "run_proposal" ? (
-        <SeedBody payload={payload} struck={struck} toggle={toggle} />
-      ) : (
-        <CiteBody payload={payload} struck={struck} toggle={toggle} />
-      )}
-      {denyReason != null && (
+      {denyOpen && (
         <input
           autoFocus
           className="gate-deny-reason"
@@ -135,16 +146,16 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
           value={denyReason}
           onChange={(e) => setDenyReason(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") deny(denyReason);
-            if (e.key === "Escape") setDenyReason(null);
+            if (e.key === "Enter") deny();
+            if (e.key === "Escape") setDenyOpen(false);
           }}
         />
       )}
-      <div className="gate-bar">
+      <div className="gate-actions">
         <button
           type="button"
-          className="gate-btn deny"
-          onClick={() => (denyReason == null ? setDenyReason("") : deny(denyReason))}
+          className="gate-btn danger"
+          onClick={() => (denyOpen ? deny() : setDenyOpen(true))}
         >
           deny
         </button>
@@ -154,20 +165,43 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
           className="gate-btn primary"
           onClick={() => resolve(v.buildVerdict())}
         >
-          <i className="bi bi-check2" /> {v.approveLabel}
+          {v.approveLabel}
         </button>
       </div>
+      {modalOpen && (
+        <ReviewModal
+          v={v}
+          payload={payload}
+          struck={struck}
+          setStruck={setStruck}
+          toggle={toggle}
+          onClose={() => setModalOpen(false)}
+          onApprove={() => {
+            setModalOpen(false);
+            resolve(v.buildVerdict());
+          }}
+        />
+      )}
     </div>
   );
 }
 
-// -- variant config -----------------------------------------------------------
+const GateHead = (): JSX.Element => (
+  <div className="gate-head">
+    <span className="rl-dot rl-dot-gate" />
+    waiting on you
+  </div>
+);
 
-type BodyProps<P> = { payload: P; struck: Set<string>; toggle: (k: string) => void };
+// -- variant config -----------------------------------------------------------
 
 type Variant = {
   icon: string;
-  desc: string;
+  title: string;
+  subtitle: JSX.Element | string;
+  noun: string;
+  n: number;
+  kept: number;
   approveLabel: string;
   buildVerdict: () => unknown;
   denyVerdict: (reason: string) => unknown;
@@ -176,9 +210,17 @@ type Variant = {
 function variant(p: RunProposalPayload | CiteProposalPayload, struck: Set<string>): Variant {
   if (p.kind === "run_proposal") {
     const surviving = p.seeds.filter((s) => !struck.has(s.id));
+    const cfg = p.config;
+    const sub = [cfg.model, cfg.max_turns != null && `${cfg.max_turns} turns`, `×${cfg.n_per_seed}`]
+      .filter(Boolean)
+      .join(" · ");
     return {
       icon: "bi-rocket-takeoff",
-      desc: p.description,
+      title: p.description,
+      subtitle: <code>{sub}</code>,
+      noun: "seeds",
+      n: p.seeds.length,
+      kept: surviving.length,
       approveLabel: `approve ${surviving.length * p.n_per_seed}`,
       buildVerdict: () => ({ surviving: surviving.map((s) => s.id) }),
       denyVerdict: (reason) => ({ denied: true, reason }),
@@ -187,58 +229,63 @@ function variant(p: RunProposalPayload | CiteProposalPayload, struck: Set<string
   const kept = p.quotes.filter((_, i) => !struck.has(String(i)));
   return {
     icon: "bi-bookmark-star",
-    desc: p.description,
+    title: p.description,
+    subtitle: p.claim,
+    noun: "quotes",
+    n: p.quotes.length,
+    kept: kept.length,
     approveLabel: `sign ${kept.length}`,
     buildVerdict: () => ({ signed: true, edits: { quotes: kept } }),
     denyVerdict: (reason) => ({ signed: false, reason }),
   };
 }
 
-// -- resolved single-line head ------------------------------------------------
+// -- resolved receipt chip ----------------------------------------------------
 
-function resolvedHead(p: GatePayload): JSX.Element {
+function Receipt({ payload: p, displayId }: { payload: GatePayload; displayId: string }): JSX.Element {
+  let ok: boolean;
+  let text: JSX.Element;
   if (p.kind === "prompt") {
-    return (
+    ok = true;
+    text = (
       <>
-        <i className="bi bi-person-check" />
-        <span className="gate-resolved">
-          {p.question} → <b>{p.answer}</b>
-          {p.answered_at && ` · ${hhmm(p.answered_at)}`}
-        </span>
+        {ellipsis(p.question, 60)} · you answered <b>{p.answer}</b>
+        {p.answered_at && ` · ${hhmm(p.answered_at)}`}
+      </>
+    );
+  } else if (p.kind === "run_proposal") {
+    ok = !p.verdict?.denied;
+    text = ok ? (
+      <>
+        {ellipsis(p.description, 40)} · you approved <b>{p.n}</b> audits
+      </>
+    ) : (
+      <>
+        {ellipsis(p.description, 40)} · you denied
+        {p.verdict?.reason && ` · ${p.verdict.reason}`}
+      </>
+    );
+  } else {
+    ok = !!p.verdict?.signed;
+    text = ok ? (
+      <>
+        {ellipsis(p.claim, 40)} · signed{p.verdict?.by && ` by ${p.verdict.by}`} ·{" "}
+        <b>{p.quotes.length}</b> quotes
+      </>
+    ) : (
+      <>
+        {ellipsis(p.claim, 40)} · you denied
+        {p.verdict?.reason && ` · ${p.verdict.reason}`}
       </>
     );
   }
-  if (p.kind === "run_proposal") {
-    const denied = p.verdict?.denied;
-    return (
-      <>
-        <i className={`bi bi-${denied ? "x-circle" : "check-circle"}`} />
-        <span className="gate-resolved">
-          {denied ? (
-            <>denied{p.verdict?.reason && ` — ${p.verdict.reason}`}</>
-          ) : (
-            <>
-              approved · <b>{p.n}</b> audits
-            </>
-          )}
-        </span>
-      </>
-    );
-  }
-  const signed = p.verdict?.signed;
   return (
-    <>
-      <i className={`bi bi-${signed ? "bookmark-check-fill" : "x-circle"}`} />
-      <span className="gate-resolved">
-        {signed ? (
-          <>
-            signed{p.verdict?.by && ` by ${p.verdict.by}`} · <b>{p.quotes.length}</b> quotes
-          </>
-        ) : (
-          <>refused{p.verdict?.reason && ` — ${p.verdict.reason}`}</>
-        )}
-      </span>
-    </>
+    <div className="out answered" data-display-id={displayId}>
+      <div className={`gate-receipt${ok ? "" : " denied"}`}>
+        <i className={`bi ${ok ? "bi-check-lg" : "bi-x-lg"}`} />
+        <span className="gate-receipt-text">{text}</span>
+      </div>
+    </div>
   );
 }
 
@@ -252,21 +299,14 @@ function PromptBody({
   resolve: (v: unknown) => void;
 }): JSX.Element {
   const [own, setOwn] = useState("");
-  const [chosen, setChosen] = useState<string | null>(null);
   // Free-text row: always shown when there are no options; otherwise hidden
-  // behind an `other…` link (UI-AUDIT §C).
+  // behind an `other…` link below the button row.
   const [ownOpen, setOwnOpen] = useState(payload.options == null);
 
   const opts = payload.options ?? [];
-  const vertical = opts.length > 0 && (opts.length <= 3 || opts.some((o) => o.length <= 2));
-  // Key hints only when the set is large enough that scanning is slow;
-  // rendered as a faint superscript, no brackets (UI-AUDIT §C).
   const showKeys = opts.length > 3;
 
-  const answer = (v: string): void => {
-    setChosen(v);
-    resolve(v);
-  };
+  const answer = (v: string): void => resolve(v);
 
   // `1`..`9` shortcuts while the card has focus.
   const rootRef = useRef<HTMLDivElement>(null);
@@ -285,137 +325,114 @@ function PromptBody({
     return () => el.removeEventListener("keydown", onKey);
   }, [opts]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const ownRow = (
+    <div className="ask-own-row">
+      <input
+        autoFocus={payload.options != null}
+        className="ask-own"
+        placeholder="type your own answer…"
+        value={own}
+        onChange={(e) => setOwn(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && own.trim()) {
+            e.preventDefault();
+            answer(own.trim());
+          }
+          if (e.key === "Escape" && payload.options != null) setOwnOpen(false);
+        }}
+      />
+      <button
+        type="button"
+        className="gate-btn primary"
+        disabled={!own.trim()}
+        onClick={() => own.trim() && answer(own.trim())}
+      >
+        send
+      </button>
+    </div>
+  );
+
   return (
     <div ref={rootRef} tabIndex={-1}>
-      <div className="ask-q">{payload.question}</div>
-      <div className={`ask-opts${vertical ? " ask-opts-vert" : ""}`}>
-        {opts.map((opt, i) => (
-          <button
-            key={opt}
-            type="button"
-            className={`ask-opt${chosen === opt ? " chosen" : ""}`}
-            onClick={() => answer(opt)}
-          >
-            {showKeys && <sup className="ask-opt-key">{i + 1}</sup>}
-            {opt}
-          </button>
-        ))}
-        {opts.length > 0 && !ownOpen && (
-          <a className="ask-other" onClick={() => setOwnOpen(true)}>
-            other…
-          </a>
-        )}
-        {ownOpen && (
-          <span className="ask-opt-own-wrap">
-            <input
-              autoFocus={payload.options != null}
-              className="ask-opt own"
-              placeholder="type your own…"
-              value={own}
-              onChange={(e) => setOwn(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && own.trim()) {
-                  e.preventDefault();
-                  answer(own.trim());
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="ask-opt-send"
-              disabled={!own.trim()}
-              title="send"
-              onClick={() => own.trim() && answer(own.trim())}
-            >
-              <i className="bi bi-arrow-up" />
-            </button>
-          </span>
-        )}
+      <div className="gate-body">
+        <div className="gate-title">
+          <i className="bi bi-question-circle" />
+          <span>{payload.question}</span>
+        </div>
       </div>
+      {opts.length > 0 ? (
+        <>
+          <div className="gate-actions">
+            {opts.map((opt, i) => (
+              <button
+                key={opt}
+                type="button"
+                className={`gate-btn ${i === 0 ? "primary" : "ghost"}`}
+                onClick={() => answer(opt)}
+              >
+                {showKeys && <sup className="ask-opt-key">{i + 1}</sup>}
+                {opt}
+              </button>
+            ))}
+          </div>
+          {ownOpen ? (
+            <div className="gate-actions gate-actions-own">{ownRow}</div>
+          ) : (
+            <a className="ask-other" onClick={() => setOwnOpen(true)}>
+              other…
+            </a>
+          )}
+        </>
+      ) : (
+        <div className="gate-actions gate-actions-own">{ownRow}</div>
+      )}
     </div>
   );
 }
 
-// -- run_proposal body --------------------------------------------------------
+// -- run_proposal peek --------------------------------------------------------
 
-function SeedBody({ payload, struck, toggle }: BodyProps<RunProposalPayload>): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const [popover, setPopover] = useState<string | null>(null);
-  const cfg = payload.config;
-  const cfgLine = [
-    cfg.model,
-    cfg.max_turns != null && `${cfg.max_turns} turns`,
-    `×${cfg.n_per_seed}`,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const survivingN = payload.seeds.length - struck.size;
+type PeekProps<P> = { payload: P; struck: Set<string>; toggle: (k: string) => void };
 
+function SeedPeek({ payload, struck, toggle }: PeekProps<RunProposalPayload>): JSX.Element {
   return (
-    <>
-      <div className="gate-config">{cfgLine}</div>
-      <div className={`seed-preview${expanded ? "" : " collapsed"}`}>
-        {payload.seeds.map((s) => {
-          const isStruck = struck.has(s.id);
-          return (
-            <label
-              key={s.id}
-              className={`sp-row${isStruck ? " sp-row-struck" : ""}`}
-              title={s.text}
-            >
-              <input
-                type="checkbox"
-                className="sp-check"
-                checked={!isStruck}
-                onChange={() => toggle(s.id)}
-              />
-              <span
-                className="sp-seed"
-                onClick={(e) => {
-                  // Click on the text opens the full-seed popover instead of
-                  // toggling the checkbox (the row is a `<label>`).
-                  e.preventDefault();
-                  setPopover((cur) => (cur === s.id ? null : s.id));
-                }}
-              >
-                {ellipsis(s.text, 80)}
-              </span>
-              {popover === s.id && <div className="sp-pop">{s.text}</div>}
-            </label>
-          );
-        })}
-        <div className="sp-toggle" onClick={() => setExpanded((v) => !v)}>
-          <i className={`bi bi-chevron-${expanded ? "down" : "right"}`} />{" "}
-          <b>
-            {survivingN} seed{survivingN === 1 ? "" : "s"}
-            {payload.n_per_seed > 1 && ` × ${payload.n_per_seed}`}
-          </b>
-          {struck.size > 0 && (
-            <span style={{ color: "var(--ink-faint)" }}> · {struck.size} struck</span>
-          )}
-        </div>
-      </div>
-    </>
-  );
-}
-
-// -- cite_proposal body -------------------------------------------------------
-
-function CiteBody({ payload, struck, toggle }: BodyProps<CiteProposalPayload>): JSX.Element {
-  return (
-    <>
-      <div className="gate-claim">{payload.claim}</div>
-      <div className="cite-quotes">
-        {payload.quotes.map((q, i) => (
+    <div className="gate-peek">
+      {payload.seeds.slice(0, 3).map((s) => {
+        const isStruck = struck.has(s.id);
+        return (
           <label
-            key={i}
-            className={`cite-q${struck.has(String(i)) ? " sp-row-struck" : ""}`}
+            key={s.id}
+            className={`gp-row${isStruck ? " gp-struck" : ""}`}
+            title={s.text}
           >
             <input
               type="checkbox"
               className="sp-check"
-              checked={!struck.has(String(i))}
-              onChange={() => toggle(String(i))}
+              checked={!isStruck}
+              onChange={() => toggle(s.id)}
+            />
+            <span className="gp-text">{ellipsis(s.text, 80)}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+// -- cite_proposal peek -------------------------------------------------------
+
+function QuotePeek({ payload, struck, toggle }: PeekProps<CiteProposalPayload>): JSX.Element {
+  return (
+    <div className="gate-peek cite-quotes">
+      {payload.quotes.slice(0, 2).map((q, i) => {
+        const key = String(i);
+        return (
+          <label key={i} className={`cite-q${struck.has(key) ? " gp-struck" : ""}`}>
+            <input
+              type="checkbox"
+              className="sp-check"
+              checked={!struck.has(key)}
+              onChange={() => toggle(key)}
             />
             <div className="cite-q-body">
               <div className="cite-q-head">
@@ -427,8 +444,101 @@ function CiteBody({ payload, struck, toggle }: BodyProps<CiteProposalPayload>): 
               <div className="cite-q-text">{q.text}</div>
             </div>
           </label>
+        );
+      })}
+    </div>
+  );
+}
+
+// -- review modal (seed/quote checklist) -------------------------------------
+
+function ReviewModal({
+  v,
+  payload,
+  struck,
+  setStruck,
+  toggle,
+  onClose,
+  onApprove,
+}: {
+  v: Variant;
+  payload: RunProposalPayload | CiteProposalPayload;
+  struck: Set<string>;
+  setStruck: (s: Set<string>) => void;
+  toggle: (k: string) => void;
+  onClose: () => void;
+  onApprove: () => void;
+}): JSX.Element {
+  const [q, setQ] = useState("");
+
+  type Row = { key: string; text: string; head?: JSX.Element };
+  const rows: Row[] =
+    payload.kind === "run_proposal"
+      ? payload.seeds.map((s) => ({ key: s.id, text: s.text }))
+      : payload.quotes.map((qt, i) => ({
+          key: String(i),
+          text: qt.text,
+          head: (
+            <div className="cite-q-head">
+              <a className="qref">{qt.sample_id}</a> · t{qt.at} · {qt.role}
+            </div>
+          ),
+        }));
+
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return needle ? rows.filter((r) => r.text.toLowerCase().includes(needle)) : rows;
+  }, [q, rows]);
+
+  const allKeys = rows.map((r) => r.key);
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={`Review ${v.noun}`}
+      footer={
+        <>
+          <button type="button" className="gate-btn ghost" onClick={onClose}>
+            cancel
+          </button>
+          <span className="gate-spacer" />
+          <button type="button" className="gate-btn primary" onClick={onApprove}>
+            {v.approveLabel}
+          </button>
+        </>
+      }
+    >
+      <div className="grm-tools">
+        <input
+          className="grm-search"
+          placeholder={`search ${v.noun}…`}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+        />
+        <a onClick={() => setStruck(new Set(allKeys))}>uncheck all</a>
+        <span className="grm-sep">·</span>
+        <a onClick={() => setStruck(new Set())}>check all</a>
+        <span className="grm-count">
+          {v.kept} / {v.n}
+        </span>
+      </div>
+      <div className="grm-list">
+        {filtered.map((r) => (
+          <label key={r.key} className={`grm-row${struck.has(r.key) ? " gp-struck" : ""}`}>
+            <input
+              type="checkbox"
+              className="sp-check"
+              checked={!struck.has(r.key)}
+              onChange={() => toggle(r.key)}
+            />
+            <div className="grm-body">
+              {r.head}
+              <div className="grm-text">{r.text}</div>
+            </div>
+          </label>
         ))}
       </div>
-    </>
+    </Modal>
   );
 }

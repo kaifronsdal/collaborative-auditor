@@ -15,8 +15,9 @@
  */
 import type { ChatMessage } from "@tsmono/inspect-common";
 
-import type { JSX } from "react";
+import { useState, type JSX } from "react";
 
+import Modal from "../../Modal";
 import { renderContent } from "../../Bubble";
 import type { Up } from "../../../lib/wire";
 
@@ -58,12 +59,41 @@ const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() ?
 // -- shared shell -------------------------------------------------------------
 
 export default function ReaderCard({ payload, displayId, send }: Props): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
   const openInDesk = (): void =>
     send({ t: "import", path: payload.log, sample_id: payload.sample_id });
 
   const isExcerpt = payload.kind === "excerpt";
   const msgs = isExcerpt ? payload.messages : (payload.preview ?? []);
   const nMsgs = isExcerpt ? payload.messages.length : payload.n_messages;
+
+  const msgList = (large: boolean): JSX.Element => (
+    <div className={`rd-body${large ? " rd-body-lg" : ""}`}>
+      {msgs.length > 0 ? (
+        msgs.map((m, i) => {
+          const anchor = isExcerpt && i === payload.at_idx;
+          // Excerpt turn number: window starts at `at - at_idx` (UI-AUDIT §A
+          // bugfix — was `at - floor(len/2)` which broke on asymmetric
+          // windows near the transcript head).
+          const turn = isExcerpt ? payload.at - payload.at_idx + i : undefined;
+          return (
+            <div key={m.id ?? i} className={`rd-msg${anchor ? " rd-anchor" : ""}`}>
+              <span className="rd-role">
+                {roleTag(m.role)}
+                {turn != null && <span className="rd-turn"> · t{turn}</span>}
+              </span>
+              {renderContent(m.content)}
+            </div>
+          );
+        })
+      ) : (
+        <div className="rd-msg rd-empty">
+          <span className="rd-role">log</span>
+          no preview — open in auditor to read
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <div className="out reader" data-display-id={displayId}>
@@ -77,40 +107,30 @@ export default function ReaderCard({ payload, displayId, send }: Props): JSX.Ele
         </span>
       </div>
 
-      <div className="rd-body">
-        {msgs.length > 0 ? (
-          msgs.map((m, i) => {
-            const anchor = isExcerpt && i === payload.at_idx;
-            // Excerpt turn number: window starts at `at - at_idx` (UI-AUDIT §A
-            // bugfix — was `at - floor(len/2)` which broke on asymmetric
-            // windows near the transcript head).
-            const turn = isExcerpt ? payload.at - payload.at_idx + i : undefined;
-            return (
-              <div key={m.id ?? i} className={`rd-msg${anchor ? " rd-anchor" : ""}`}>
-                <span className="rd-role">
-                  {roleTag(m.role)}
-                  {turn != null && <span className="rd-turn"> · t{turn}</span>}
-                </span>
-                {renderContent(m.content)}
-              </div>
-            );
-          })
-        ) : (
-          <div className="rd-msg rd-empty">
-            <span className="rd-role">log</span>
-            no preview — open in auditor to read
-          </div>
-        )}
-      </div>
+      {msgList(false)}
 
       <div className="rd-foot">
         <span className="iv-url" title={payload.log}>
           {basename(payload.log)}
         </span>
+        {msgs.length > 0 && (
+          <a onClick={() => setExpanded(true)}>
+            expand <i className="bi bi-arrows-angle-expand" />
+          </a>
+        )}
         <a onClick={openInDesk}>
           open in auditor <i className="bi bi-arrow-right" />
         </a>
       </div>
+
+      <Modal
+        open={expanded}
+        onClose={() => setExpanded(false)}
+        title={`${payload.sample_id}${payload.at != null ? ` · turn ${payload.at}` : ""}`}
+        width="min(820px, 92vw)"
+      >
+        {msgList(true)}
+      </Modal>
     </div>
   );
 }

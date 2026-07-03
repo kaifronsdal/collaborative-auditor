@@ -306,6 +306,23 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
             await _scroll_tail(orch_col)
             await _shot(page, "08-run-proposal", clip=await orch_col.bounding_box())
 
+            # ── 08c: `view all N seeds →` opens the review modal ───────────
+            await orch_col.locator(
+                ".turn[data-turn='6'] .out.gated .gate-more"
+            ).click()
+            await page.wait_for_selector(".wb-modal", timeout=5_000)
+            await asyncio.sleep(0.15)
+            # Modal portals to <body> — clip to the dialog itself.
+            await _shot(
+                page,
+                "08c-seed-modal",
+                clip=await page.locator(".wb-modal").bounding_box(),
+            )
+            await page.keyboard.press("Escape")
+            await page.wait_for_function(
+                "() => !document.querySelector('.wb-modal')", timeout=5_000
+            )
+
             # approve 3/12 seeds → proposal card flips to the AuditRunHandle
             # (same display_id). mockllm can't drive petri's auditor, so the
             # cell cancels the handle right after; we only need the render.

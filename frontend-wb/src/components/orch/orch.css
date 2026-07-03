@@ -181,25 +181,89 @@
 .out.bare > .out-head { display: none; }
 .out.html { padding: var(--sp-2) 14px; overflow-x: auto; }
 
-.out.gated { background: var(--gate-dim); }
-.out.gated .out-head { border-bottom-color: hsl(265 30% 88%); }
-.out.gated .out-head .out-kind { color: var(--gate-text); }
-.gate-tag {
-  font: 10px var(--sans); letter-spacing: .05em; text-transform: uppercase;
-  color: var(--gate-text); padding: 1px 7px; border-radius: var(--r-pill);
-  border: 1px solid var(--gate); flex-shrink: 0;
+/* ---- GateCard: pending "request from agent" shell ------------------------ */
+/* Reads as a review-request card (Linear/GitHub idiom): thin purple header
+   strip → white body (icon + question + peek) → right-aligned action footer.
+   Detail overflow (`view all N …`) opens a `<Modal>`. */
+.out.gated {
+  background: var(--bg-000); border-color: hsl(265 30% 84%);
+  box-shadow: 0 2px 12px hsl(265 40% 50% / .10);
 }
+.gate-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 14px;
+  font: 500 11px/1.6 var(--sans); letter-spacing: .02em;
+  color: var(--gate-text); background: var(--gate-dim);
+  border-bottom: 1px solid hsl(265 30% 88%);
+}
+.gate-head .rl-dot { margin: 0; position: static; }
+.gate-body { padding: 14px 16px 6px; }
+.gate-title {
+  display: flex; align-items: flex-start; gap: 10px;
+  font: 14px/1.45 var(--sans); color: var(--ink);
+}
+.gate-title > i.bi {
+  color: var(--gate-text); font-size: 15px; flex-shrink: 0;
+  position: relative; top: 2px;
+}
+.gate-title > span { flex: 1; min-width: 0; word-break: break-word; }
+.gate-sub {
+  margin: 3px 0 0 25px;
+  font: 12px/1.4 var(--sans); color: var(--ink-dim);
+}
+.gate-sub code { font: 11.5px var(--mono); }
+.gate-more {
+  display: inline-block; margin: 8px 0 4px 25px;
+  font: 12px var(--sans); color: var(--accent-text); cursor: pointer;
+}
+.gate-more:hover { text-decoration: underline; }
+.gate-more i { font-size: 10px; }
+/* action footer — right-aligned; primary filled, ghost outlined-purple,
+   danger outlined-red. */
+.gate-actions {
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 16px 14px;
+}
+.gate-btn {
+  border: 1px solid hsl(265 30% 78%); border-radius: var(--r-sm);
+  background: var(--bg-000); padding: 8px 18px;
+  font: 500 12.5px var(--sans); color: var(--gate-text); cursor: pointer;
+}
+.gate-btn:hover { background: var(--gate-dim); }
+.gate-btn.primary {
+  background: var(--gate); border-color: var(--gate); color: #fff;
+}
+.gate-btn.primary:hover { filter: brightness(1.08); }
+.gate-btn.primary:disabled { opacity: .4; cursor: default; filter: none; }
+.gate-btn.ghost { background: var(--bg-000); }
+.gate-btn.danger {
+  border-color: var(--border); color: var(--danger);
+}
+.gate-btn.danger:hover { background: hsl(0 70% 97%); border-color: hsl(0 40% 82%); }
+.gate-spacer { flex: 1; }
+/* prompt: `other…` link centred below the button row; free-text row spans. */
+.out.gated .ask-other {
+  display: block; text-align: center;
+  padding: 0 16px 12px; margin-top: -4px;
+  font: 11.5px var(--sans); color: var(--ink-faint); cursor: pointer;
+  text-decoration: underline dotted; text-underline-offset: 2px;
+}
+.out.gated .ask-other:hover { color: var(--accent-text); }
+.gate-actions-own { padding-top: 0; margin-top: -4px; }
+.ask-own-row { display: flex; align-items: stretch; gap: 8px; width: 100%; }
+.ask-own {
+  flex: 1; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 8px 12px; font: 13px var(--sans); color: var(--ink);
+  background: var(--bg-000); outline: none;
+}
+.ask-own:focus { border-color: var(--gate); }
+/* legacy: non-gated cards (ProgressCard etc.) still use `.gate-desc` for the
+   description subtitle line. */
 .gate-desc {
-  padding: 9px 14px 10px; font: 13.5px/1.45 var(--sans);
-  color: var(--ink); background: var(--bg-000); border-bottom: 1px solid var(--border);
-}
-.gate-desc > i.bi { margin-right: 8px; color: var(--gate-text); }
-/* When a config subtitle follows, group desc+config with the divider *below* the pair. */
-.gate-desc:has(+ .gate-config) { border-bottom: none; padding-bottom: 2px; }
-.out:not(.gated) > .gate-desc {
   padding: 8px 14px 0;
   font: 12.5px/1.4 var(--sans); color: var(--ink-dim);
-  background: none; border: none;
 }
 
 .out-plain {
@@ -312,65 +376,27 @@
 }
 .eval-row .ar-status { font: 10px var(--sans); padding: 1px 7px; border-radius: var(--r-pill); }
 
-/* seed-preview block inside a run_audits cell (pre-approval) */
-.seed-preview {
-  border-top: 1px solid var(--bg-200);
-  font-size: 12.5px;
+/* GateCard: inline peek list (first N seeds/quotes before the modal). */
+.gate-peek { margin: 10px 0 2px; }
+.gp-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 0 5px 25px; cursor: pointer;
+  font: 12.5px var(--sans); color: var(--ink-mid);
 }
-.seed-preview .sp-row {
-  padding: 5px 14px; color: var(--ink-dim);
+.gp-row:hover { color: var(--ink); }
+.gp-text {
+  flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  border-bottom: 1px solid var(--bg-100); cursor: pointer;
 }
-.seed-preview .sp-row:hover { background: var(--bg-100); color: var(--ink-mid); }
-.seed-preview .sp-toggle {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
-  cursor: pointer; user-select: none;
+.gp-struck { text-decoration: line-through; opacity: .5; }
+.gate-peek.cite-quotes .cite-q { padding: 6px 0 6px 25px; border: none; }
+.gate-peek.cite-quotes .cite-q:hover { background: none; }
+/* dev-only fallback chip in `WbFallback` */
+.gate-tag {
+  font: 10px var(--sans); letter-spacing: .05em; text-transform: uppercase;
+  color: var(--gate-text); padding: 1px 7px; border-radius: var(--r-pill);
+  border: 1px solid var(--gate); flex-shrink: 0;
 }
-.seed-preview .sp-toggle:hover { color: var(--ink-mid); }
-.seed-preview.collapsed .sp-row { display: none; }
-.seed-preview.collapsed .sp-row:nth-child(-n+3) { display: flex; }
-
-/* ask_human */
-.ask-q {
-  padding: var(--sp-2) 14px 4px; font-size: 13.5px; color: var(--ink);
-}
-.ask-opts {
-  display: flex; gap: 8px; flex-wrap: wrap;
-  padding: var(--sp-1) 14px 14px;
-}
-.ask-opt {
-  border: 1px solid var(--border); border-radius: var(--r-pill);
-  background: var(--bg-000); padding: 5px 14px;
-  font: 12.5px var(--sans); color: var(--ink-mid); cursor: pointer;
-}
-.ask-opt:hover { background: var(--bg-200); }
-.ask-opt.chosen {
-  background: var(--accent); border-color: var(--accent); color: #fff;
-}
-.ask-opt.own {
-  flex-basis: 100%; border: none; background: none; border-radius: 0;
-  padding: 4px 2px; text-align: left;
-  color: var(--ink-faint); font-style: italic; cursor: text;
-}
-.ask-opt.own:hover { background: none; }
-/* ---- propose-gate bar ---- */
-.gate-bar {
-  display: flex; align-items: center; gap: 8px;
-  padding: 8px 14px; border-top: 1px solid hsl(265 30% 86%);
-}
-.gate-btn {
-  border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-000); padding: 4px 12px;
-  font: 12px var(--sans); color: var(--ink-mid); cursor: pointer;
-}
-.gate-btn:hover { background: var(--bg-200); }
-.gate-btn.primary {
-  background: var(--gate); border-color: var(--gate); color: #fff;
-}
-.gate-btn.primary:hover { filter: brightness(1.08); }
-.gate-btn.deny { color: var(--danger); }
 
 /* ---- pandas `.dataframe` HTML output (rendered `.out.bare`, UI-AUDIT §C) ---- */
 .out.bare table.dataframe {
@@ -407,38 +433,16 @@
   background: hsl(38 70% 96%); border: 1px solid hsl(38 40% 82%);
 }
 
-/* PromptCard (§9) */
-.gate-waiting { animation: gate-breathe 2.4s ease-in-out infinite; }
-@keyframes gate-breathe { 50% { box-shadow: 0 0 0 1px hsl(265 40% 85%); } }
-.ask-opts.ask-opts-vert { flex-direction: row; }  /* keep pills; own-row wraps below */
-.ask-opt-key { font: 10px var(--mono); color: var(--ink-faint); margin-right: 2px; }
-.ask-opt-own-wrap {
-  flex-basis: 100%; display: flex; align-items: center; gap: 6px;
-}
-.ask-opt-own-wrap .ask-opt.own { flex: 1; }
-.ask-opt-send {
-  width: 24px; height: 24px; padding: 0;
-  border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-000); color: var(--ink-dim); cursor: pointer;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-.ask-opt-send:disabled { opacity: .35; cursor: default; }
-/* gated ask_human renders no `.out-head` — question + pills self-identify */
-.out.gated .ask-q { padding-top: 14px; }
+/* GateCard pending: subtle breathe on the header dot only (the card
+   itself already carries a purple shadow). */
+.gate-waiting .gate-head .rl-dot { animation: pulse 1.6s ease-in-out infinite; }
 
-/* RunProposalCard (§10) */
-.sp-check { accent-color: var(--gate); margin: 0 8px 0 0; }
-.sp-toggle i { width: 13px; text-align: center; }
-.sp-seed {
-  flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.sp-row-struck { text-decoration: line-through; opacity: .55; }
+.sp-check { accent-color: var(--gate); margin: 0; flex-shrink: 0; }
 .gate-deny-reason {
-  display: block; width: calc(100% - 28px); margin: 8px 14px 0;
+  display: block; width: calc(100% - 32px); margin: 4px 16px 0;
   border: 1px solid var(--danger); border-radius: var(--r-sm);
-  padding: 6px 10px; font: 12.5px var(--sans); background: var(--bg-000);
-  outline: none;
+  padding: 8px 12px; font: 12.5px var(--sans); background: var(--bg-000);
+  outline: none; box-sizing: border-box;
 }
 
 /* RunCard (§8/§11/§12) — `.out-task` at full ink so the adjacent `.out-id`
@@ -703,50 +707,61 @@
 
 /* -- cards additions -- */
 
-/* GateCard shell (UI-AUDIT §D): icon-only head while pending; resolved cards
-   collapse to a single `.out-head` with `.gate-resolved`. */
-.gate-spacer { flex: 1; }
-.gate-resolved {
-  flex: 1; min-width: 0; color: var(--ink-dim);
+/* GateCard resolved: compact receipt chip (`✓ … · you answered … · HH:MM`). */
+.out.answered { border: none; background: none; overflow: visible; }
+.gate-receipt {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px; border-radius: var(--r-md);
+  background: var(--bg-100); border: 1px solid var(--bg-200);
+  font: 12px var(--sans); color: var(--ink-dim);
+}
+.gate-receipt > i.bi { color: var(--ok); font-size: 13px; flex-shrink: 0; }
+.gate-receipt.denied > i.bi { color: var(--danger); }
+.gate-receipt-text {
+  flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.gate-resolved b { color: var(--ink); font-weight: 600; }
-.out.answered { border: none; background: none; }
-.out.answered > .out-head { border-bottom: none; padding: 7px 2px; }
-.gate-config {
-  padding: 0 14px 8px 36px; font: 11px var(--mono); color: var(--ink-faint);
-  background: var(--bg-000); border-bottom: 1px solid var(--border);
-}
-.gate-claim {
-  padding: 10px 14px; font: 13px/1.45 var(--sans); color: var(--ink);
-  background: var(--bg-000); border-bottom: 1px solid var(--border);
-}
-/* prompt: `other…` link that expands the free-text row */
-.ask-other {
-  align-self: center; font: 11.5px var(--sans); color: var(--ink-faint);
-  cursor: pointer; padding: 5px 0;
-  text-decoration: underline dotted; text-underline-offset: 2px;
-}
-.ask-other:hover { color: var(--accent-text); }
-/* key-hint superscript replaces `[N]` (§C — only shown when opts>3) */
+.gate-receipt-text b { color: var(--ink); font-weight: 600; }
+
+/* key-hint superscript (§C — only shown when opts>3) */
 sup.ask-opt-key {
-  font: 9px var(--mono); color: var(--ink-faint);
-  margin-right: 4px; vertical-align: super;
+  font: 9px var(--mono); opacity: .7;
+  margin-right: 5px; vertical-align: super;
 }
 
-/* run_proposal: `.sp-row` is a `<label>` — flex it so checkbox + ellipsised
-   text sit on one line and the popover can position against it. */
-.sp-row { position: relative; display: flex; align-items: center; }
-.sp-pop {
-  position: absolute; left: 32px; right: 12px; top: calc(100% - 2px); z-index: 10;
-  padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--r-sm);
-  background: var(--bg-000); box-shadow: 0 4px 14px hsl(0 0% 0% / .12);
-  font: 12px/1.45 var(--sans); color: var(--ink-mid);
-  white-space: normal; word-break: break-word;
+/* GateCard `<Modal>` body: full checklist with search + bulk toggles. */
+.grm-tools {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  font: 12px var(--sans); color: var(--ink-dim);
+}
+.grm-tools a { color: var(--accent-text); cursor: pointer; }
+.grm-tools a:hover { text-decoration: underline; }
+.grm-sep { color: var(--border); }
+.grm-search {
+  flex: 1; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 5px 10px; font: 12px var(--sans); color: var(--ink);
+  background: var(--bg-000); outline: none;
+}
+.grm-search:focus { border-color: var(--accent); }
+.grm-count { font: 11px var(--mono); color: var(--ink-faint); }
+.grm-list { padding: 4px 0; }
+.grm-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 16px; cursor: pointer;
+  border-bottom: 1px solid var(--bg-100);
+}
+.grm-row:last-child { border-bottom: none; }
+.grm-row:hover { background: var(--bg-100); }
+.grm-row .sp-check { margin-top: 2px; }
+.grm-body { flex: 1; min-width: 0; }
+.grm-text {
+  font: 12.5px/1.45 var(--sans); color: var(--ink-mid);
+  white-space: pre-wrap; word-break: break-word;
 }
 
 /* cite_proposal quote checklist */
-.cite-quotes { background: var(--bg-000); }
 .cite-q {
   display: flex; align-items: flex-start; gap: 10px;
   padding: 8px 14px; border-bottom: 1px solid var(--bg-100); cursor: pointer;
@@ -876,7 +891,11 @@ sup.ask-opt-key {
   border-top: 1px dashed var(--border);
 }
 .rd-foot .iv-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.rd-foot a { margin-left: auto; color: var(--accent-text); cursor: pointer; flex-shrink: 0; }
+.rd-foot a { color: var(--accent-text); cursor: pointer; flex-shrink: 0; }
+.rd-foot a + a { margin-left: 8px; }
+/* modal variant: larger font, no per-msg max-height */
+.rd-body-lg .rd-msg { font: 13.5px/1.55 var(--sans); padding: 12px 18px 12px 68px; }
+.rd-body-lg .rd-role { left: 18px; top: 14px; }
 .iv-url {
   font: 10.5px var(--mono); color: var(--ink-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
