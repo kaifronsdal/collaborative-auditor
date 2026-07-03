@@ -153,7 +153,7 @@
 .out + .out { margin-top: 8px; }
 .out-head {
   display: flex; align-items: center; gap: 8px;
-  padding: 7px 12px 7px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
+  padding: 7px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   border-bottom: 1px solid var(--border);
 }
 .out-head .out-kind {
@@ -170,6 +170,12 @@
   font-size: 12px; color: var(--ink-faint); border-radius: 4px;
 }
 .out-head .out-actions button:hover { background: var(--bg-200); color: var(--accent-text); }
+.out-head .out-actions { margin-right: -2px; }
+.out-head .out-actions a {
+  padding: 3px 5px; border-radius: 4px; cursor: pointer;
+  font-size: 12px; color: var(--ink-faint);
+}
+.out-head .out-actions a:hover { background: var(--bg-200); color: var(--accent-text); }
 
 .out.bare { border: none; background: none; border-radius: 0; overflow: visible; }
 .out.bare > .out-head { display: none; }
@@ -187,8 +193,11 @@
   padding: 9px 14px 10px; font: 13.5px/1.45 var(--sans);
   color: var(--ink); background: var(--bg-000); border-bottom: 1px solid var(--border);
 }
+.gate-desc > i.bi { margin-right: 8px; color: var(--gate-text); }
+/* When a config subtitle follows, group desc+config with the divider *below* the pair. */
+.gate-desc:has(+ .gate-config) { border-bottom: none; padding-bottom: 2px; }
 .out:not(.gated) > .gate-desc {
-  padding: 6px 14px 4px;
+  padding: 8px 14px 0;
   font: 12.5px/1.4 var(--sans); color: var(--ink-dim);
   background: none; border: none;
 }
@@ -329,7 +338,7 @@
 }
 .ask-opts {
   display: flex; gap: 8px; flex-wrap: wrap;
-  padding: var(--sp-1) 14px var(--sp-2);
+  padding: var(--sp-1) 14px 14px;
 }
 .ask-opt {
   border: 1px solid var(--border); border-radius: var(--r-pill);
@@ -342,7 +351,7 @@
 }
 .ask-opt.own {
   flex-basis: 100%; border: none; background: none; border-radius: 0;
-  padding: 4px 2px 0; text-align: left;
+  padding: 4px 2px; text-align: left;
   color: var(--ink-faint); font-style: italic; cursor: text;
 }
 .ask-opt.own:hover { background: none; }
@@ -418,7 +427,8 @@
 .out.gated .ask-q { padding-top: 14px; }
 
 /* RunProposalCard (§10) */
-.sp-check { accent-color: var(--gate); margin-right: 8px; }
+.sp-check { accent-color: var(--gate); margin: 0 8px 0 0; }
+.sp-toggle i { width: 13px; text-align: center; }
 .sp-seed {
   flex: 1; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -463,8 +473,9 @@
 .out .fx-out .stat.err { display: inline; color: var(--danger); }
 .row-dot {
   font-size: 8px; line-height: 1; flex-shrink: 0;
-  display: inline-block; vertical-align: middle; position: relative; top: -1px;
+  display: inline-block; vertical-align: middle;
 }
+.out-head .fx-dot { top: 0; }
 .row-dot-running { color: var(--accent-text); animation: pulse 1.4s ease-in-out infinite; }
 .row-dot-done    { color: var(--ok); }
 .row-dot-error   { color: var(--danger); }
@@ -504,7 +515,7 @@
    distinguished by weight not decoration. `.out-result` also opts it out of
    the 20lh soft-cap on other `.out-plain`. */
 .out.bare > .out-plain.out-result {
-  display: block; margin: 0; padding: 2px 0;
+  display: block; margin: 0; padding: 2px;
   background: none; color: var(--ink);
 }
 .out.bare { margin-top: 10px; }
@@ -701,10 +712,10 @@
 }
 .gate-resolved b { color: var(--ink); font-weight: 600; }
 .out.answered { border: none; background: none; }
-.out.answered > .out-head { border-bottom: none; padding-left: 2px; }
+.out.answered > .out-head { border-bottom: none; padding: 7px 2px; }
 .gate-config {
-  padding: 6px 14px 8px; font: 11px var(--mono); color: var(--ink-faint);
-  background: var(--bg-000);
+  padding: 0 14px 8px 36px; font: 11px var(--mono); color: var(--ink-faint);
+  background: var(--bg-000); border-bottom: 1px solid var(--border);
 }
 .gate-claim {
   padding: 10px 14px; font: 13px/1.45 var(--sans); color: var(--ink);
@@ -713,7 +724,7 @@
 /* prompt: `other…` link that expands the free-text row */
 .ask-other {
   align-self: center; font: 11.5px var(--sans); color: var(--ink-faint);
-  cursor: pointer; padding: 5px 4px;
+  cursor: pointer; padding: 5px 0;
   text-decoration: underline dotted; text-underline-offset: 2px;
 }
 .ask-other:hover { color: var(--accent-text); }
@@ -735,7 +746,7 @@ sup.ask-opt-key {
 }
 
 /* cite_proposal quote checklist */
-.cite-quotes { background: var(--bg-000); border-top: 1px solid var(--bg-200); }
+.cite-quotes { background: var(--bg-000); }
 .cite-q {
   display: flex; align-items: flex-start; gap: 10px;
   padding: 8px 14px; border-bottom: 1px solid var(--bg-100); cursor: pointer;
@@ -767,9 +778,10 @@ sup.ask-opt-key {
   display: inline-flex; align-items: center; justify-content: center;
   border: none; border-radius: var(--r-sm); background: none; cursor: pointer;
   color: var(--ink-faint); font-size: 12px;
-  opacity: 0; transition: opacity .12s;
+  /* invisible + collapsed so the right column doesn't rag when only some rows have it */
+  opacity: 0; margin-left: -28px; transition: opacity .12s, margin-left .12s;
 }
-.audit-row:hover .ar-stop, .eval-row:hover .ar-stop { opacity: 1; }
+.audit-row:hover .ar-stop, .eval-row:hover .ar-stop { opacity: 1; margin-left: 0; }
 .ar-stop:hover { background: var(--bg-200); color: var(--danger); }
 .ar-status.stopping {
   background: var(--bg-200); color: var(--ink-faint);
@@ -784,7 +796,8 @@ sup.ask-opt-key {
   font: 11.5px var(--sans); color: var(--ink-faint);
 }
 .pc-chip { cursor: pointer; padding: 2px 4px; color: var(--ink-dim); }
-.pc-chip .sep { color: var(--border); margin-right: 6px; }
+.pc-chip:first-child { padding-left: 0; }
+.pc-chip .sep { color: var(--border); margin: 0 6px 0 -2px; }
 .pc-chip:hover { color: var(--ink); }
 .pc-chip.active { color: var(--accent-text); font-weight: 600; }
 .pc-chip .pc-n { color: var(--ink-faint); font-weight: 400; }
@@ -814,7 +827,7 @@ sup.ask-opt-key {
 
 /* §8 score histogram — 10-bin sparkline below the counter line. */
 .pc-hist-wrap {
-  padding: 2px 14px 8px; display: flex; align-items: flex-end; gap: 10px;
+  padding: 6px 14px; display: flex; align-items: flex-end; gap: 10px;
 }
 .pc-hist { flex: 1; display: block; height: 32px; }
 .pc-hist rect { fill: var(--accent); cursor: pointer; opacity: .75; }
@@ -841,7 +854,7 @@ sup.ask-opt-key {
    `<Bubble>`: no rounded box, no CollapsibleContent (§C dense reader). */
 .rd-body { background: var(--bg-000); }
 .rd-msg {
-  padding: 8px 14px 8px 58px; position: relative;
+  padding: 8px 14px 8px 60px; position: relative;
   font: 12.5px/1.5 var(--sans); color: var(--ink-mid);
   border-bottom: 1px solid var(--bg-100);
 }
@@ -850,7 +863,7 @@ sup.ask-opt-key {
 .rd-msg > :last-child { margin-bottom: 0; }
 .rd-msg .reasoning { color: var(--ink-faint); font-style: italic; }
 .rd-role {
-  position: absolute; left: 12px; top: 10px; width: 40px;
+  position: absolute; left: 14px; top: 10px; width: 40px;
   font: 9.5px var(--mono); color: var(--ink-faint);
   text-transform: uppercase; letter-spacing: .04em;
 }
@@ -862,7 +875,8 @@ sup.ask-opt-key {
   padding: 7px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   border-top: 1px dashed var(--border);
 }
-.rd-foot a { margin-left: auto; color: var(--accent-text); cursor: pointer; }
+.rd-foot .iv-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.rd-foot a { margin-left: auto; color: var(--accent-text); cursor: pointer; flex-shrink: 0; }
 .iv-url {
   font: 10.5px var(--mono); color: var(--ink-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

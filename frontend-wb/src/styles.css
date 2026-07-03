@@ -237,7 +237,7 @@ body {
 .mp-field {
   display: inline-flex; align-items: center; gap: 6px;
   border: 1px solid var(--border); border-radius: var(--r-pill);
-  padding: 3px 4px 3px 10px; background: var(--bg-000);
+  padding: 5px 8px 5px 12px; background: var(--bg-000);
 }
 .mp-field .mp-role {
   font: 10.5px var(--mono); color: var(--ink-faint); letter-spacing: .04em;
@@ -267,7 +267,7 @@ body {
 .start-controls {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin-top: var(--sp-3);
-  border-top: 1px solid var(--border); padding-top: var(--sp-2);
+  border-top: 1px solid var(--border); padding-top: 14px;
 }
 
 /* model-picker-wrap: positioning context for the popover */

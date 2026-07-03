@@ -119,7 +119,7 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
   return (
     <div className="out gated gate-waiting" data-display-id={displayId}>
       <div className="gate-desc">
-        <i className={`bi ${v.icon}`} style={{ color: "var(--gate-text)", marginRight: 8 }} />
+        <i className={`bi ${v.icon}`} />
         {v.desc}
       </div>
       {payload.kind === "run_proposal" ? (
