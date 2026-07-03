@@ -128,7 +128,12 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 background: If True, return immediately with a ``[bg-{id}]``
                     handle; a ``[bg-{id} done · exit N]`` note arrives later.
             """
-            env = {**os.environ, "INSPECT_DISPLAY": "workbench"}
+            # ``INSPECT_DISPLAY=workbench`` can't work — CLI's ``--display``
+            # is a click.Choice bound to that env var, so click rejects it
+            # before Python runs. ``wb_display.register()`` (via the
+            # ``inspect_ai`` entry point) monkeypatches the active display
+            # when ``WORKBENCH_DISPLAY`` is set instead.
+            env = {**os.environ, "WORKBENCH_DISPLAY": "1"}
             proc = await asyncio.create_subprocess_shell(
                 cmd, cwd=session_dir, env=env, stdout=PIPE, stderr=STDOUT
             )
@@ -267,7 +272,7 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
     def review_seeds() -> Tool:
         async def execute(
             seeds: list[str], description: str, config: dict[str, Any] | None = None
-        ) -> dict[str, Any]:
+        ) -> str:
             """Propose a seed list for human approval before launching a run.
 
             The human may strike seeds or deny outright. Returns the
@@ -288,11 +293,12 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 model=cfg.get("model"),
             )
             await kernel.gate(prop)
-            return {
+            # inspect's ``ToolResult`` doesn't include ``dict`` — encode.
+            return json.dumps({
                 "approved": not prop.denied,
                 "seeds": prop.seeds,
                 "reason": (prop.verdict or {}).get("reason"),
-            }
+            })
 
         return execute
 
@@ -300,7 +306,7 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
     def review_finding() -> Tool:
         async def execute(
             claim: str, quotes: list[dict[str, Any]], description: str
-        ) -> dict[str, Any]:
+        ) -> str:
             """Propose a finding for the human to sign off on.
 
             Args:
@@ -316,11 +322,11 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 description=description,
             )
             await kernel.gate(prop)
-            return {
+            return json.dumps({
                 "signed": prop.signed,
                 "quotes": [vars(q) for q in prop.quotes],
                 "reason": (prop.verdict or {}).get("reason"),
-            }
+            })
 
         return execute
 

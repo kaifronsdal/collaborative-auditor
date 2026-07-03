@@ -176,7 +176,7 @@ class AttachedRun(_PollingHandle):
             self._ctl = await self._discover_ctl()
             if self._ctl is None and self._status != "started":
                 self._ctl = False
-        if not self._ctl:
+        if not isinstance(self._ctl, tuple):
             return []
         server, eval_id = self._ctl
         samples = await _ctl_get(server, f"/evals/{eval_id}/samples")
