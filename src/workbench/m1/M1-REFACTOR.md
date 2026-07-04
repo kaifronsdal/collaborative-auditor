@@ -93,11 +93,16 @@ Best done after A so TypedDicts land in `proposals.py`/`handles.py`.
 - `CopyBtn` → wrap `@tsmono/react` `CopyButton` (upstream thunk +
   `stopPropagation` first, or keep as 25-LOC wrapper).
 
-## Batch G — CSS utilities ~1h
+## Batch G — CSS utilities + consolidation ~2h
 
 - `orch.css`: `.hstack` (`display:flex; align-items:center`) + `.g4`…
   `.g14` gap variants (17 sites) + `.truncate` (13 sites). ~-85 LOC.
 - After E's `<CellShell>` merge, ~25 more selectors drop.
+- **Also**: fold the 3 `/* -- {agent} additions -- */` EOF marker
+  blocks into their sections + delete 8 dead rules + merge 6 dup
+  selectors (analysis done by prior agent; deferred here after 3×
+  gateway timeout on the ~900-line rewrite — do it as targeted Edit
+  calls, not a whole-file Write).
 
 ## Batch H — test fixtures + coverage ~4h
 
