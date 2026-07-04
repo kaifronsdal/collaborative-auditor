@@ -67,8 +67,12 @@ def _turn(orch: "Orchestrator") -> Iterator[int]:
     k._turn_counter += 1  # noqa: SLF001
     tid: int = k._turn_counter  # noqa: SLF001
     k.outputs.setdefault(tid, [])
-    if orch.state is not None and orch.state.output is not None:
-        orch._turn_msg[tid] = orch.state.output.message.id  # noqa: SLF001
+    if (
+        orch.state is not None
+        and orch.state.output is not None
+        and (mid := orch.state.output.message.id) is not None
+    ):
+        orch._turn_msg[tid] = mid  # noqa: SLF001
     tok = k._current_turn.set(tid)  # noqa: SLF001
     try:
         yield tid
