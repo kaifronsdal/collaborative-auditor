@@ -23,7 +23,6 @@ Two data sources per poll:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import time
 import zipfile
@@ -31,6 +30,10 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Self, cast
 
 import httpx
+from acp import PROTOCOL_VERSION
+from acp.connection import Connection
+from acp.exceptions import RequestError
+from acp.router import MessageRouter
 from inspect_ai._control.discovery import (  # noqa: PLC2701
     DiscoveredControlServer,
     list_discovered_servers,
@@ -48,20 +51,24 @@ from IPython.display import display
 
 from workbench.m1.handles import (
     SampleRow,
-    _finite_or_none,  # noqa: PLC2701
     _first_numeric,  # noqa: PLC2701
     _PollingHandle,  # noqa: PLC2701
 )
-from workbench.m1.wire import EvalRunPayload, SampleRowPayload, wb_bundle
+from workbench.m1.wire import (
+    EvalRunPayload,
+    SampleRowPayload,
+    _finite,  # noqa: PLC2701
+    wb_bundle,
+)
 
 
 @dataclass(kw_only=True)
 class AttachedRun(_PollingHandle):
     """Read-only handle on an out-of-process eval writing to ``log_dir``.
 
-    Polling only — no ``_task``. ``_watch`` runs until ``_status`` leaves
-    ``"started"`` (read from the ``.eval`` header each poll); the base
-    ``wait()`` then just awaits the watcher.
+    Polling only — no ``_task``. ``_done`` is ``_status != "started"``
+    (read from the ``.eval`` header each poll); the base ``_watch`` loop
+    and ``wait()`` work unchanged.
     """
 
     log_dir: str
@@ -126,30 +133,15 @@ class AttachedRun(_PollingHandle):
 
         return audits_df(self.location or self.log_dir)
 
-    # -- watch loop (no _task) --------------------------------------------
-
-    async def _watch(self) -> None:  # type: ignore[override]
-        last: Any = None
-        while self._status == "started":
-            await self._poll()
-            sig = self._signature()
-            if sig != last:
-                last = sig
-                self._update()
-            if self._status != "started":
-                break
-            await asyncio.sleep(self._poll_interval)
-        # final poll after settle (last flush may land after the header does)
-        await self._poll()
-        self.finished = True
-        if self._status == "cancelled":
-            self.error = "cancelled"
-        elif self._status == "error":
-            self.error = "error"
-        self._running = []
-        self._update()
-
     # -- hooks ------------------------------------------------------------
+
+    def _done(self) -> bool:
+        return self._status != "started"
+
+    async def _settle(self, task: asyncio.Task[Any] | None) -> None:
+        if self._status in ("cancelled", "error"):
+            self.error = self._status
+        self._running = []
 
     async def _poll(self) -> None:
         # done rows + status/total from the .eval on disk
@@ -277,36 +269,43 @@ class AttachedRun(_PollingHandle):
         except OSError:
             self._acp = False
             return False
+        # Bare ``MessageRouter`` — unsolicited ``session/update`` replay
+        # notifications (post-``session/load``) route to nothing and are
+        # dropped; we only need the request/response half.
+        conn = Connection(handler=MessageRouter(), writer=writer, reader=reader)
         try:
-            listing = await _acp_request(reader, writer, 1, "inspect/list_samples", {})
+            await conn.send_request(
+                "initialize",
+                {
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "clientInfo": {"name": "workbench-attach", "version": "1"},
+                    "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}},
+                },
+            )
+            listing: Any = await conn.send_request("inspect/list_samples", {})
             session_id = next(
                 (
                     s["sessionId"]
-                    for s in listing.get("samples", [])
+                    for s in (listing or {}).get("samples", [])
                     if str(s.get("sampleId")) == str(sample_id) and s.get("sessionId")
                 ),
                 None,
             )
             if session_id is None:
                 return False
-            await _acp_request(
-                reader,
-                writer,
-                2,
+            await conn.send_request(
                 "session/load",
                 {"sessionId": session_id, "cwd": "/", "mcpServers": []},
             )
-            await _acp_request(
-                reader,
-                writer,
-                3,
+            await conn.send_request(
                 "inspect/cancel_sample",
                 {"sessionId": session_id, "action": action},
             )
             return True
-        except (_AcpError, OSError):
+        except (RequestError, ConnectionError, OSError):
             return False
         finally:
+            await conn.close()
             writer.close()
             try:  # noqa: SIM105
                 await writer.wait_closed()
@@ -331,7 +330,7 @@ class AttachedRun(_PollingHandle):
             epoch=s.epoch,
             input=str(s.input)[:80],
             turns=turns,
-            scores={k: _finite_or_none(v.value) for k, v in (s.scores or {}).items()},
+            scores={k: _finite(v.value) for k, v in (s.scores or {}).items()},
             error=s.error,
         )
 
@@ -391,51 +390,3 @@ async def _ctl_get(server: DiscoveredControlServer, path: str) -> list[Any] | No
     except (httpx.HTTPError, OSError, ValueError):
         return None
     return body if isinstance(body, list) else None
-
-
-# -- ACP JSON-RPC over UDS ----------------------------------------------------
-
-
-class _AcpError(Exception):
-    """A JSON-RPC error response, timeout, or EOF on the ACP connection."""
-
-
-async def _acp_request(
-    reader: asyncio.StreamReader,
-    writer: asyncio.StreamWriter,
-    req_id: int,
-    method: str,
-    params: dict[str, Any],
-) -> Any:
-    """One JSON-RPC 2.0 request/response over a newline-delimited stream.
-
-    Inspect's ACP server (and the underlying ``acp.Connection``) frames
-    messages as one JSON object per line — no LSP ``Content-Length:``
-    headers. The server also pushes ``session/update`` notifications and
-    (post-bind) transcript replay unsolicited, so read lines until the
-    matching response arrives: a message with our ``id`` and no
-    ``method`` field. Everything else (notifications have ``method`` but
-    no ``id``; server→client requests have both) is skipped.
-    """
-    writer.write(
-        (
-            json.dumps(
-                {"jsonrpc": "2.0", "id": req_id, "method": method, "params": params}
-            )
-            + "\n"
-        ).encode()
-    )
-    await writer.drain()
-    while True:
-        try:
-            line = await asyncio.wait_for(reader.readline(), timeout=5.0)
-        except asyncio.TimeoutError as exc:
-            raise _AcpError(f"{method}: timeout") from exc
-        if not line:
-            raise _AcpError(f"{method}: connection closed")
-        msg = json.loads(line)
-        if "method" in msg or msg.get("id") != req_id:
-            continue
-        if "error" in msg:
-            raise _AcpError(f"{method}: {msg['error']}")
-        return msg.get("result", {})

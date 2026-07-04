@@ -60,7 +60,7 @@ from workbench.m1.kernel import OrchestratorKernel
 from workbench.m1.orchestrator import ORCH_SOURCE, _prewarm  # noqa: PLC2701
 from workbench.m1.wire import STREAM_MIME, WB_MIME, DisplayEvent
 from workbench.m1.proposals import Gate
-from workbench.m1.tools import _session_dir, make_tools  # noqa: PLC2701
+from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
 from workbench.session import Session
 
@@ -116,12 +116,17 @@ async def _amain() -> None:
 
 
 async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa: PLR0915
-    # Duck-typed orch: ``make_tools`` reads ``.kernel``/``.gate``/``.span_id``,
+    # Duck-typed orch: ``make_tools`` reads ``.kernel``/``.gate``/``.session_dir``,
     # and ``_turn`` calls ``.record_turn`` (rewind bookkeeping — no-op here).
+    session_dir = Path.home() / ".workbench" / "sessions" / "smoke-hybrid"
+    session_dir.mkdir(parents=True, exist_ok=True)
     orch = SimpleNamespace(
-        kernel=k, gate=Gate(), span_id="smoke-hybrid", record_turn=lambda tid: None
+        kernel=k,
+        gate=Gate(),
+        span_id="smoke-hybrid",
+        session_dir=session_dir,
+        record_turn=lambda tid: None,
     )
-    session_dir = _session_dir(orch)
     (bash, read_file, write_file, edit_file, ask_human, review_seeds, review_finding) = (
         make_tools(orch)
     )

@@ -17,11 +17,29 @@ fields so a backend field addition doesn't break the frontend build.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypedDict, get_args, get_type_hints
 
 WB_MIME = "application/vnd.workbench.v1+json"
 STREAM_MIME = "application/vnd.jupyter.stream+json"
+
+
+def _finite(v: Any) -> Any:
+    """Map non-finite floats (``nan`` / ``inf``) to ``None``, recursively.
+
+    ``jsonable_python`` leaves them as-is and stdlib ``json.dumps`` then
+    emits bare ``NaN`` / ``Infinity`` — invalid JSON that breaks the
+    frontend's ``JSON.parse``. Applied to score values before they reach
+    ``WB_MIME`` payloads (mockllm + petri judge yields ``float('nan')``).
+    """
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    if isinstance(v, dict):
+        return {k: _finite(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_finite(x) for x in v]
+    return v
 
 
 # -- DisplayEvent -------------------------------------------------------------

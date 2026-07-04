@@ -39,19 +39,6 @@ from workbench.m1.wire import ScanPayload, wb_bundle
 SampleStatus = Literal["running", "done", "error", "stopped"]
 
 
-def _finite_or_none(v: Any) -> Any:
-    """Map non-finite floats (``nan`` / ``inf``) to ``None``.
-
-    ``jsonable_python`` leaves them as-is and stdlib ``json.dumps`` then emits
-    bare ``NaN`` / ``Infinity`` — invalid JSON that breaks the frontend's
-    ``JSON.parse``. Applied to score values before they reach the WB_MIME
-    payload (mockllm + petri judge yields ``float('nan')``).
-    """
-    if isinstance(v, float) and not math.isfinite(v):
-        return None
-    return v
-
-
 def _first_numeric(scores: dict[str, Any]) -> float | None:
     """First numeric score value in ``scores`` (M1-FEATURES §8 histogram)."""
     for v in scores.values():
@@ -77,10 +64,12 @@ class _PollingHandle:
     """Live handle on one background job with a polling watcher.
 
     ``_watch`` calls ``_poll()`` on an interval and ``dh.update(self)`` s
-    whenever ``_signature()`` changes; after ``_task`` settles it does one
-    final poll, sets ``finished`` / ``error``, calls ``_settle()``, and fires
-    a last update. Subclasses supply ``_poll`` / ``_signature`` / ``_settle``
-    / ``n_done`` / ``_repr_mimebundle_`` and their domain fields.
+    whenever ``_signature()`` changes; after ``_done()`` flips it does one
+    final poll, sets ``finished`` / ``error``, calls ``_settle()``, and
+    fires a last update. Subclasses supply ``_poll`` / ``_signature`` /
+    ``_settle`` / ``n_done`` / ``_repr_mimebundle_`` and their domain
+    fields; a subclass with no ``_task`` (:class:`~.attach.AttachedRun`)
+    overrides ``_done`` instead of the whole loop.
     """
 
     id: str = field(default_factory=lambda: uuid4().hex)
@@ -122,29 +111,35 @@ class _PollingHandle:
         so the ``display → task → watcher`` invariant lives with the class."""
         self._dh = display(self, display_id=self.id)
         self._task = asyncio.create_task(coro)
-        self._watcher = asyncio.create_task(self._watch(self._task))
+        self._watcher = asyncio.create_task(self._watch())
         return self
 
-    async def _watch(self, task: asyncio.Task[Any]) -> None:
+    async def _watch(self) -> None:
         last: Any = None
-        while not task.done():
+        while not self._done():
             await self._poll()
             sig = self._signature()
             if sig != last:
                 last = sig
                 self._update()
+            if self._done():
+                break
             await asyncio.sleep(self._poll_interval)
         # final poll after the job settles (last flush may land after done)
         await self._poll()
         self.finished = True
-        if task.cancelled():
-            self.error = "cancelled"
-        elif (exc := task.exception()) is not None:
-            self.error = f"{type(exc).__name__}: {exc}"
-        await self._settle(task)
+        if self._task is not None:
+            if self._task.cancelled():
+                self.error = "cancelled"
+            elif (exc := self._task.exception()) is not None:
+                self.error = f"{type(exc).__name__}: {exc}"
+        await self._settle(self._task)
         self._update()
 
     # -- hooks ------------------------------------------------------------
+
+    def _done(self) -> bool:
+        return self._task is not None and self._task.done()
 
     async def _poll(self) -> None:
         raise NotImplementedError
@@ -152,7 +147,7 @@ class _PollingHandle:
     def _signature(self) -> Any:
         raise NotImplementedError
 
-    async def _settle(self, task: asyncio.Task[Any]) -> None:
+    async def _settle(self, task: asyncio.Task[Any] | None) -> None:
         pass
 
 
@@ -216,11 +211,11 @@ class ScanHandle(_PollingHandle):
     def _signature(self) -> tuple[Any, ...]:
         return tuple(v for s in self.per_scanner.values() for v in sorted(s.items()))
 
-    async def _settle(self, task: asyncio.Task[Any]) -> None:
+    async def _settle(self, task: asyncio.Task[Any] | None) -> None:
         from inspect_scout.aio import scan_results_df_async  # noqa: PLC0415
 
         self.total = self.total or self.n_done
-        if self.error is None and self._location is None:
+        if self.error is None and self._location is None and task is not None:
             # ``scan_async`` returned a Status; take its location.
             self._location = task.result().location
         if self._location is not None and self.error is None:

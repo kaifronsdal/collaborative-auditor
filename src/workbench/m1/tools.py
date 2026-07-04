@@ -52,12 +52,6 @@ if TYPE_CHECKING:
 _MODEL_TEXT_CAP = 4000
 
 
-def _session_dir(orch: "Orchestrator") -> Path:
-    d = Path.home() / ".workbench" / "sessions" / orch.span_id
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
 @contextmanager
 def _turn(orch: "Orchestrator") -> Iterator[int]:
     """Allocate a kernel turn for a non-``python`` tool that emits displays.
@@ -78,7 +72,7 @@ def _turn(orch: "Orchestrator") -> Iterator[int]:
 def make_tools(orch: "Orchestrator") -> list[Tool]:
     """Return the 8 hybrid tools, each a closure over ``orch``."""
     kernel = orch.kernel
-    session_dir = _session_dir(orch)
+    session_dir = orch.session_dir
 
     # -- bash -----------------------------------------------------------------
 

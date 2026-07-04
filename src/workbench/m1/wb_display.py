@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import math
 import os
 import time
 from typing import Any, AsyncIterator, Callable, Coroutine, Iterator
@@ -64,23 +63,12 @@ from inspect_ai.hooks import Hooks, SampleEnd, TaskStart, hooks
 from inspect_ai.log._samples import active_samples  # noqa: PLC2701
 from inspect_ai.util._throttle import throttle
 
+from workbench.m1.wire import _finite  # noqa: PLC2701
+
 
 def _wb(kind: str, **fields: Any) -> None:
     """Emit one ``{"wb": kind, ...}`` line to stdout, flushed."""
     print(json.dumps({"wb": kind, **fields}, default=str), flush=True)
-
-
-def _finite(v: Any) -> Any:
-    """``Score.value`` can be a NaN float (petri's judge under mockllm) —
-    ``json.dumps`` emits bare ``NaN`` which is not valid JSON. Map non-finite
-    floats to ``None``; recurse into dict/list values."""
-    if isinstance(v, float) and not math.isfinite(v):
-        return None
-    if isinstance(v, dict):
-        return {k: _finite(x) for k, x in v.items()}
-    if isinstance(v, list):
-        return [_finite(x) for x in v]
-    return v
 
 
 def _enabled() -> bool:

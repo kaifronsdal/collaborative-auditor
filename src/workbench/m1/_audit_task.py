@@ -9,12 +9,11 @@ The orchestrator's ``bash`` tool runs::
         --model-role auditor=<m> --model-role judge=<m> \
         --log-dir runs/<name>
 
-which builds the same ``Task`` that ``wb.run_audits`` used to launch
-in-process (``seeds_dataset`` / ``audit_solver(workbench_auditor(...))`` /
-``audit_judge`` / ``audit_viewer``), minus the ``BatchHooks`` steer/stop
-plumbing — the subprocess has no live channel back to the kernel, so the
-auditor's per-turn hooks are inert. Model roles come from ``--model-role``
-CLI flags, not the task.
+which is petri's own ``inspect_petri.audit`` task with the seeds/config
+threaded through. The subprocess has no live channel back to the kernel,
+so no per-turn hooks — petri's auditor writes ``AuditTape.trajectories``
+into the sample store, which is exactly what ``import_eval`` reads. Model
+roles come from ``--model-role`` CLI flags, not the task.
 
 ``demo`` is a trivial task for verifying the ``WorkbenchDisplay`` driver
 without petri (petri's auditor tools reject ``mockllm`` output before any
@@ -28,14 +27,10 @@ from pathlib import Path
 from typing import Any
 
 import anyio
-import shortuuid
 from inspect_ai import Task, task
 from inspect_ai.dataset import Sample
-from inspect_ai.model import ChatMessage
 from inspect_ai.scorer import Score, Target, accuracy, scorer
 from inspect_ai.solver import Generate, Solver, TaskState, solver
-
-from workbench.auditor import TurnHooks, workbench_auditor
 
 # Belt-and-suspenders: entry-point loading happens inside ``eval_async``
 # (model-provider lookup), which is *after* the task module is imported by
@@ -44,16 +39,6 @@ from workbench.auditor import TurnHooks, workbench_auditor
 from workbench.m1.wb_display import register
 
 register()
-
-
-class _NoHooks(TurnHooks):
-    """Inert per-turn hooks: no gate, no injected messages, never stop."""
-
-    async def pre_turn(self) -> tuple[list[ChatMessage], bool]:
-        return [], False
-
-    def post_generate(self) -> None:
-        pass
 
 
 @task
@@ -69,31 +54,17 @@ def audit(seeds_file: str, config: str | dict[str, Any] = "{}") -> Task:
             ``realism_filter`` / ``judge_dimensions`` (same as
             ``wb.run_audits`` accepted).
     """
-    from inspect_petri import (  # noqa: PLC0415
-        audit_judge,
-        audit_solver,
-        audit_viewer,
-        seeds_dataset,
-        target_agent,
-    )
+    import inspect_petri  # noqa: PLC0415
 
-    seeds: list[str] = json.loads(Path(seeds_file).read_text())
     cfg: dict[str, Any] = (
         json.loads(config) if isinstance(config, str) else dict(config)
     )
-
-    auditor = workbench_auditor(
-        _NoHooks(),
-        max_turns=int(cfg.pop("max_turns", 30)),
-        compaction=cfg.pop("compaction", True),
-        realism_filter=cfg.pop("realism_filter", False),
-    )
-    return Task(
-        dataset=seeds_dataset(seeds),
-        solver=audit_solver(auditor=auditor, target=target_agent()),
-        scorer=audit_judge(cfg.get("judge_dimensions")),
-        viewer=audit_viewer(cfg.get("judge_dimensions")),
-        name=f"audit-{shortuuid.uuid()[:6]}",
+    return inspect_petri.audit(
+        seed_instructions=json.loads(Path(seeds_file).read_text()),
+        max_turns=int(cfg.get("max_turns", 30)),
+        compaction=cfg.get("compaction", True),
+        realism_filter=cfg.get("realism_filter", False),
+        judge_dimensions=cfg.get("judge_dimensions"),
     )
 
 

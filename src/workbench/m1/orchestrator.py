@@ -30,6 +30,7 @@ import asyncio
 import logging
 import os
 from contextlib import suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -56,7 +57,7 @@ from workbench.m1.wire import DisplayEvent
 from workbench.m1.plots import install_template
 from workbench.m1.prompt import ORCHESTRATOR_SYSTEM_PROMPT
 from workbench.m1.proposals import Gate
-from workbench.m1.tools import _session_dir, make_tools  # noqa: PLC2701
+from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
 from workbench.step import StepGated
 from workbench.view import Status
@@ -134,7 +135,8 @@ class Orchestrator(StepGated):
         #: for relative ``wb.attach("runs/…")`` paths — same dir both sides
         #: so ``bash("… --log-dir runs/r1")`` and ``wb.attach("runs/r1")``
         #: agree without the agent thinking about paths.
-        self.session_dir = _session_dir(self)
+        self.session_dir = Path.home() / ".workbench" / "sessions" / self.span_id
+        self.session_dir.mkdir(parents=True, exist_ok=True)
         # Align the ``python`` kernel's cwd with ``bash``/file tools —
         # otherwise a file the agent writes in a python cell lands in the
         # server's cwd (repo root), not ``session_dir``, and its next
