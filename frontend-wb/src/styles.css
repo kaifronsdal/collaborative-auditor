@@ -749,6 +749,11 @@ body {
 .rl-dot-running { background: var(--ok); animation: pulse 1.6s ease-in-out infinite; }
 .rl-dot-paused { background: transparent; border: 1.5px solid var(--ink-dim); box-sizing: border-box; }
 .rl-dot-ended { background: var(--ink-faint); opacity: .5; }
+/* orch tri-state (M1) */
+.rl-dot-idle   { background: transparent; border: 1.5px solid var(--ink-faint); box-sizing: border-box; }
+.rl-dot-gen    { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.rl-dot-exec   { background: hsl(38 85% 52%); animation: pulse 1.4s ease-in-out infinite; }
+.rl-dot-gate   { background: var(--accent); }
 .rl-seed {
   flex: 1; min-width: 0;
   font-size: var(--fs-sm); color: var(--ink-dim);

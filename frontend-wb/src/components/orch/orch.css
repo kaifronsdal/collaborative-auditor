@@ -28,19 +28,16 @@
   color: var(--ink-faint);
 }
 .orch-head .rl-dot { margin: 0 0 0 2px; position: relative; top: -1px; }
-/* extend styles.css `.rl-dot-*` set for the tri-state (§3) */
-.rl-dot-idle   { background: transparent; border: 1.5px solid var(--ink-faint); box-sizing: border-box; }
-.rl-dot-gen    { background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
-.rl-dot-exec   { background: hsl(38 85% 52%); animation: pulse 1.4s ease-in-out infinite; }
-.rl-dot-gate   { background: var(--gate); }
-/* `N waiting` header pill */
+/* `N waiting` header pill — GatePill absorbs the status dot (UI-AUDIT §B). */
 .head-gate-wrap { position: relative; }
 .head-gate-jump {
+  display: inline-flex; align-items: center; gap: 6px;
   border: 1px solid var(--gate); border-radius: var(--r-pill);
   background: var(--gate-dim); color: var(--gate-text);
   font: 11px/1.6 var(--sans); padding: 0 10px; cursor: pointer;
 }
 .head-gate-jump:hover { filter: brightness(.97); }
+.head-gate-jump .rl-dot { margin: 0; flex-shrink: 0; }
 .head-gate-pop {
   position: absolute; top: calc(100% + 6px); left: 0; z-index: 20;
   min-width: 260px; padding: 6px;
@@ -66,6 +63,59 @@
   background: var(--gate); color: #fff; font: 12px var(--sans); cursor: pointer;
 }
 
+/* ---- orch composer ---- */
+/* Overrides on M0's `.composer` (styles.css): symmetric 10/14 padding +
+   `position: relative` so `.scroll-new` (moved into the composer DOM) can pin
+   `top: -40px` regardless of textarea auto-grow. */
+.orch-col-wrap .composer { position: relative; padding: var(--sp-2) 14px; }
+.composer-hint-running a { text-decoration: underline; cursor: pointer; }
+/* Transport cluster (stop/step/play-pause) — relocated from the header per
+   "location follows interaction". Borderless 32px circles so they read as the
+   same species as M0's `.primary` (32px filled circle), just secondary:
+   ink-faint icon, bg-200 hover pill. */
+.composer-controls { display: inline-flex; gap: 4px; margin-left: -7px; }
+.composer-controls button {
+  width: 32px; height: 32px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: 50%;
+  background: none; cursor: pointer;
+  color: var(--ink-dim); line-height: 1;
+}
+.composer-controls button:hover:not(:disabled) {
+  background: var(--bg-200); color: var(--ink);
+}
+.composer-controls button:disabled { opacity: .35; cursor: default; }
+/* Send button: darker disabled treatment (default `.primary` fades accent to
+   near-invisible pale blue). Hint text ellipsises at narrow widths so the
+   transport cluster doesn't collide with it. */
+.orch-col-wrap .primary-send:disabled { opacity: .35; background: var(--ink-faint); }
+/* §11 interrupt-and-send: same circle, danger tint = "kills running cell". */
+.orch-col-wrap .primary-interrupt { background: var(--danger); }
+.orch-col-wrap .composer-hint {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* §4: floating `↓ N new` pill. Lives inside `.composer` (position:relative)
+   and pins above it via `top: -40px`, so it hovers just above the composer
+   regardless of textarea auto-grow height. */
+.scroll-new {
+  position: absolute; left: 50%; top: -40px; bottom: auto; transform: translateX(-50%);
+  z-index: 4;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 5px 14px; border: none; border-radius: var(--r-pill);
+  background: hsl(0 0% 18%); color: #fff;
+  font: 12px var(--sans); cursor: pointer;
+  box-shadow: 0 4px 14px hsl(0 0% 0% / .18);
+}
+.scroll-new:hover { filter: brightness(1.15); }
+.scroll-new i { font-size: 12px; }
+
+/* three-column desk grid */
+.desk-body.has-orch .columns {
+  grid-template-columns:
+    var(--auditor-width, 1fr) 4px var(--target-width, 1fr) var(--orch-width, 1.1fr);
+}
+
 /* ---- one turn ---- */
 .orch-col .turn { margin: 0; }  /* dead — .turn-sep controls the rhythm */
 .turn-sep { height: 1px; background: var(--border); margin: 34px -8px; }
@@ -76,10 +126,6 @@
 
 /* ---- user ask bubble ---- */
 .ask-wrap { display: flex; flex-direction: column; align-items: flex-end; margin: 8px 0 20px; }
-.ask-by {
-  font-size: var(--fs-xs); font-weight: 600; letter-spacing: .05em;
-  text-transform: uppercase; color: var(--ink-faint); margin-bottom: 5px;
-}
 .ask-bubble {
   max-width: 86%; padding: 10px 16px; border-radius: 16px;
   background: var(--bg-300); font-size: var(--fs-md); line-height: 1.55;
@@ -121,7 +167,6 @@
   border-bottom: 1px solid var(--border);
   background: var(--bg-100);
 }
-.code-cell .cc-head .lang { display: none; }  /* every cell is python */
 .cc-bg-chip {
   font: 9.5px var(--mono); padding: 0 5px; border-radius: var(--r-pill);
   border: 1px solid var(--accent); color: var(--accent-text);
@@ -133,7 +178,53 @@
   white-space: pre; overflow-x: auto;
 }
 .code-cell pre code { font: inherit; background: none; padding: 0; }
-/* collapsed cells render no `<pre>` at all (UI-AUDIT §C); the head is the row. */
+/* Collapsed-first (UI-AUDIT §C): head is the toggle; when collapsed the head
+   is the whole cell (no `<pre>` sibling — only the hover icon row), so drop
+   its bottom border. */
+.cc-head[role="button"] { cursor: pointer; user-select: none; }
+.code-cell.collapsed .cc-head { border-bottom: none; }
+.cc-chev {
+  font-size: 10px; color: var(--ink-faint); flex-shrink: 0; width: 10px;
+  position: relative; top: 0.5px;
+}
+.cc-gist {
+  flex: 1; min-width: 0;
+  font: 11.5px var(--mono); color: var(--ink-faint);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cc-gist.cc-lang { font: 11px var(--sans); }
+/* §7: identifiers in the collapsed gist that are live in `user_ns`. Native
+   `title=` tooltip carries `type · repr`. */
+.cc-var {
+  color: var(--ink-dim); cursor: help;
+  text-decoration: underline dotted var(--border);
+  text-underline-offset: 2px;
+}
+.cc-head .cc-bg-chip,
+.cc-head .cc-bg-btn,
+.cc-head .cell-status,
+.cc-head .cc-dur,
+.cc-head .turn-no { flex-shrink: 0; }  /* gap:8 already spaces these */
+/* §5: `{duration.toFixed(1)}s` — faint mono, sits just left of `turn N`. */
+.cc-dur { font: 10.5px var(--mono); color: var(--ink-faint); }
+/* §18 cc-head error chip. `interrupted` = user hit ^C intentionally, so warn
+   (not danger). */
+.cell-status.err {
+  display: inline-flex; align-items: center; gap: 4px;
+  font: 10.5px var(--sans); color: var(--danger);
+  padding: 1px 8px; border-radius: var(--r-pill);
+  background: hsl(0 70% 96%); border: 1px solid hsl(0 40% 82%);
+}
+.cell-status.err i { font-size: 10px; }
+.cell-status.interrupted {
+  display: inline-flex; align-items: center; gap: 4px;
+  font: 10.5px var(--sans); color: var(--ink-dim);
+  padding: 1px 8px; border-radius: var(--r-pill);
+  background: hsl(38 70% 96%); border: 1px solid hsl(38 40% 82%);
+}
+/* `run in background` — the `bi-layer-backward` glyph reads heavy next to
+   11px text; the label is self-explanatory, so drop the icon. */
+.cc-bg-btn i { display: none; }
 
 /* ---- bash cell (M1-HYBRID.md §`bash` tool) ---- */
 /* Sibling shape to `.code-cell` (and rides its base rules), differentiated
@@ -214,7 +305,8 @@
 }
 .out-head .out-meta { color: var(--ink-faint); }
 .out-head .out-actions {
-  margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity .12s;
+  margin-left: auto; margin-right: -2px;
+  display: flex; gap: 2px; opacity: 0; transition: opacity .12s;
 }
 .out:hover .out-head .out-actions { opacity: 1; }
 .out-head .out-actions button {
@@ -222,16 +314,38 @@
   font-size: 12px; color: var(--ink-faint); border-radius: 4px;
 }
 .out-head .out-actions button:hover { background: var(--bg-200); color: var(--accent-text); }
-.out-head .out-actions { margin-right: -2px; }
 .out-head .out-actions a {
   padding: 3px 5px; border-radius: 4px; cursor: pointer;
   font-size: 12px; color: var(--ink-faint);
 }
 .out-head .out-actions a:hover { background: var(--bg-200); color: var(--accent-text); }
 
-.out.bare { border: none; background: none; border-radius: 0; overflow: visible; }
+.out.bare { border: none; background: none; border-radius: 0; overflow: visible; margin-top: 10px; }
 .out.bare > .out-head { display: none; }
 .out.html { padding: var(--sp-2) 14px; overflow-x: auto; }
+.out.finding .out-head { border-bottom: none; }
+/* RunCard (§8/§11/§12) — `.out-task` at full ink so the adjacent `.out-id`
+   hash (ink-faint) reads as clearly secondary. */
+.out-head .out-task {
+  font: 12px var(--mono); color: var(--ink); text-transform: lowercase;
+}
+.out-head .out-id { font: 10.5px var(--mono); color: var(--ink-faint); }
+.out-live {
+  font: 9.5px var(--sans); letter-spacing: .04em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: var(--r-pill);
+  background: var(--accent-dim); color: var(--accent-text);
+  border: 1px solid hsl(215 50% 80%);
+}
+/* §15: `.out-wrap` — every stable output gets a corner `live` badge that
+   freezes to `updated N×` once the cell settles. RunCard already renders its
+   own inline `.out-live` in `.out-head`; hide the wrapper's when so. */
+.out-wrap { position: relative; margin-top: 10px; }
+.out-wrap > .out { margin-top: 0; }
+.out-wrap + .out-wrap, .out + .out-wrap, .out-wrap + .out { margin-top: 8px; }
+.out-wrap > .out-live {
+  position: absolute; top: 4px; right: 6px; z-index: 1; pointer-events: none;
+}
+.out-wrap:has(.out-head .out-live) > .out-live { display: none; }
 
 /* ---- GateCard: pending "request from agent" shell ------------------------ */
 /* Neutral card (Linear/GitHub confirm-dialog idiom): white body with a
@@ -328,15 +442,122 @@
   padding: 8px 14px 0;
   font: 12.5px/1.4 var(--sans); color: var(--ink-dim);
 }
+.sp-check { accent-color: var(--gate); margin: 0; flex-shrink: 0; }
+.gate-deny-reason {
+  display: block; width: calc(100% - 32px); margin: 4px 16px 0;
+  border: 1px solid var(--danger); border-radius: var(--r-sm);
+  padding: 8px 12px; font: 12.5px var(--sans); background: var(--bg-000);
+  outline: none; box-sizing: border-box;
+}
+/* key-hint superscript (§C — only shown when opts>3) */
+sup.ask-opt-key {
+  font: 9px var(--mono); opacity: .7;
+  margin-right: 5px; vertical-align: super;
+}
+/* GateCard: inline peek list (first N seeds/quotes before the modal). */
+.gate-peek { margin: 10px 0 2px; }
+.gp-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 0 5px 25px; cursor: pointer;
+  font: 12.5px var(--sans); color: var(--ink-mid);
+}
+.gp-row:hover { color: var(--ink); }
+.gp-text {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gp-struck { text-decoration: line-through; opacity: .5; }
+.gate-peek.cite-quotes .cite-q { padding: 6px 0 6px 25px; border: none; }
+.gate-peek.cite-quotes .cite-q:hover { background: none; }
+/* dev-only fallback chip in `WbFallback` */
+.gate-tag {
+  font: 10px var(--sans); letter-spacing: .05em; text-transform: uppercase;
+  color: var(--gate-text); padding: 1px 7px; border-radius: var(--r-pill);
+  border: 1px solid var(--gate); flex-shrink: 0;
+}
 
+/* GateCard resolved: compact receipt chip. Structured — icon | label
+   (ink-dim) | value (ink bold) | … | time (faint, right) — no `·`
+   separators; flex gap does the spacing. */
+.out.answered { border: none; background: none; overflow: visible; }
+.gate-receipt {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 12px; border-radius: var(--r-md);
+  background: var(--bg-100); border: 1px solid var(--bg-200);
+  font: 12px var(--sans); color: var(--ink-dim);
+}
+.gate-receipt > i.bi { color: var(--ok); font-size: 13px; flex-shrink: 0; }
+.gate-receipt.denied > i.bi { color: var(--danger); }
+.gate-receipt-label {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gate-receipt-value { color: var(--ink); font-weight: 600; flex-shrink: 0; }
+.gate-receipt-time {
+  margin-left: auto; color: var(--ink-faint); font: 10.5px var(--mono);
+  flex-shrink: 0;
+}
+
+/* GateCard `<Modal>` body: full checklist with search + bulk toggles. */
+.grm-tools {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px; border-bottom: 1px solid var(--border);
+  font: 12px var(--sans); color: var(--ink-dim);
+}
+.grm-tools a { color: var(--accent-text); cursor: pointer; }
+.grm-tools a:hover { text-decoration: underline; }
+.grm-sep { color: var(--border); }
+.grm-search {
+  flex: 1; min-width: 0;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 5px 10px; font: 12px var(--sans); color: var(--ink);
+  background: var(--bg-000); outline: none;
+}
+.grm-search:focus { border-color: var(--accent); }
+.grm-count { font: 11px var(--mono); color: var(--ink-faint); }
+.grm-list { padding: 4px 0; }
+.grm-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 16px; cursor: pointer;
+  border-bottom: 1px solid var(--bg-100);
+}
+.grm-row:last-child { border-bottom: none; }
+.grm-row:hover { background: var(--bg-100); }
+.grm-row .sp-check { margin-top: 2px; }
+.grm-body { flex: 1; min-width: 0; }
+.grm-text {
+  font: 12.5px/1.45 var(--sans); color: var(--ink-mid);
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* cite_proposal quote checklist */
+.cite-q {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 14px; border-bottom: 1px solid var(--bg-100); cursor: pointer;
+}
+.cite-q:hover { background: var(--bg-100); }
+.cite-q .sp-check { margin: 1px 0 0 0; }
+.cite-q-body { flex: 1; min-width: 0; }
+.cite-q-head { font: 10.5px var(--mono); color: var(--ink-faint); margin-bottom: 3px; }
+.cite-q-text {
+  font: 12.5px/1.4 var(--sans); color: var(--ink-mid);
+  max-height: 4.2em; overflow: hidden;
+}
+
+/* ---- text outputs ---- */
 .out-plain {
   margin: 0; padding: var(--sp-2) 14px;
   font: 11.5px/1.55 var(--mono); color: var(--ink-dim);
   white-space: pre-wrap; word-break: break-word;
 }
 .out-plain.err { color: var(--danger); }
-.out.traceback { border-color: hsl(0 40% 82%); }
-.out.traceback .out-head { color: var(--danger); }
+/* bare text/plain (last-expr repr, `display(obj)`): full-contrast ink so it
+   reads as the *returned* value against `--ink-mid` stdout — Jupyter-style,
+   distinguished by weight not decoration. `.out-result` also opts it out of
+   the 20lh soft-cap on other `.out-plain`. */
+.out.bare > .out-plain.out-result {
+  display: block; margin: 0; padding: 2px;
+  background: none; color: var(--ink);
+}
 
 /* print() / stdout — plain pre, distinguished from result by lower contrast */
 .out-stream {
@@ -344,6 +565,36 @@
   font: 12px/1.5 var(--mono); color: var(--ink-mid); white-space: pre-wrap;
 }
 .out-stream.err { color: var(--danger); }
+/* Soft-cap on raw text outputs (UI-AUDIT §B/§C): long stdout/tracebacks/JSON
+   dumps scroll; the accent-rail result is exempt. */
+.out-stream,
+.out-plain:not(.out-result) { max-height: 20lh; overflow-y: auto; }
+
+/* Traceback summary card — ename inherits danger to match icon + evalue
+   (base `.out-kind` forces ink-dim, which read as grey next to a red icon). */
+.out.traceback { border-color: hsl(0 40% 82%); }
+.out.traceback .out-head { color: var(--danger); }
+.out.traceback .out-kind {
+  text-transform: none; letter-spacing: 0; color: inherit; font-size: 11.5px;
+}
+.tb-body { padding: 10px 14px 8px; }
+.tb-evalue {
+  font: 12.5px/1.4 var(--sans); color: var(--danger);
+  margin-bottom: 6px; word-break: break-word;
+}
+.tb-at-row { display: flex; align-items: baseline; gap: 12px; }
+.tb-at {
+  flex: 1; min-width: 0; font: 11px var(--mono); color: var(--ink-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tb-toggle {
+  flex-shrink: 0;
+  border: none; background: none; padding: 0; cursor: pointer;
+  font: var(--fs-xs) var(--sans); color: var(--ink-faint);
+  display: inline-flex; align-items: center; gap: 4px;
+}
+.tb-toggle:hover { color: var(--ink-mid); }
+.out.traceback .tb-body + .out-plain { border-top: 1px solid var(--border); }
 
 /* ---- card internals (ported from mockups-m1/shared.css) ---- */
 
@@ -361,20 +612,29 @@
 .fx-out .stat.ok b { color: var(--ok); }
 .fx-out .stat.run b { color: var(--accent-text); }
 .out .fx-out { padding: 9px 14px; }
-
-.fx-body {
-  border-top: 1px solid var(--border);
-  padding: var(--sp-2) 12px;
-  font-size: 13px; color: var(--ink-mid);
+.out .fx-out .stat.err { display: inline; color: var(--danger); }
+.out-head .fx-dot { top: 0; }
+.fx-bar {
+  flex: 1; min-width: 60px; height: 4px;
+  background: var(--bg-200); border-radius: 2px; overflow: hidden;
+  vertical-align: middle;
 }
-.fx-body + .fx-body { border-top: 1px dashed var(--border); }
+.fx-bar > i { display: block; height: 100%; background: var(--accent); }
+.row-dot {
+  font-size: 8px; line-height: 1; flex-shrink: 0;
+  display: inline-block; vertical-align: middle;
+}
+.row-dot-running { color: var(--accent-text); animation: pulse 1.4s ease-in-out infinite; }
+.row-dot-done    { color: var(--ok); }
+.row-dot-error   { color: var(--danger); }
+.row-dot-stopped { color: var(--ink-faint); }
 
 .fx-more {
   display: flex; align-items: center; gap: 8px;
   padding: 7px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   border-top: 1px dashed var(--border);
 }
-.fx-more a { color: var(--accent-text); }
+.fx-more a { color: var(--accent-text); cursor: pointer; }
 .fx-more .fx-more-note { margin-left: auto; color: var(--ink-faint); }
 
 /* AuditRow inside run_audits */
@@ -398,32 +658,19 @@
   font: 10.5px var(--sans); padding: 1px 8px; border-radius: var(--r-pill);
   flex-shrink: 0; min-width: 60px; text-align: center;
 }
-.ar-status.stopped { background: var(--bg-200); color: var(--ink-faint); }
-.ar-status.error   { background: hsl(0 70% 96%); color: var(--danger); }
-.audit-row .ar-turn {
-  font: 10.5px var(--mono); color: var(--ink-faint); flex-shrink: 0;
-  width: 48px; text-align: right;
+.ar-status.stopped  { background: var(--bg-200); color: var(--ink-faint); }
+.ar-status.error    { background: hsl(0 70% 96%); color: var(--danger); }
+.ar-status.stopping {
+  background: var(--bg-200); color: var(--ink-faint);
+  animation: pulse 1.4s ease-in-out infinite;
 }
 .audit-row .ar-grade {
   font: 10.5px var(--mono); color: var(--ink-dim); flex-shrink: 0;
   min-width: 30px; text-align: right;
 }
 .audit-row .ar-grade b { color: var(--ink); }
-.audit-row .ar-actions {
-  display: inline-flex; gap: 1px; flex-shrink: 0;
-  opacity: 0; transition: opacity .12s;
-}
-.audit-row:hover .ar-actions { opacity: 1; }
-.audit-row .ar-actions button {
-  width: 20px; height: 20px; padding: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  border: none; border-radius: var(--r-sm); background: none; cursor: pointer;
-  color: var(--ink-faint); font-size: 11.5px;
-}
-.audit-row .ar-actions button:hover { background: var(--bg-200); color: var(--accent-text); }
 
 /* run_eval rows */
-.eval-rows { border-top: 1px solid var(--border); }
 .eval-row {
   display: flex; align-items: center; gap: 10px;
   padding: 6px 14px; font-size: 12px;
@@ -431,35 +678,41 @@
 }
 .eval-row:last-child { border-bottom: none; }
 .eval-row:hover { background: var(--bg-100); }
-.eval-row .er-id { font: 11.5px var(--mono); color: var(--accent-text); cursor: pointer; width: 140px; flex-shrink: 0; }
+/* `.er-id` wraps a `.qref`; keep it a plain link, not the boxed chip. Mockup
+   fixed 140px, but real ids (`demo-0`, `a-3f2c`) are short — let it shrink. */
+.eval-row .er-id {
+  font: 11.5px var(--mono); color: var(--accent-text); cursor: pointer;
+  width: auto; min-width: 64px; max-width: 160px; flex-shrink: 0;
+}
 .eval-row .er-id:hover { text-decoration: underline; }
+.eval-row .er-id.qref,
+.audit-row .ar-id.qref { border: none; background: none; padding: 0; }
 .eval-row .er-score {
   font: 10.5px var(--mono); color: var(--ink-dim);
   flex: 0 1 auto; margin-left: auto; max-width: 55%; text-align: right;
 }
 .eval-row .ar-status { font: 10px var(--sans); padding: 1px 7px; border-radius: var(--r-pill); }
-
-/* GateCard: inline peek list (first N seeds/quotes before the modal). */
-.gate-peek { margin: 10px 0 2px; }
-.gp-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 5px 0 5px 25px; cursor: pointer;
-  font: 12.5px var(--sans); color: var(--ink-mid);
-}
-.gp-row:hover { color: var(--ink); }
-.gp-text {
-  flex: 1; min-width: 0;
+.eval-row .ar-seed {
+  flex: 1; min-width: 0; color: var(--ink-mid);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.gp-struck { text-decoration: line-through; opacity: .5; }
-.gate-peek.cite-quotes .cite-q { padding: 6px 0 6px 25px; border: none; }
-.gate-peek.cite-quotes .cite-q:hover { background: none; }
-/* dev-only fallback chip in `WbFallback` */
-.gate-tag {
-  font: 10px var(--sans); letter-spacing: .05em; text-transform: uppercase;
-  color: var(--gate-text); padding: 1px 7px; border-radius: var(--r-pill);
-  border: 1px solid var(--gate); flex-shrink: 0;
+.eval-row, .audit-row { cursor: pointer; }
+.ar-turns {
+  font: 10.5px var(--mono); color: var(--accent-text); flex-shrink: 0;
+  min-width: 30px; text-align: right;
 }
+.ar-opened { font-size: 10px; color: var(--accent-text); flex-shrink: 0; }
+/* §9 per-sample stop: hover-reveal, sits right of the status slot. Invisible
+   + collapsed so the right column doesn't rag when only some rows have it. */
+.ar-stop {
+  width: 18px; height: 18px; padding: 0; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; border-radius: var(--r-sm); background: none; cursor: pointer;
+  color: var(--ink-faint); font-size: 12px;
+  opacity: 0; margin-left: -28px; transition: opacity .12s, margin-left .12s;
+}
+.audit-row:hover .ar-stop, .eval-row:hover .ar-stop { opacity: 1; margin-left: 0; }
+.ar-stop:hover { background: var(--bg-200); color: var(--danger); }
 
 /* ---- pandas `.dataframe` HTML output (rendered `.out.bare`, UI-AUDIT §C) ---- */
 .out.bare table.dataframe {
@@ -473,90 +726,14 @@
 .out.bare table.dataframe td:first-child { padding: 4px 6px; }
 .out.bare table.dataframe thead th { background: var(--bg-100); font-weight: 600; }
 .out.bare table.dataframe tbody tr:hover { background: var(--bg-100); }
-
-/* ---- round-1 structural-pass classes (UI-ITERATION §New classes) ---- */
-
-/* orch composer disambiguated from M0's auditor composer by placeholder text +
-   column position — no visual accent needed (UI-AUDIT §B rev). */
-.composer-hint-running a { text-decoration: underline; cursor: pointer; }
-
-/* cc-head error chip (§18) */
-.cell-status.err {
-  display: inline-flex; align-items: center; gap: 4px;
-  font: 10.5px var(--sans); color: var(--danger);
-  padding: 1px 8px; border-radius: var(--r-pill);
-  background: hsl(0 70% 96%); border: 1px solid hsl(0 40% 82%);
-}
-.cell-status.err i { font-size: 10px; }
-/* cc-head interrupted chip — user hit ^C intentionally, so warn (not danger). */
-.cell-status.interrupted {
-  display: inline-flex; align-items: center; gap: 4px;
-  font: 10.5px var(--sans); color: var(--ink-dim);
-  padding: 1px 8px; border-radius: var(--r-pill);
-  background: hsl(38 70% 96%); border: 1px solid hsl(38 40% 82%);
+/* pandas' trailing "N rows × M columns" caption — a `<p>` after the table. */
+.out.bare table.dataframe + p,
+.out.html > p:last-child {
+  font: var(--fs-xs) var(--sans); color: var(--ink-faint);
+  margin: 6px 0 0;
 }
 
-/* GateCard pending: subtle breathe on the header dot only (the card
-   itself already carries a purple shadow). */
-/* (`.gate-head` strip removed — column header pill is the "waiting" signal.) */
-
-.sp-check { accent-color: var(--gate); margin: 0; flex-shrink: 0; }
-.gate-deny-reason {
-  display: block; width: calc(100% - 32px); margin: 4px 16px 0;
-  border: 1px solid var(--danger); border-radius: var(--r-sm);
-  padding: 8px 12px; font: 12.5px var(--sans); background: var(--bg-000);
-  outline: none; box-sizing: border-box;
-}
-
-/* RunCard (§8/§11/§12) — `.out-task` at full ink so the adjacent `.out-id`
-   hash (ink-faint) reads as clearly secondary. */
-.out-head .out-task {
-  font: 12px var(--mono); color: var(--ink); text-transform: lowercase;
-}
-.out-head .out-id { font: 10.5px var(--mono); color: var(--ink-faint); }
-.out-live {
-  font: 9.5px var(--sans); letter-spacing: .04em; text-transform: uppercase;
-  padding: 1px 6px; border-radius: var(--r-pill);
-  background: var(--accent-dim); color: var(--accent-text);
-  border: 1px solid hsl(215 50% 80%);
-}
-/* §15: `.out-wrap` — every stable output gets a corner `live` badge that
-   freezes to `updated N×` once the cell settles. RunCard already renders its
-   own inline `.out-live` in `.out-head`; hide the wrapper's when so. */
-.out-wrap { position: relative; }
-.out-wrap > .out { margin-top: 0; }
-.out-wrap { margin-top: 10px; }
-.out-wrap + .out-wrap, .out + .out-wrap, .out-wrap + .out { margin-top: 8px; }
-.out-wrap > .out-live {
-  position: absolute; top: 4px; right: 6px; z-index: 1; pointer-events: none;
-}
-.out-wrap:has(.out-head .out-live) > .out-live { display: none; }
-.fx-bar {
-  flex: 1; min-width: 60px; height: 4px;
-  background: var(--bg-200); border-radius: 2px; overflow: hidden;
-  vertical-align: middle;
-}
-.fx-bar > i { display: block; height: 100%; background: var(--accent); }
-.out .fx-out .stat.err { display: inline; color: var(--danger); }
-.row-dot {
-  font-size: 8px; line-height: 1; flex-shrink: 0;
-  display: inline-block; vertical-align: middle;
-}
-.out-head .fx-dot { top: 0; }
-.row-dot-running { color: var(--accent-text); animation: pulse 1.4s ease-in-out infinite; }
-.row-dot-done    { color: var(--ok); }
-.row-dot-error   { color: var(--danger); }
-.row-dot-stopped { color: var(--ink-faint); }
-/* eval-row: `.er-id` wraps a `.qref`; keep it a plain link, not the boxed chip.
-   Mockup fixes width at 140px, but real ids (`demo-0`, `a-3f2c`) are short —
-   let the id column shrink so `.er-score` doesn't float mid-row. */
-.eval-row .er-id.qref,
-.audit-row .ar-id.qref {
-  border: none; background: none; padding: 0;
-}
-.eval-row .er-id { width: auto; min-width: 64px; max-width: 160px; }
-.eval-row, .audit-row { cursor: pointer; }
-
+/* ---- html / plotly outputs ---- */
 /* HTML outputs whose only children are <script> (plotly's CDN loader,
    MathJax config) render as an empty white box — hide them. */
 .out.html:not(:has(> :not(script))) { display: none; }
@@ -569,145 +746,10 @@
   padding: 24px 0; text-align: center;
   font: italic var(--fs-xs) var(--sans); color: var(--ink-faint);
 }
-
-/* pandas' trailing "N rows × M columns" caption — a `<p>` after the table. */
-.out.bare table.dataframe + p,
-.out.html > p:last-child {
-  font: var(--fs-xs) var(--sans); color: var(--ink-faint);
-  margin: 6px 0 0;
-}
-
-/* bare text/plain (last-expr repr, `display(obj)`): full-contrast ink so it
-   reads as the *returned* value against `--ink-mid` stdout — Jupyter-style,
-   distinguished by weight not decoration. `.out-result` also opts it out of
-   the 20lh soft-cap on other `.out-plain`. */
-.out.bare > .out-plain.out-result {
-  display: block; margin: 0; padding: 2px;
-  background: none; color: var(--ink);
-}
-.out.bare { margin-top: 10px; }
-
-/* cc-head `run in background` — the `bi-layer-backward` glyph reads heavy
-   next to 11px text; the label is self-explanatory, so drop the icon. */
-.cc-bg-btn i { display: none; }
-
-/* three-column desk grid */
-.desk-body.has-orch .columns {
-  grid-template-columns:
-    var(--auditor-width, 1fr) 4px var(--target-width, 1fr) var(--orch-width, 1.1fr);
-}
-
-/* -- column additions -- */
-
-/* GatePill absorbs the status dot (UI-AUDIT §B redundancy map). */
-.head-gate-jump {
-  display: inline-flex; align-items: center; gap: 6px;
-}
-.head-gate-jump .rl-dot { margin: 0; flex-shrink: 0; }
-
-/* Orch composer overrides (`.composer` base is M0's, in styles.css):
-   symmetric 10/14 padding + `position: relative` so `.scroll-new` (moved into
-   the composer DOM) can pin `top: -40px` regardless of textarea auto-grow. */
-.orch-col-wrap .composer { position: relative; padding: var(--sp-2) 14px; }
-
-/* Composer transport cluster (⏹ ⏭ ▶/⏸) — relocated from the header per
-   "location follows interaction". Borderless 32px circles so they read as the
-   same species as M0's `.primary` (32px filled circle), just secondary:
-   ink-faint icon, bg-200 hover pill. */
-.composer-controls { display: inline-flex; gap: 4px; margin-left: -7px; }
-.composer-controls button {
-  width: 32px; height: 32px; padding: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  border: none; border-radius: 50%;
-  background: none; cursor: pointer;
-  color: var(--ink-dim); line-height: 1;
-}
-.composer-controls button:hover:not(:disabled) {
-  background: var(--bg-200); color: var(--ink);
-}
-.composer-controls button:disabled { opacity: .35; cursor: default; }
-/* orch composer send button: darker disabled treatment (default `.primary`
-   fades accent to near-invisible pale blue). Hint text ellipsises at narrow
-   widths so the transport cluster doesn't collide with it. */
-.orch-col-wrap .primary-send:disabled { opacity: .35; background: var(--ink-faint); }
-/* §11 interrupt-and-send: same circle, but the danger tint signals "this
-   kills the running cell". */
-.orch-col-wrap .primary-interrupt { background: var(--danger); }
-.orch-col-wrap .composer-hint {
-  flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-
-/* §4: floating `↓ N new` pill. Lives inside `.composer` (position:relative)
-   and pins above it via `top: -40px`, so it hovers just above the composer
-   regardless of textarea auto-grow height. */
-.scroll-new {
-  position: absolute; left: 50%; top: -40px; bottom: auto; transform: translateX(-50%);
-  z-index: 4;
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 5px 14px; border: none; border-radius: var(--r-pill);
-  background: hsl(0 0% 18%); color: #fff;
-  font: 12px var(--sans); cursor: pointer;
-  box-shadow: 0 4px 14px hsl(0 0% 0% / .18);
-}
-.scroll-new:hover { filter: brightness(1.15); }
-.scroll-new i { font-size: 12px; }
-
-/* -- turn/output additions -- */
-
-/* CodeCell collapsed-first (UI-AUDIT §C): head is the toggle; when collapsed
-   the head is the whole cell (no `<pre>` sibling — only the hover icon row),
-   so drop its bottom border. */
-.cc-head[role="button"] { cursor: pointer; user-select: none; }
-.code-cell.collapsed .cc-head { border-bottom: none; }
-.cc-chev {
-  font-size: 10px; color: var(--ink-faint); flex-shrink: 0; width: 10px;
-  position: relative; top: 0.5px;
-}
-.cc-gist {
-  flex: 1; min-width: 0;
-  font: 11.5px var(--mono); color: var(--ink-faint);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.cc-gist.cc-lang { font: 11px var(--sans); }
-/* §7: identifiers in the collapsed gist that are live in `user_ns`. Native
-   `title=` tooltip carries `type · repr`. */
-.cc-var {
-  color: var(--ink-dim); cursor: help;
-  text-decoration: underline dotted var(--border);
-  text-underline-offset: 2px;
-}
-.cc-head .cc-bg-chip,
-.cc-head .cc-bg-btn,
-.cc-head .cell-status,
-.cc-head .cc-dur,
-.cc-head .turn-no { flex-shrink: 0; }  /* gap:8 already spaces these */
-/* §5: `{duration.toFixed(1)}s` — faint mono, sits just left of `turn N`. */
-.cc-dur { font: 10.5px var(--mono); color: var(--ink-faint); }
-
-/* Traceback summary card — ename inherits danger to match icon + evalue
-   (base `.out-kind` forces ink-dim, which read as grey next to a red icon). */
-.out.traceback .out-kind {
-  text-transform: none; letter-spacing: 0; color: inherit; font-size: 11.5px;
-}
-.tb-body { padding: 10px 14px 8px; }
-.tb-evalue {
-  font: 12.5px/1.4 var(--sans); color: var(--danger);
-  margin-bottom: 6px; word-break: break-word;
-}
-.tb-at-row { display: flex; align-items: baseline; gap: 12px; }
-.tb-at {
-  flex: 1; min-width: 0; font: 11px var(--mono); color: var(--ink-dim);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.tb-toggle {
-  flex-shrink: 0;
-  border: none; background: none; padding: 0; cursor: pointer;
-  font: var(--fs-xs) var(--sans); color: var(--ink-faint);
-  display: inline-flex; align-items: center; gap: 4px;
-}
-.tb-toggle:hover { color: var(--ink-mid); }
-.out.traceback .tb-body + .out-plain { border-top: 1px solid var(--border); }
+/* click-to-open affordance — only shown when a trace has customdata. */
+.plotly-host .scatterlayer .points path,
+.plotly-host .bars path { cursor: pointer; }
+.plotly-hint { border-top: none; justify-content: center; }
 
 /* ---- §6 BlockActions: hover-reveal icon row (claude.ai idiom) ---- */
 /* `.ba-host` is a layout-transparent wrapper around any block that offers
@@ -768,121 +810,9 @@
    row to sit on — nudge below the content so it doesn't overlap the last line. */
 .ba-host:has(> .out.bare) > .block-actions { bottom: -4px; right: 0; }
 
-/* Plotly click-to-open affordance — only shown when a trace has customdata. */
-.plotly-host .scatterlayer .points path,
-.plotly-host .bars path { cursor: pointer; }
-.plotly-hint { border-top: none; justify-content: center; }
-
-/* Soft-cap moved from prose → raw text outputs (UI-AUDIT §B/§C): long
-   stdout/tracebacks/JSON dumps scroll; the accent-rail result is exempt. */
-.out-stream,
-.out-plain:not(.out-result) { max-height: 20lh; overflow-y: auto; }
-
-/* -- cards additions -- */
-
-/* GateCard resolved: compact receipt chip. Structured — icon | label
-   (ink-dim) | value (ink bold) | … | time (faint, right) — no `·`
-   separators; flex gap does the spacing. */
-.out.answered { border: none; background: none; overflow: visible; }
-.gate-receipt {
-  display: flex; align-items: center; gap: 10px;
-  padding: 7px 12px; border-radius: var(--r-md);
-  background: var(--bg-100); border: 1px solid var(--bg-200);
-  font: 12px var(--sans); color: var(--ink-dim);
-}
-.gate-receipt > i.bi { color: var(--ok); font-size: 13px; flex-shrink: 0; }
-.gate-receipt.denied > i.bi { color: var(--danger); }
-.gate-receipt-label {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.gate-receipt-value { color: var(--ink); font-weight: 600; flex-shrink: 0; }
-.gate-receipt-time {
-  margin-left: auto; color: var(--ink-faint); font: 10.5px var(--mono);
-  flex-shrink: 0;
-}
-
-/* key-hint superscript (§C — only shown when opts>3) */
-sup.ask-opt-key {
-  font: 9px var(--mono); opacity: .7;
-  margin-right: 5px; vertical-align: super;
-}
-
-/* GateCard `<Modal>` body: full checklist with search + bulk toggles. */
-.grm-tools {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 16px; border-bottom: 1px solid var(--border);
-  font: 12px var(--sans); color: var(--ink-dim);
-}
-.grm-tools a { color: var(--accent-text); cursor: pointer; }
-.grm-tools a:hover { text-decoration: underline; }
-.grm-sep { color: var(--border); }
-.grm-search {
-  flex: 1; min-width: 0;
-  border: 1px solid var(--border); border-radius: var(--r-sm);
-  padding: 5px 10px; font: 12px var(--sans); color: var(--ink);
-  background: var(--bg-000); outline: none;
-}
-.grm-search:focus { border-color: var(--accent); }
-.grm-count { font: 11px var(--mono); color: var(--ink-faint); }
-.grm-list { padding: 4px 0; }
-.grm-row {
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 8px 16px; cursor: pointer;
-  border-bottom: 1px solid var(--bg-100);
-}
-.grm-row:last-child { border-bottom: none; }
-.grm-row:hover { background: var(--bg-100); }
-.grm-row .sp-check { margin-top: 2px; }
-.grm-body { flex: 1; min-width: 0; }
-.grm-text {
-  font: 12.5px/1.45 var(--sans); color: var(--ink-mid);
-  white-space: pre-wrap; word-break: break-word;
-}
-
-/* cite_proposal quote checklist */
-.cite-q {
-  display: flex; align-items: flex-start; gap: 10px;
-  padding: 8px 14px; border-bottom: 1px solid var(--bg-100); cursor: pointer;
-}
-.cite-q:hover { background: var(--bg-100); }
-.cite-q .sp-check { margin: 1px 0 0 0; }
-.cite-q-body { flex: 1; min-width: 0; }
-.cite-q-head { font: 10.5px var(--mono); color: var(--ink-faint); margin-bottom: 3px; }
-.cite-q-text {
-  font: 12.5px/1.4 var(--sans); color: var(--ink-mid);
-  max-height: 4.2em; overflow: hidden;
-}
-
-/* ProgressCard: eval rows now use `.ar-seed` too — give it flex there. */
-.eval-row .ar-seed {
-  flex: 1; min-width: 0; color: var(--ink-mid);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.ar-turns {
-  font: 10.5px var(--mono); color: var(--accent-text); flex-shrink: 0;
-  min-width: 30px; text-align: right;
-}
-.ar-opened {
-  font-size: 10px; color: var(--accent-text); flex-shrink: 0;
-}
-/* §9 per-sample stop: hover-reveal, sits right of the status slot. */
-.ar-stop {
-  width: 18px; height: 18px; padding: 0; flex-shrink: 0;
-  display: inline-flex; align-items: center; justify-content: center;
-  border: none; border-radius: var(--r-sm); background: none; cursor: pointer;
-  color: var(--ink-faint); font-size: 12px;
-  /* invisible + collapsed so the right column doesn't rag when only some rows have it */
-  opacity: 0; margin-left: -28px; transition: opacity .12s, margin-left .12s;
-}
-.audit-row:hover .ar-stop, .eval-row:hover .ar-stop { opacity: 1; margin-left: 0; }
-.ar-stop:hover { background: var(--bg-200); color: var(--danger); }
-.ar-status.stopping {
-  background: var(--bg-200); color: var(--ink-faint);
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-/* §3 sort/filter — chip row + search sit between `.fx-out` and the row list;
-   `.pc-cols` is the clickable column header. Both gated on `total > 8`. */
+/* ---- ProgressCard: sort/filter/histogram (§3/§8) ---- */
+/* Chip row + search sit between `.fx-out` and the row list; `.pc-cols` is
+   the clickable column header. Both gated on `total > 8`. */
 .pc-filter {
   display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
   padding: 6px 14px 4px; border-top: 1px solid var(--border);
@@ -914,7 +844,6 @@ sup.ask-opt-key {
 }
 .pc-col { cursor: pointer; display: inline-flex; align-items: center; gap: 3px; }
 .pc-col:first-child { width: 74px; }  /* matches 64px .er-id + 10px gap */
-.out.finding .out-head { border-bottom: none; }
 .pc-col:hover { color: var(--ink-mid); }
 .pc-col i { font-size: 9px; color: var(--accent-text); }
 
@@ -925,7 +854,8 @@ sup.ask-opt-key {
 .pc-hist { flex: 1; display: block; height: 32px; }
 .pc-hist rect { fill: var(--accent); cursor: pointer; opacity: .75; }
 .pc-hist rect:hover, .pc-hist rect.active { opacity: 1; }
-/* scan: one row per scanner (§C) */
+
+/* ---- ScanCard (§C) ---- */
 .scan-rows { border-top: 1px solid var(--border); }
 .scan-row {
   display: flex; align-items: center; gap: 10px;
@@ -943,8 +873,9 @@ sup.ask-opt-key {
 .scan-df table.dataframe { font: 11px/1.4 var(--mono); border-collapse: collapse; }
 .scan-df th, .scan-df td { padding: 3px 8px; border: 1px solid var(--border); text-align: left; }
 
-/* ReaderCard: flat `.rd-msg` list — gutter-left role tag, plain body. Not a
-   `<Bubble>`: no rounded box, no CollapsibleContent (§C dense reader). */
+/* ---- ReaderCard ---- */
+/* Flat `.rd-msg` list — gutter-left role tag, plain body. Not a `<Bubble>`:
+   no rounded box, no CollapsibleContent (§C dense reader). */
 .rd-body { background: var(--bg-000); }
 .rd-msg {
   padding: 8px 14px 8px 60px; position: relative;
@@ -978,4 +909,3 @@ sup.ask-opt-key {
   font: 10.5px var(--mono); color: var(--ink-faint);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.fx-more a { cursor: pointer; }
