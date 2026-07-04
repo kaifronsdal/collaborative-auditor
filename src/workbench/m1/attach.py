@@ -28,7 +28,7 @@ import os
 import time
 import zipfile
 from dataclasses import dataclass, field
-from typing import Any, Literal, Self
+from typing import Any, Literal, Self, cast
 
 import httpx
 from inspect_ai._control.discovery import (  # noqa: PLC2701
@@ -52,7 +52,7 @@ from workbench.m1.handles import (
     _first_numeric,  # noqa: PLC2701
     _PollingHandle,  # noqa: PLC2701
 )
-from workbench.m1.kernel import WB_MIME
+from workbench.m1.wire import EvalRunPayload, SampleRowPayload, wb_bundle
 
 
 @dataclass(kw_only=True)
@@ -343,8 +343,8 @@ class AttachedRun(_PollingHandle):
         state = "done" if self.finished else "running"
         if self.error:
             state = self.error
-        wb: dict[str, Any] = {
-            "kind": self.kind,
+        payload: EvalRunPayload = {
+            "kind": "eval_run",
             "id": self.id,
             "task": self.task_name,
             "description": self.description,
@@ -356,19 +356,17 @@ class AttachedRun(_PollingHandle):
             "error": self.error,
             "elapsed": f"{time.monotonic() - self._started:.0f}s",
             "rows": {
-                "running": [vars(r) for r in self._running],
-                "done": [vars(r) for r in self.rows.values()],
+                "running": [cast("SampleRowPayload", vars(r)) for r in self._running],
+                "done": [cast("SampleRowPayload", vars(r)) for r in self.rows.values()],
             },
         }
         if self.finished:
-            wb["scores"] = [_first_numeric(r.scores) for r in self.rows.values()]
-        return {
-            "text/plain": (
-                f"<AttachedRun {self.task_name or '?'} · "
-                f"{self.n_done}/{self.total} · {state}>"
-            ),
-            WB_MIME: wb,
-        }
+            payload["scores"] = [_first_numeric(r.scores) for r in self.rows.values()]
+        return wb_bundle(
+            f"<AttachedRun {self.task_name or '?'} · "
+            f"{self.n_done}/{self.total} · {state}>",
+            payload,
+        )
 
 
 # -- ctl HTTP over UDS --------------------------------------------------------

@@ -56,13 +56,9 @@ from inspect_ai.tool import ToolCall, ToolChoice, ToolInfo
 
 from workbench._smoke_util import FakeConn
 from workbench.m1.attach import AttachedRun
-from workbench.m1.kernel import (
-    STREAM_MIME,
-    WB_MIME,
-    DisplayEvent,
-    OrchestratorKernel,
-)
+from workbench.m1.kernel import OrchestratorKernel
 from workbench.m1.orchestrator import ORCH_SOURCE, _prewarm  # noqa: PLC2701
+from workbench.m1.wire import STREAM_MIME, WB_MIME, DisplayEvent
 from workbench.m1.proposals import Gate
 from workbench.m1.tools import _session_dir, make_tools  # noqa: PLC2701
 from workbench.m1.wb import Workbench

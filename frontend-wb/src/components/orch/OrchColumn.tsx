@@ -95,16 +95,17 @@ export function OrchColumn(): JSX.Element {
     for (const t of turns) {
       for (const o of t.outputs) {
         const wb = o.data.bundle[WB_MIME];
-        if (!wb || wb.pending !== true || !GATE_KINDS.has(wb.kind as string)) continue;
-        out.push({
-          id: o.data.id,
-          kind: wb.kind as string,
-          desc:
-            (typeof wb.description === "string" && wb.description) ||
-            (typeof wb.question === "string" && wb.question) ||
-            (typeof wb.claim === "string" && wb.claim) ||
-            o.data.id.slice(0, 8),
-        });
+        if (!wb || !("pending" in wb) || !wb.pending) continue;
+        const desc =
+          wb.kind === "prompt"
+            ? wb.question
+            : wb.kind === "run_proposal"
+              ? wb.description
+              : wb.kind === "cite_proposal"
+                ? wb.claim
+                : null;
+        if (desc == null) continue;
+        out.push({ id: o.data.id, kind: wb.kind, desc: desc || o.data.id.slice(0, 8) });
       }
     }
     return out;
@@ -130,9 +131,7 @@ export function OrchColumn(): JSX.Element {
     for (const t of turns) {
       for (const o of t.outputs) {
         const wb = o.data.bundle[WB_MIME];
-        if (wb?.kind !== "cell_done") continue;
-        const snap = wb.ns as Record<string, string> | undefined;
-        if (snap) Object.assign(acc, snap);
+        if (wb?.kind === "cell_done") Object.assign(acc, wb.ns);
       }
     }
     return acc;
@@ -471,6 +470,5 @@ export function eventsToOrchTurns(
 }
 
 const EMPTY_BG: readonly number[] = [];
-const GATE_KINDS = new Set(["prompt", "run_proposal", "cite_proposal"]);
 const EMPTY_NOTIF: readonly string[] = [];
 const EMPTY_REWOUND: ReadonlySet<string> = new Set();

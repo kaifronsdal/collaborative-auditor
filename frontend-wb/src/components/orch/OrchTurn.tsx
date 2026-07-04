@@ -24,6 +24,7 @@ import { Output } from "./Output";
 import {
   STREAM_MIME,
   WB_MIME,
+  type CellDonePayload,
   type DisplayData,
   type DisplayInfoEvent,
   type OrchTurnData,
@@ -64,9 +65,9 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
   // §5: `kernel._settle` emits a `{kind:"cell_done", turn, duration, ns, …}`
   // display once the cell finishes. It's metadata, not a visible output —
   // pull `duration` for the `.cc-head` chip and drop it from `displays`.
-  const cellDone = outputs.find(
-    (o) => o.data.bundle[WB_MIME]?.kind === "cell_done"
-  )?.data.bundle[WB_MIME];
+  const cellDone = outputs
+    .map((o) => o.data.bundle[WB_MIME])
+    .find((wb): wb is CellDonePayload => wb?.kind === "cell_done");
 
   // Dedupe (§16) then coalesce adjacent stdout/stderr chunks (UI-AUDIT §C).
   // Coalescing builds fresh event objects (never mutate store state); memoise
@@ -76,17 +77,17 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
     // A handle that's `display()`ed with a stable id inside the cell AND
     // returned as the last expression mounts twice — drop any non-stable
     // output whose wb `payload.id` matches a stable one in the same turn.
+    const wbId = (o: DisplayInfoEvent): string | undefined => {
+      const wb = o.data.bundle[WB_MIME];
+      return wb && "id" in wb ? wb.id : undefined;
+    };
     const stableWbIds = new Set(
-      outputs
-        .filter((o) => o.data.stable)
-        .map((o) => o.data.bundle[WB_MIME]?.id)
-        .filter((v): v is string => typeof v === "string")
+      outputs.filter((o) => o.data.stable).map(wbId).filter(Boolean)
     );
     const deduped = outputs.filter(
       (o) =>
         o.data.bundle[WB_MIME]?.kind !== "cell_done" &&
-        (o.data.stable ||
-          !stableWbIds.has(o.data.bundle[WB_MIME]?.id as string | undefined ?? ""))
+        (o.data.stable || !stableWbIds.has(wbId(o)))
     );
     // Fold adjacent stream events of the same channel into one — the kernel
     // flushes stdout in small chunks, which otherwise render as N grey rails.
@@ -184,7 +185,7 @@ function ToolCell({
   settledBg: string | undefined;
   ns: NsSummary;
   hasTbCard: boolean;
-  cellDone: Record<string, unknown> | undefined;
+  cellDone: CellDonePayload | undefined;
 }): JSX.Element {
   const fn = ev.function;
   if (fn === "python") {
@@ -199,9 +200,7 @@ function ToolCell({
         interrupted={cellDone?.interrupted === true}
         background={ev.arguments.background === true}
         settledBg={settledBg}
-        duration={
-          typeof cellDone?.duration === "number" ? cellDone.duration : undefined
-        }
+        duration={cellDone?.duration}
         ns={ns}
       />
     );

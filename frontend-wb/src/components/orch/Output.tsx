@@ -18,6 +18,7 @@ import {
   STREAM_MIME,
   WB_MIME,
   type DisplayBundle,
+  type TracebackPayload,
   type WbPayload,
 } from "./types";
 
@@ -68,7 +69,8 @@ export function Output({ id, bundle, meta, stable, settled }: OutputProps): JSX.
   if (inner == null) return null;
   // Gated cards have interactive controls → self-evidently live; no icon row
   // (its bottom-right is the approve/deny bar) and no `live` badge.
-  if (bundle[WB_MIME]?.pending) return inner;
+  const wb = bundle[WB_MIME];
+  if (wb != null && "pending" in wb && wb.pending) return inner;
   const actions = (
     <BlockActions>
       <CopyBtn text={bundleCopyText(bundle)} />
@@ -167,21 +169,14 @@ function renderBundle(
 
 // ── traceback ───────────────────────────────────────────────────────────────
 
-type TbFrame = { file: string; lineno: number; line: string };
-
 /** `kernel._settle` emits `{kind:"traceback", ename, evalue, frames, text}`
  *  as a display so the error surfaces before `ToolEvent.error` settles.
  *  `frames` is `traceback.extract_tb` filtered to user frames; `text` is the
- *  full formatted traceback for the expandable body. Backend may lag the
- *  frontend rollout, so fall back to the raw `<pre>` when `evalue`/`frames`
- *  aren't present yet. */
-function TracebackCard({ id, wb }: { id: string; wb: WbPayload }): JSX.Element {
+ *  full formatted traceback for the expandable body. */
+function TracebackCard({ id, wb }: { id: string; wb: TracebackPayload }): JSX.Element {
   const [open, setOpen] = useState(false);
-  const ename = String(wb.ename ?? "error");
-  const text = String(wb.text ?? "");
-  const evalue = typeof wb.evalue === "string" ? wb.evalue : null;
-  const frames = Array.isArray(wb.frames) ? (wb.frames as TbFrame[]) : null;
-  const last = frames?.[frames.length - 1];
+  const { ename, evalue, frames, text } = wb;
+  const last = frames[frames.length - 1];
   // IPython names the synthetic file `<ipython-input-N-hash>` — noise here.
   const at = last && last.file.replace(/^<ipython-input-[^>]*>$/, "cell");
   return (
@@ -336,7 +331,8 @@ function HtmlOutput({ html }: { html: string }): JSX.Element {
 
 /** Placeholder for kinds without a card yet — loud so it gets noticed. */
 function WbFallback({ id, payload }: { id: string; payload: WbPayload }): JSX.Element {
-  const gated = GATED.has(payload.kind) && payload.pending !== false;
+  const gated =
+    GATED.has(payload.kind) && "pending" in payload && payload.pending !== false;
   return (
     <div className={`out${gated ? " gated" : ""}`} data-display-id={id}>
       <div className="out-head">

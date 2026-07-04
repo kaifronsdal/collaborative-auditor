@@ -36,55 +36,19 @@ from uuid import uuid4
 from IPython.core.interactiveshell import ExecutionResult, InteractiveShell
 from IPython.display import HTML, Markdown, display
 
+from workbench.m1.hooks import _CellStream, install_workbench_hooks  # noqa: PLC2701
 from workbench.m1.inspect_repr import short_repr
+from workbench.m1.wire import (
+    STREAM_MIME,
+    WB_MIME,
+    CellDonePayload,
+    DisplayEvent,
+    TracebackFrame,
+    TracebackPayload,
+    wb_bundle,
+)
 
-WB_MIME = "application/vnd.workbench.v1+json"
-STREAM_MIME = "application/vnd.jupyter.stream+json"
-
-#: MIME preference for the model-facing rendering. ``text/markdown`` first so
-#: ``display(Markdown(f"…"))`` (the ``wb.report`` replacement) shows the
-#: computed prose, not ``<IPython.core.display.Markdown object>``.
-_MODEL_MIME_PREF = ("text/markdown", "text/latex", "text/plain")
-_MODEL_TEXT_CAP = 4000
-
-
-# -- events -------------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class DisplayEvent:
-    """One kernel output, in emission order.
-
-    ``bundle`` is the IPython MIME dict (``text/plain`` is what the model
-    reads; ``application/vnd.workbench.v1+json`` is what ``<Output>``
-    renders). ``update=True`` means "patch the earlier event with this
-    ``id``" — the proposal→live and progress-tick cases.
-    """
-
-    id: str
-    bundle: dict[str, Any]
-    meta: dict[str, Any] = field(default_factory=dict)
-    update: bool = False
-    #: caller passed ``display_id=`` — later ``update=True`` events with the
-    #: same id replace this one in the model-facing render.
-    stable: bool = False
-    turn_id: int = -1
-
-    @property
-    def text(self) -> str:
-        """The model-facing rendering of this output.
-
-        Picks the first available of ``text/markdown`` → ``text/latex`` →
-        ``text/plain`` and caps length — the safety net for rich objects
-        (e.g. a ``go.Figure`` whose ``text/plain`` we forgot to register a
-        compact formatter for) so one plot can't blow the tool result.
-        """
-        if (s := self.bundle.get(STREAM_MIME)) is not None:
-            return str(s["text"])
-        for mime in _MODEL_MIME_PREF:
-            if t := self.bundle.get(mime):
-                return _truncate(str(t), _MODEL_TEXT_CAP)
-        return ""
+__all__ = ["OrchestratorKernel", "TurnResult"]
 
 
 @dataclass(slots=True)
@@ -188,10 +152,6 @@ class OrchestratorKernel:
             )
         OrchestratorKernel._instance = self
         self._seeded |= set(self.shell.user_ns)
-        # Local import: ``hooks`` imports ``DisplayEvent``/``STREAM_MIME``
-        # from this module, so a top-level import would be circular.
-        from workbench.m1.hooks import _CellStream, install_workbench_hooks  # noqa: PLC0415
-
         install_workbench_hooks(self.shell, self.emit)
         # Tracebacks: in-cell, suppress IPython's own print — ``_settle``
         # formats ``r.error`` once for the model, ``<Traceback>`` renders it
@@ -376,8 +336,6 @@ class OrchestratorKernel:
     def _on_cell_done(
         self, turn_id: int, code: str, task: asyncio.Task[ExecutionResult]
     ) -> None:
-        from workbench.m1.hooks import _CellStream  # noqa: PLC0415
-
         self.bg.pop(turn_id, None)
         self._bg_code.pop(turn_id, None)
         # Belt-and-braces buffer drop for the hard-cancel path where
@@ -450,7 +408,7 @@ class OrchestratorKernel:
             ename = type(err).__name__
             evalue = str(err)
             tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
-            frames = [
+            frames: list[TracebackFrame] = [
                 {"file": f.filename, "lineno": f.lineno, "line": f.line}
                 for f in traceback.extract_tb(err.__traceback__)
                 if not _is_boring(f)
@@ -459,20 +417,14 @@ class OrchestratorKernel:
             if frames:
                 last = frames[-1]
                 plain += f"\n  at {last['file']}:{last['lineno']}  {last['line'] or ''}"
-            ev = DisplayEvent(
-                id=uuid4().hex,
-                bundle={
-                    "text/plain": plain,
-                    WB_MIME: {
-                        "kind": "traceback",
-                        "ename": ename,
-                        "evalue": evalue,
-                        "frames": frames,
-                        "text": tb,
-                    },
-                },
-            )
-            self.emit(ev)
+            payload: TracebackPayload = {
+                "kind": "traceback",
+                "ename": ename,
+                "evalue": evalue,
+                "frames": frames,
+                "text": tb,
+            }
+            self.emit(DisplayEvent(id=uuid4().hex, bundle=wb_bundle(plain, payload)))
         text = self._render_outputs(turn_id)
         if not text:
             text = f"<ok · bound: {', '.join(new)}>" if new else "<no output>"
@@ -504,19 +456,15 @@ class OrchestratorKernel:
         Reconnect still carries it: ``_forward`` → ``on_display`` →
         ``session.emit(InfoEvent)`` lands it in ``session.events``.
         """
-        ev = DisplayEvent(
-            id=uuid4().hex,
-            bundle={
-                WB_MIME: {
-                    "kind": "cell_done",
-                    "turn": turn_id,
-                    "duration": duration,
-                    "new_names": new_names,
-                    "interrupted": interrupted,
-                    "ns": self._ns_summary(),
-                }
-            },
-        )
+        payload: CellDonePayload = {
+            "kind": "cell_done",
+            "turn": turn_id,
+            "duration": duration,
+            "new_names": new_names,
+            "interrupted": interrupted,
+            "ns": self._ns_summary(),
+        }
+        ev = DisplayEvent(id=uuid4().hex, bundle={WB_MIME: payload})
         ev.turn_id = turn_id
         self._forward(ev)
 

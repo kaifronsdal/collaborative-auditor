@@ -21,7 +21,7 @@ from inspect_ai.model import ChatMessage
 from inspect_scout import MessagesPreprocessor, messages_as_str, span_messages
 
 from workbench.m1.attach import AttachedRun
-from workbench.m1.kernel import WB_MIME
+from workbench.m1.wire import ExcerptPayload, TranscriptPayload, wb_bundle
 
 #: Render everything — the ``at`` index is into the raw message list, so
 #: dropping system messages here would desync what you asked for from what
@@ -100,17 +100,17 @@ class TranscriptRef:
             preview = self.messages[max(0, self.at - 1) : self.at + 2]
         else:
             preview = self.messages[-3:]
-        return {
-            "text/plain": f"<Transcript {self.sample_id} · {len(self.messages)} msgs>",
-            WB_MIME: {
-                "kind": "transcript",
-                "log": self.log,
-                "sample_id": self.sample_id,
-                "at": self.at,
-                "n_messages": len(self.messages),
-                "preview": [m.model_dump(mode="json") for m in preview],
-            },
+        payload: TranscriptPayload = {
+            "kind": "transcript",
+            "log": self.log,
+            "sample_id": self.sample_id,
+            "at": self.at,
+            "n_messages": len(self.messages),
+            "preview": [m.model_dump(mode="json") for m in preview],
         }
+        return wb_bundle(
+            f"<Transcript {self.sample_id} · {len(self.messages)} msgs>", payload
+        )
 
 
 @dataclass
@@ -128,17 +128,15 @@ class Excerpt:
     def _repr_mimebundle_(
         self, include: Any = None, exclude: Any = None
     ) -> dict[str, Any]:
-        return {
-            "text/plain": self.text,
-            WB_MIME: {
-                "kind": "excerpt",
-                "log": self.log,
-                "sample_id": self.sample_id,
-                "at": self.at,
-                "at_idx": self.at_idx,
-                "messages": [m.model_dump(mode="json") for m in self.messages],
-            },
+        payload: ExcerptPayload = {
+            "kind": "excerpt",
+            "log": self.log,
+            "sample_id": self.sample_id,
+            "at": self.at,
+            "at_idx": self.at_idx,
+            "messages": [m.model_dump(mode="json") for m in self.messages],
         }
+        return wb_bundle(self.text, payload)
 
 
 # -- loaders ------------------------------------------------------------------

@@ -24,7 +24,8 @@ from inspect_ai import Task, eval_async
 from inspect_ai.dataset import Sample
 from inspect_ai.solver import generate
 
-from workbench.m1.kernel import STREAM_MIME, WB_MIME, OrchestratorKernel
+from workbench.m1.kernel import OrchestratorKernel
+from workbench.m1.wire import STREAM_MIME, WB_MIME
 from workbench.m1.orchestrator import _prewarm  # noqa: PLC2701
 from workbench.m1.proposals import Gate
 from workbench.m1.wb import Workbench

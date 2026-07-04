@@ -30,7 +30,7 @@ from typing import Any
 import anyio
 
 from workbench.m1.attach import AttachedRun
-from workbench.m1.kernel import WB_MIME
+from workbench.m1.wire import WB_MIME
 from workbench.m1.orchestrator import ORCH_SOURCE
 from workbench.session import Session
 

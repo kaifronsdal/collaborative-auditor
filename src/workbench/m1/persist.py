@@ -44,7 +44,7 @@ from inspect_ai.log import (
 )
 from pydantic import TypeAdapter
 
-from workbench.m1.kernel import WB_MIME
+from workbench.m1.wire import WB_MIME
 from workbench.m1.orchestrator import ORCH_SOURCE
 
 if TYPE_CHECKING:

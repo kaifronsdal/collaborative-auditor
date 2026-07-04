@@ -25,10 +25,12 @@ export type {
 export type { ProgressPayload, RunPayload, ScanPayload } from "./ProgressCard";
 export type { ExcerptPayload, ReaderPayload, TranscriptPayload } from "./ReaderCard";
 
+import type { WbPayload } from "../types";
+
 /** Shared prop contract — `payload` is narrowed per-card, so the registry
  *  types it loosely and the caller casts on dispatch. `send` is the store's
  *  own `(msg: Up) => void`. */
-export type CardProps<P = Record<string, unknown>> = {
+export type CardProps<P = WbPayload> = {
   payload: P;
   displayId: string;
   send: (msg: Up) => void;

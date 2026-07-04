@@ -8,15 +8,9 @@
  */
 import type { JSX } from "react";
 import type { Up } from "../../../lib/wire";
-import type { Quote } from "./GateCard";
+import type { FindingPayload } from "../types";
 
-export type FindingPayload = {
-  kind: "finding";
-  id: string;
-  claim: string;
-  quotes: Array<Quote & { log?: string }>;
-  signed_by: string | null;
-};
+export type { FindingPayload };
 
 type Props = {
   payload: FindingPayload;

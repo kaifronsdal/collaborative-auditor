@@ -25,13 +25,9 @@ import time
 import anyio
 
 from workbench.m1.inspect_repr import ns_size_estimate, short_repr
-from workbench.m1.kernel import (
-    STREAM_MIME,
-    WB_MIME,
-    DisplayEvent,
-    OrchestratorKernel,
-)
+from workbench.m1.kernel import OrchestratorKernel
 from workbench.m1.proposals import Gate
+from workbench.m1.wire import STREAM_MIME, WB_KINDS, WB_MIME, DisplayEvent
 from workbench.m1.wb import Workbench
 
 
@@ -321,6 +317,22 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
         "some in-cell output emitted with turn_id=-1"
     )
     print(f"✓ on_display saw {len(wire)} events across {len(k.outputs)} turns")
+
+    # ---- 23. wire contract: every emitted kind is registered (Batch C) ----
+    # ``WB_KINDS`` is derived from ``get_args(WbPayload)`` — an unregistered
+    # kind means a missing ``wire.py`` TypedDict + ``types.ts`` mirror.
+    # ``"thing"`` is this file's own fixture, not a real card.
+    emitted = {
+        ev.bundle[WB_MIME]["kind"] for ev in wire if WB_MIME in ev.bundle
+    } - {"thing"}
+    assert emitted <= WB_KINDS, (
+        f"unregistered WB_MIME kinds emitted: {sorted(emitted - WB_KINDS)}; "
+        f"add TypedDict(s) to workbench.m1.wire and mirror in types.ts"
+    )
+    # And the kernel-owned kinds actually appeared (guards against a rename
+    # that leaves ``WB_KINDS`` correct but the emit site drifted).
+    assert {"prompt", "traceback", "cell_done"} <= emitted, emitted
+    print(f"✓ wire contract: emitted kinds {sorted(emitted)} ⊆ WB_KINDS")
 
 
 async def _check_short_repr() -> None:  # noqa: PLR0915

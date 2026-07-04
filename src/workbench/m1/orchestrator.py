@@ -51,7 +51,8 @@ from inspect_ai.util import span
 from inspect_ai.util._display import init_display_type  # noqa: PLC2701
 from shortuuid import uuid
 
-from workbench.m1.kernel import DisplayEvent, OrchestratorKernel
+from workbench.m1.kernel import OrchestratorKernel
+from workbench.m1.wire import DisplayEvent
 from workbench.m1.plots import install_template
 from workbench.m1.prompt import ORCHESTRATOR_SYSTEM_PROMPT
 from workbench.m1.proposals import Gate

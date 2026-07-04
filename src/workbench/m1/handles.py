@@ -31,7 +31,7 @@ from uuid import uuid4
 
 from IPython.display import DisplayHandle, display
 
-from workbench.m1.kernel import WB_MIME
+from workbench.m1.wire import ScanPayload, wb_bundle
 
 # -- run handles --------------------------------------------------------------
 
@@ -242,22 +242,21 @@ class ScanHandle(_PollingHandle):
         if self.error:
             state = self.error
         counter = f"{self.n_done}/{self.total}" if self.total else f"{self.n_done}"
-        return {
-            "text/plain": (
-                f"<ScanHandle {'+'.join(self.scanner_names)} · "
-                f"{counter} scanned · {state}>"
-            ),
-            WB_MIME: {
-                "kind": self.kind,
-                "id": self.id,
-                "description": self.description,
-                "scans_dir": self.scans_dir,
-                "location": self._location,
-                "done": self.n_done,
-                "total": self.total,
-                "finished": self.finished,
-                "error": self.error,
-                "per_scanner": self.per_scanner,
-                **({"df_head": self._df_head} if self.finished else {}),
-            },
+        payload: ScanPayload = {
+            "kind": "scan",
+            "id": self.id,
+            "description": self.description,
+            "scans_dir": self.scans_dir,
+            "location": self._location,
+            "done": self.n_done,
+            "total": self.total,
+            "finished": self.finished,
+            "error": self.error,
+            "per_scanner": self.per_scanner,
         }
+        if self.finished:
+            payload["df_head"] = self._df_head
+        return wb_bundle(
+            f"<ScanHandle {'+'.join(self.scanner_names)} · {counter} scanned · {state}>",
+            payload,
+        )

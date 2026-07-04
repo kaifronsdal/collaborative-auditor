@@ -21,28 +21,9 @@ import { useState, type JSX } from "react";
 import Modal from "../../Modal";
 import { renderContent } from "../../Bubble";
 import type { Up } from "../../../lib/wire";
+import type { ExcerptPayload, TranscriptPayload } from "../types";
 
-// -- payload shapes -----------------------------------------------------------
-
-export type ExcerptPayload = {
-  kind: "excerpt";
-  log: string;
-  sample_id: string;
-  at: number;
-  /** Index into `messages` of the message *at* turn `at` — the anchor. */
-  at_idx: number;
-  messages: ChatMessage[];
-};
-
-export type TranscriptPayload = {
-  kind: "transcript";
-  log: string;
-  sample_id: string;
-  at: number | null;
-  n_messages: number;
-  preview?: ChatMessage[];
-};
-
+export type { ExcerptPayload, TranscriptPayload };
 export type ReaderPayload = ExcerptPayload | TranscriptPayload;
 
 type Props = {

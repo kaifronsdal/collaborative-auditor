@@ -28,15 +28,23 @@ from asyncio.subprocess import PIPE, STDOUT
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from inspect_ai.tool import Tool, tool
 from inspect_ai.tool._tools._execute import code_viewer  # noqa: PLC2701
 
 from workbench.m1 import proposals
-from workbench.m1.kernel import STREAM_MIME, WB_MIME, DisplayEvent
+from workbench.m1.handles import _first_numeric  # noqa: PLC2701
 from workbench.m1.proposals import Prompt
+from workbench.m1.wire import (
+    STREAM_MIME,
+    BgDonePayload,
+    DisplayEvent,
+    EvalRunPayload,
+    SampleRowPayload,
+    wb_bundle,
+)
 
 if TYPE_CHECKING:
     from workbench.m1.orchestrator import Orchestrator
@@ -82,13 +90,13 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
             )
         )
 
-    #: Accumulated ``RunPayload`` per ``eval_id`` — each ``{"wb":"eval_*"}``
+    #: Accumulated ``EvalRunPayload`` per ``eval_id`` — each ``{"wb":"eval_*"}``
     #: line folds into this and re-emits the *whole* snapshot, so the
     #: frontend's ``ProgressCard`` sees the same ``kind:"eval_run"`` shape as
     #: ``AttachedRun`` produces (M1-HYBRID.md step 5: one payload shape).
-    _evals: dict[str, dict[str, Any]] = {}
+    _evals: dict[str, EvalRunPayload] = {}
 
-    def _fold_eval(line: dict[str, Any]) -> dict[str, Any]:
+    def _fold_eval(line: dict[str, Any]) -> EvalRunPayload:
         """Fold one ``eval_*`` protocol line into its accumulated snapshot."""
         eid = line["eval_id"]
         p = _evals.setdefault(
@@ -107,6 +115,7 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 "rows": {"running": [], "done": []},
             },
         )
+        rows = p["rows"]
         wb = line["wb"]
         if wb == "eval_start":
             p["task"] = line["task"]
@@ -123,38 +132,41 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
             # ``running`` rows have no ``input`` in the protocol — the
             # display driver only sees id/epoch/turns/tokens. Leave it
             # empty; the ``.ar-seed`` column just collapses.
-            p["rows"]["running"] = [
-                {
-                    "id": str(r["id"]),
-                    "status": "running",
-                    "input": "",
-                    "turns": r.get("turns"),
-                    "scores": {},
-                }
+            rows["running"] = [
+                SampleRowPayload(
+                    id=str(r["id"]),
+                    status="running",
+                    input="",
+                    turns=r.get("turns"),
+                    scores={},
+                )
                 for r in line.get("running", [])
             ]
         elif wb == "eval_sample_done":
             sid = str(line["id"])
-            p["rows"]["done"].append({
-                "id": sid,
-                "status": "error" if line.get("error") else "done",
-                "input": "",
-                "turns": None,
-                "error": line.get("error"),
-                "scores": line.get("scores") or {},
-            })
+            rows["done"].append(
+                SampleRowPayload(
+                    id=sid,
+                    status="error" if line.get("error") else "done",
+                    input="",
+                    turns=None,
+                    error=line.get("error"),
+                    scores=line.get("scores") or {},
+                )
+            )
             # Prune from ``running`` immediately so the sample doesn't render
             # in both lists for the tick before the next ``eval_progress``
             # (React duplicate-key warning; step-8 finding 2).
-            p["rows"]["running"] = [
-                r for r in p["rows"]["running"] if r["id"] != sid
-            ]
+            rows["running"] = [r for r in rows["running"] if r["id"] != sid]
         elif wb == "eval_done":
             p["finished"] = True
             p["done"] = line["done"]
             p["log"] = line.get("location")
-            p["rows"]["running"] = []
-            if line.get("errors") and not p["rows"]["done"]:
+            rows["running"] = []
+            # Match ``AttachedRun._repr_mimebundle_`` so ``ProgressCard``'s §8
+            # histogram works for bash-driven runs too (Batch C convergence).
+            p["scores"] = [_first_numeric(r.get("scores") or {}) for r in rows["done"]]
+            if line.get("errors") and not rows["done"]:
                 p["error"] = f"{line['errors']} errors"
         return p
 
@@ -171,17 +183,16 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
             payload = _fold_eval(line)
             did = line["eval_id"]
         else:
-            payload = {"kind": wb, **line}
+            # Non-eval protocol lines (``file``/``ref``) aren't in ``WbPayload``
+            # yet — pass through untyped so ``WbFallback`` renders the raw dict.
+            payload = cast("EvalRunPayload", {"kind": wb, **line})
             did = line.get("id") or uuid4().hex
         update = did in seen
         seen.add(did)
         kernel.emit(
             DisplayEvent(
                 id=did,
-                bundle={
-                    "text/plain": f"<{wb} · {json.dumps(line)[:80]}>",
-                    WB_MIME: payload,
-                },
+                bundle=wb_bundle(f"<{wb} · {json.dumps(line)[:80]}>", payload),
                 stable=True,
                 update=update,
             )
@@ -253,18 +264,18 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
 
                     async def _bg() -> None:
                         code = await _pump(proc, plain, seen)
+                        done: BgDonePayload = {
+                            "kind": "bg_done",
+                            "id": bg_id,
+                            "pid": proc.pid,
+                            "exit": code,
+                        }
                         kernel.emit(
                             DisplayEvent(
                                 id=uuid4().hex,
-                                bundle={
-                                    "text/plain": f"[bg-{bg_id} done · exit {code}]",
-                                    WB_MIME: {
-                                        "kind": "bg_done",
-                                        "id": bg_id,
-                                        "pid": proc.pid,
-                                        "exit": code,
-                                    },
-                                },
+                                bundle=wb_bundle(
+                                    f"[bg-{bg_id} done · exit {code}]", done
+                                ),
                             )
                         )
                         kernel.notify(f"[bg-{bg_id} done · exit {code} · {cmd[:60]!r}]")

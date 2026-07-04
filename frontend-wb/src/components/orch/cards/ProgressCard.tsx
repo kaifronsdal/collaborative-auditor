@@ -19,53 +19,16 @@ import { useRef, useState, type JSX } from "react";
 import { basename } from "@tsmono/util";
 
 import type { Up } from "../../../lib/wire";
+import type {
+  EvalRunPayload,
+  SampleRowPayload,
+  ScanPayload,
+} from "../types";
 
-// -- payload shapes -----------------------------------------------------------
-
-type SampleRow = {
-  id: string;
-  status: "running" | "done" | "error" | "stopped";
-  input: string;
-  turns?: number | null;
-  error?: string | null;
-  scores: Record<string, unknown>;
-};
-
-export type RunPayload = {
-  kind: "audit_run" | "eval_run";
-  id: string;
-  task: string;
-  description: string;
-  log_dir: string;
-  log: string | null;
-  total: number;
-  done: number;
-  finished: boolean;
-  error: string | null;
-  elapsed?: string;
-  rows: { running: SampleRow[]; done: SampleRow[] };
-  /** First numeric score per row, positional with `rows.done` (§8). */
-  scores?: (number | null)[];
-};
-
-type ScannerStat = { scans: number; results: number; errors: number };
-
-export type ScanPayload = {
-  kind: "scan";
-  id: string;
-  description: string;
-  scans_dir: string;
-  location: string | null;
-  done: number;
-  total: number;
-  finished: boolean;
-  error: string | null;
-  elapsed?: string;
-  per_scanner: Record<string, ScannerStat>;
-  /** name → 3-row HTML `<table>` (`df.head(3).to_html()`), shipped once
-   *  `finished` (UI-AUDIT §C). */
-  df_head?: Record<string, string>;
-};
+export type { ScanPayload };
+export type RunPayload = EvalRunPayload;
+type SampleRow = SampleRowPayload;
+type ScannerStat = ScanPayload["per_scanner"][string];
 
 export type ProgressPayload = RunPayload | ScanPayload;
 

@@ -24,48 +24,14 @@ import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "
 
 import Modal from "../../Modal";
 import type { Up } from "../../../lib/wire";
+import type {
+  CiteProposalPayload,
+  PromptPayload,
+  RunProposalPayload,
+} from "../types";
 
-// -- payload shapes -----------------------------------------------------------
-
-export type PromptPayload = {
-  kind: "prompt";
-  id: string;
-  question: string;
-  options: string[] | null;
-  answer: string | null;
-  answered_at: string | null;
-  pending: boolean;
-};
-
-type Seed = { id: string; text: string };
-
-export type RunProposalPayload = {
-  kind: "run_proposal";
-  id: string;
-  description: string;
-  n: number;
-  n_per_seed: number;
-  seeds: Seed[];
-  /** Decision-relevant fields — `n_per_seed` always; `model`/`max_turns`
-   *  when the caller supplied them (UI-AUDIT §A). */
-  config: { model?: string; max_turns?: number; n_per_seed: number };
-  pending: boolean;
-  verdict: { denied?: boolean; surviving?: string[]; reason?: string } | null;
-};
-
-export type Quote = { sample_id: string; at: number; role: string; text: string };
-
-export type CiteProposalPayload = {
-  kind: "cite_proposal";
-  id: string;
-  claim: string;
-  description: string;
-  quotes: Quote[];
-  grades_ref: string | null;
-  pending: boolean;
-  verdict: { signed?: boolean; by?: string; reason?: string } | null;
-};
-
+export type { CiteProposalPayload, PromptPayload, RunProposalPayload };
+export type Quote = CiteProposalPayload["quotes"][number];
 export type GatePayload = PromptPayload | RunProposalPayload | CiteProposalPayload;
 
 type Props = {

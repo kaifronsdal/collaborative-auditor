@@ -14,12 +14,20 @@ import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from IPython.display import display
 
-from workbench.m1.kernel import WB_MIME
+from workbench.m1.wire import (
+    CiteProposalPayload,
+    FindingPayload,
+    PromptPayload,
+    QuotePayload,
+    RunProposalPayload,
+    WbPayload,
+    wb_bundle,
+)
 
 
 # -- gate ---------------------------------------------------------------------
@@ -85,9 +93,8 @@ class BaseProposal:
     """Common ``id`` / ``verdict`` / ``pending`` / ``_bundle`` for gate cards.
 
     ``id`` doubles as the ``display_id`` (stable slot, updates in place on
-    resolve). ``_bundle`` builds the ``{text/plain, WB_MIME}`` dict every
-    proposal's ``_repr_mimebundle_`` returns — one place to keep the
-    ``kind/id/pending/verdict`` wire keys consistent.
+    resolve). ``_bundle`` folds the shared ``id/pending/verdict`` keys into the
+    subclass's typed payload and hands it to :func:`~workbench.m1.wire.wb_bundle`.
     """
 
     id: str = field(default_factory=lambda: uuid4().hex, kw_only=True)
@@ -97,17 +104,16 @@ class BaseProposal:
     def pending(self) -> bool:
         return self.verdict is None
 
-    def _bundle(self, kind: str, text: str, **fields: Any) -> dict[str, Any]:
-        return {
-            "text/plain": text,
-            WB_MIME: {
-                "kind": kind,
-                "id": self.id,
-                "pending": self.pending,
-                "verdict": self.verdict,
-                **fields,
-            },
-        }
+    def _bundle(self, text: str, payload: WbPayload) -> dict[str, Any]:
+        # ``payload`` already carries ``kind`` (typed by the subclass); folding
+        # the shared keys via ``**`` widens to ``dict[str, object]`` under mypy,
+        # so cast back — the field set is the union of ``payload``'s TypedDict
+        # and the three shared keys, which every gate payload declares.
+        merged = cast(
+            "WbPayload",
+            {"id": self.id, "pending": self.pending, "verdict": self.verdict, **payload},
+        )
+        return wb_bundle(text, merged)
 
 
 @dataclass
@@ -132,14 +138,14 @@ class Prompt(BaseProposal):
             if self.pending
             else f"<Prompt {self.id[:6]} → {self.answer!r}>"
         )
-        return self._bundle(
-            "prompt",
-            text,
-            question=self.question,
-            options=self.options,
-            answer=self.answer,
-            answered_at=self.answered_at,
-        )
+        payload: PromptPayload = {
+            "kind": "prompt",
+            "question": self.question,
+            "options": self.options,
+            "answer": self.answer,
+            "answered_at": self.answered_at,
+        }
+        return self._bundle(text, payload)
 
 
 @dataclass
@@ -192,15 +198,15 @@ class RunProposal(BaseProposal):
             else f"<RunProposal {self.id[:6]} · "
             f"{'DENIED' if self.denied else f'approved · {self.n} audits'}>"
         )
-        return self._bundle(
-            "run_proposal",
-            text,
-            description=self.description,
-            n=self.n,
-            n_per_seed=self.n_per_seed,
-            seeds=[{"id": f"s{i}", "text": s[:200]} for i, s in enumerate(self.seeds)],
-            config={"model": self.model, "n_per_seed": self.n_per_seed, **self.config},
-        )
+        payload: RunProposalPayload = {
+            "kind": "run_proposal",
+            "description": self.description,
+            "n": self.n,
+            "n_per_seed": self.n_per_seed,
+            "seeds": [{"id": f"s{i}", "text": s[:200]} for i, s in enumerate(self.seeds)],
+            "config": {"model": self.model, "n_per_seed": self.n_per_seed, **self.config},
+        }
+        return self._bundle(text, payload)
 
 
 # -- cite ---------------------------------------------------------------------
@@ -270,13 +276,15 @@ class CiteProposal(BaseProposal):
             if v is None
             else (f"signed by {v.get('by')}" if v.get("signed") else "REFUSED")
         )
+        payload: CiteProposalPayload = {
+            "kind": "cite_proposal",
+            "claim": self.claim,
+            "quotes": [cast("QuotePayload", vars(q)) for q in self.quotes],
+            "grades_ref": self.grades_ref,
+            "description": self.description,
+        }
         return self._bundle(
-            "cite_proposal",
-            f"<CiteProposal {self.id[:6]} · {self.claim!r} · {state}>",
-            claim=self.claim,
-            quotes=[vars(q) for q in self.quotes],
-            grades_ref=self.grades_ref,
-            description=self.description,
+            f"<CiteProposal {self.id[:6]} · {self.claim!r} · {state}>", payload
         )
 
 
@@ -297,16 +305,14 @@ class Finding:
         self, include: Any = None, exclude: Any = None
     ) -> dict[str, Any]:
         state = f"signed by {self.signed_by}" if self.signed_by else "unsigned"
-        return {
-            "text/plain": f"<Finding {self.id[:6]} · {self.claim!r} · {state}>",
-            WB_MIME: {
-                "kind": "finding",
-                "id": self.id,
-                "claim": self.claim,
-                "quotes": [vars(q) for q in self.quotes],
-                "signed_by": self.signed_by,
-            },
+        payload: FindingPayload = {
+            "kind": "finding",
+            "id": self.id,
+            "claim": self.claim,
+            "quotes": [cast("QuotePayload", vars(q)) for q in self.quotes],
+            "signed_by": self.signed_by,
         }
+        return wb_bundle(f"<Finding {self.id[:6]} · {self.claim!r} · {state}>", payload)
 
 
 # -- shared cores (called by ``wb.*`` and ``tools.review_*``) -----------------

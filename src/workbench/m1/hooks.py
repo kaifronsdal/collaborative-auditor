@@ -32,7 +32,7 @@ from IPython.core.displayhook import DisplayHook
 from IPython.core.displaypub import DisplayPublisher
 from IPython.core.interactiveshell import InteractiveShell
 
-from workbench.m1.kernel import STREAM_MIME, DisplayEvent
+from workbench.m1.wire import STREAM_MIME, DisplayEvent
 
 
 class WorkbenchDisplayPublisher(DisplayPublisher):
