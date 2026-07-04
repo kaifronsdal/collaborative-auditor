@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
@@ -133,6 +134,11 @@ class Orchestrator(StepGated):
         #: so ``bash("… --log-dir runs/r1")`` and ``wb.attach("runs/r1")``
         #: agree without the agent thinking about paths.
         self.session_dir = _session_dir(self)
+        # Align the ``python`` kernel's cwd with ``bash``/file tools —
+        # otherwise a file the agent writes in a python cell lands in the
+        # server's cwd (repo root), not ``session_dir``, and its next
+        # ``bash("cat that_file")`` misses (M1-HYBRID e2e-v1 root cause).
+        os.chdir(self.session_dir)
 
         # Pay inspect's cold-start cost (display type, hooks banner) once,
         # before the first cell runs — otherwise the first in-cell
