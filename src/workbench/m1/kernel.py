@@ -27,7 +27,8 @@ import functools
 import sys
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 from uuid import uuid4
@@ -191,7 +192,7 @@ class OrchestratorKernel:
         # from this module, so a top-level import would be circular.
         from workbench.m1.hooks import _CellStream, install_workbench_hooks  # noqa: PLC0415
 
-        install_workbench_hooks(self.shell, self._emit)
+        install_workbench_hooks(self.shell, self.emit)
         # Tracebacks: in-cell, suppress IPython's own print — ``_settle``
         # formats ``r.error`` once for the model, ``<Traceback>`` renders it
         # for the human. Out-of-cell (``run_code`` can leak
@@ -203,8 +204,8 @@ class OrchestratorKernel:
         # stdout/stderr tee — contextvar-gated per write.
         self._real_stdout = sys.stdout
         self._real_stderr = sys.stderr
-        sys.stdout = _CellStream(self._emit, self._current_turn, "stdout", self._real_stdout)  # type: ignore[assignment,arg-type]
-        sys.stderr = _CellStream(self._emit, self._current_turn, "stderr", self._real_stderr)  # type: ignore[assignment,arg-type]
+        sys.stdout = _CellStream(self.emit, self._current_turn, "stdout", self._real_stdout)  # type: ignore[assignment,arg-type]
+        sys.stderr = _CellStream(self.emit, self._current_turn, "stderr", self._real_stderr)  # type: ignore[assignment,arg-type]
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -224,7 +225,7 @@ class OrchestratorKernel:
 
     # -- emit -----------------------------------------------------------------
 
-    def _emit(self, ev: DisplayEvent) -> None:
+    def emit(self, ev: DisplayEvent) -> None:
         turn = self._current_turn.get()
         ev.turn_id = turn if turn is not None else -1
         self.outputs.setdefault(ev.turn_id, []).append(ev)
@@ -255,6 +256,25 @@ class OrchestratorKernel:
 
     # -- turn execution (M1-NOTEBOOK.md §Background execution) ----------------
 
+    @contextmanager
+    def turn(self) -> Iterator[int]:
+        """Allocate a turn id and set ``_current_turn`` for the block.
+
+        The public boundary for anything that emits ``DisplayEvent`` s under a
+        turn: bumps the shared counter, ensures ``outputs[tid]`` exists, and
+        scopes the ``_current_turn`` contextvar so ``emit()`` stamps the right
+        ``turn_id``. ``run_turn`` uses it for ``python`` cells; ``tools._turn``
+        uses it for the non-``python`` tools that also emit displays.
+        """
+        self._turn_counter += 1
+        tid = self._turn_counter
+        self.outputs.setdefault(tid, [])
+        tok = self._current_turn.set(tid)
+        try:
+            yield tid
+        finally:
+            self._current_turn.reset(tok)
+
     async def run_turn(self, code: str, *, background: bool = False) -> TurnResult:
         """Run one cell as its own task; await it unless backgrounded/detached.
 
@@ -265,55 +285,53 @@ class OrchestratorKernel:
         full model-facing ``text`` (concatenated ``text/plain`` of every
         output, in emission order, then the traceback if any).
         """
-        self._turn_counter += 1
-        turn_id = self._turn_counter
-        self.outputs[turn_id] = []
-        detach = asyncio.Event()
-        self._current_detach = detach
-        t0 = time.monotonic()
+        with self.turn() as turn_id:
+            detach = asyncio.Event()
+            self._current_detach = detach
+            t0 = time.monotonic()
 
-        cell_task: asyncio.Task[ExecutionResult] = asyncio.create_task(
-            self._run_cell(turn_id, code)
-        )
-        self.bg[turn_id] = cell_task
-        self._bg_code[turn_id] = code
+            cell_task: asyncio.Task[ExecutionResult] = asyncio.create_task(
+                self._run_cell(turn_id, code)
+            )
+            self.bg[turn_id] = cell_task
+            self._bg_code[turn_id] = code
 
-        cell_task.add_done_callback(
-            functools.partial(self._on_cell_done, turn_id, code)
-        )
+            cell_task.add_done_callback(
+                functools.partial(self._on_cell_done, turn_id, code)
+            )
 
-        if background:
+            if background:
+                self._detached.add(turn_id)
+                return TurnResult(
+                    turn_id=turn_id,
+                    text=f"<cell-{turn_id} backgrounded>",
+                    outputs=self.outputs[turn_id],
+                    detached=True,
+                    duration=time.monotonic() - t0,
+                )
+
+            detach_task = asyncio.create_task(detach.wait())
+            done, _ = await asyncio.wait(
+                {cell_task, detach_task}, return_when=asyncio.FIRST_COMPLETED
+            )
+            dur = time.monotonic() - t0
+            if cell_task in done:
+                detach_task.cancel()
+                r = None if cell_task.cancelled() else cell_task.result()
+                return self._settle(turn_id, code, r, duration=dur)
+
+            # detached mid-run
             self._detached.add(turn_id)
             return TurnResult(
                 turn_id=turn_id,
-                text=f"<cell-{turn_id} backgrounded>",
+                text=(
+                    f"<cell-{turn_id} detached — running; outputs so far:\n"
+                    f"{self._render_outputs(turn_id)}>"
+                ),
                 outputs=self.outputs[turn_id],
                 detached=True,
-                duration=time.monotonic() - t0,
+                duration=dur,
             )
-
-        detach_task = asyncio.create_task(detach.wait())
-        done, _ = await asyncio.wait(
-            {cell_task, detach_task}, return_when=asyncio.FIRST_COMPLETED
-        )
-        dur = time.monotonic() - t0
-        if cell_task in done:
-            detach_task.cancel()
-            r = None if cell_task.cancelled() else cell_task.result()
-            return self._settle(turn_id, code, r, duration=dur)
-
-        # detached mid-run
-        self._detached.add(turn_id)
-        return TurnResult(
-            turn_id=turn_id,
-            text=(
-                f"<cell-{turn_id} detached — running; outputs so far:\n"
-                f"{self._render_outputs(turn_id)}>"
-            ),
-            outputs=self.outputs[turn_id],
-            detached=True,
-            duration=dur,
-        )
 
     async def _run_cell(self, turn_id: int, code: str) -> ExecutionResult:
         # Set the contextvar *inside* the task so it propagates to every
@@ -429,8 +447,6 @@ class OrchestratorKernel:
             # Emit the traceback as a display card so the frontend renders
             # it under this turn (otherwise it only reaches the model via
             # ``text`` and the human sees a code cell with zero output).
-            # Not via ``_emit`` — that reads ``_current_turn`` which isn't
-            # set in ``run_turn``'s context (only inside the cell task).
             ename = type(err).__name__
             evalue = str(err)
             tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
@@ -456,9 +472,7 @@ class OrchestratorKernel:
                     },
                 },
             )
-            ev.turn_id = turn_id
-            self.outputs[turn_id].append(ev)
-            self._forward(ev)
+            self.emit(ev)
         text = self._render_outputs(turn_id)
         if not text:
             text = f"<ok · bound: {', '.join(new)}>" if new else "<no output>"

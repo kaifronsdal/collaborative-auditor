@@ -54,30 +54,17 @@ def _session_dir(orch: "Orchestrator") -> Path:
 def _turn(orch: "Orchestrator") -> Iterator[int]:
     """Allocate a kernel turn for a non-``python`` tool that emits displays.
 
-    ``kernel._emit`` stamps ``DisplayEvent.turn_id`` from the ``_current_turn``
-    contextvar, which only ``run_turn`` sets. ``bash`` and the review tools
-    emit outside any cell, so without this their outputs land at
-    ``turn_id=-1`` and the frontend can't group them under the tool call
-    that produced them (nor can ``rewind()`` find them). Bumping the shared
-    ``_turn_counter`` keeps one contiguous numbering across ``python`` and
-    non-``python`` calls; the ``_turn_msg`` write mirrors ``python_tool`` so
-    rewind covers these turns too.
+    ``kernel.emit`` stamps ``DisplayEvent.turn_id`` from the ``_current_turn``
+    contextvar. ``bash`` and the review tools emit outside any cell, so
+    without this their outputs land at ``turn_id=-1`` and the frontend can't
+    group them under the tool call that produced them (nor can ``rewind()``
+    find them). ``kernel.turn()`` bumps the shared counter so numbering stays
+    contiguous across ``python`` and non-``python`` calls; ``record_turn``
+    mirrors ``python_tool`` so rewind covers these turns too.
     """
-    k = orch.kernel
-    k._turn_counter += 1  # noqa: SLF001
-    tid: int = k._turn_counter  # noqa: SLF001
-    k.outputs.setdefault(tid, [])
-    if (
-        orch.state is not None
-        and orch.state.output is not None
-        and (mid := orch.state.output.message.id) is not None
-    ):
-        orch._turn_msg[tid] = mid  # noqa: SLF001
-    tok = k._current_turn.set(tid)  # noqa: SLF001
-    try:
+    with orch.kernel.turn() as tid:
+        orch.record_turn(tid)
         yield tid
-    finally:
-        k._current_turn.reset(tok)  # noqa: SLF001
 
 
 def make_tools(orch: "Orchestrator") -> list[Tool]:
@@ -88,7 +75,7 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
     # -- bash -----------------------------------------------------------------
 
     def _stream(line: str) -> None:
-        kernel._emit(  # noqa: SLF001
+        kernel.emit(
             DisplayEvent(
                 id=uuid4().hex,
                 bundle={STREAM_MIME: {"name": "stdout", "text": line}},
@@ -188,7 +175,7 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
             did = line.get("id") or uuid4().hex
         update = did in seen
         seen.add(did)
-        kernel._emit(  # noqa: SLF001
+        kernel.emit(
             DisplayEvent(
                 id=did,
                 bundle={
@@ -266,7 +253,7 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
 
                     async def _bg() -> None:
                         code = await _pump(proc, plain, seen)
-                        kernel._emit(  # noqa: SLF001
+                        kernel.emit(
                             DisplayEvent(
                                 id=uuid4().hex,
                                 bundle={

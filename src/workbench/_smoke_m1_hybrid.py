@@ -121,9 +121,9 @@ async def _amain() -> None:
 
 async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa: PLR0915
     # Duck-typed orch: ``make_tools`` reads ``.kernel``/``.gate``/``.span_id``,
-    # and ``_turn`` reads ``.state``/``._turn_msg`` (rewind bookkeeping).
+    # and ``_turn`` calls ``.record_turn`` (rewind bookkeeping — no-op here).
     orch = SimpleNamespace(
-        kernel=k, gate=Gate(), span_id="smoke-hybrid", state=None, _turn_msg={}
+        kernel=k, gate=Gate(), span_id="smoke-hybrid", record_turn=lambda tid: None
     )
     session_dir = _session_dir(orch)
     (bash, read_file, write_file, edit_file, ask_human, review_seeds, review_finding) = (

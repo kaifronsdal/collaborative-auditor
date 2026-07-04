@@ -191,7 +191,7 @@ class Orchestrator(StepGated):
     def _on_display(self, ev: DisplayEvent) -> None:
         """Ship a kernel output through the M0 event pipe.
 
-        Called synchronously from ``kernel._emit`` inside the cell task, so
+        Called synchronously from ``kernel.emit`` inside the cell task, so
         ``transcript()`` and ``current_span_id()`` resolve to this
         orchestrator's context. Notifications (``meta.sys``) are *not*
         routed here — they're agent-input chips, not display cards, and the
@@ -300,6 +300,20 @@ class Orchestrator(StepGated):
         self.queued.append(ChatMessageUser(content=text))
         self.step()
 
+    def record_turn(self, tid: int) -> None:
+        """Map a kernel turn id to the assistant message currently executing.
+
+        Called from ``python_tool`` and ``tools._turn`` while ``execute_tools``
+        is servicing ``state.output``; ``rewind()`` uses the mapping to find
+        where in ``state.messages`` (and ``session.events``) turn N starts.
+        """
+        if (
+            self.state is not None
+            and self.state.output is not None
+            and (mid := self.state.output.message.id) is not None
+        ):
+            self._turn_msg[tid] = mid
+
     # -- rewind (M1-FEATURES §2) ---------------------------------------------
 
     async def rewind(self, turn: int) -> None:
@@ -389,11 +403,7 @@ def python_tool(orch: Orchestrator) -> Tool:
             """
             notes = orch.kernel.drain_notifications()
             r = await orch.kernel.run_turn(code, background=background)
-            # Map kernel turn → this generate's assistant message (for §2
-            # rewind). ``state.output`` is the message ``execute_tools`` is
-            # currently servicing.
-            if orch.state is not None and orch.state.output is not None:
-                orch._turn_msg[r.turn_id] = orch.state.output.message.id  # noqa: SLF001
+            orch.record_turn(r.turn_id)
             head = ("\n".join(notes) + "\n\n") if notes else ""
             tail = "" if r.detached else f"\n[{r.duration:.1f}s]"
             return head + r.text + tail
