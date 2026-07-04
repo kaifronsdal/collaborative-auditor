@@ -793,23 +793,16 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
 
         case "stop_sample":
             # M1-FEATURES §9: per-sample stop from a ``ProgressCard`` row.
-            # Post-M1-HYBRID the eval is a subprocess — the in-process
-            # ``stop([id], hard=True)`` path is gone. If the frontend
-            # supplies ``log_dir`` (wire.ts step 6), do the same ACP
-            # per-sample cancel as ``import_running`` (without the
-            # flush-wait/import tail); otherwise there is no in-process
-            # sample to reach and the click is a no-op.
-            if log_dir := data.get("log_dir"):
-                h = AttachedRun(log_dir=log_dir, description=log_dir)
-                await h._poll()  # noqa: SLF001 — discover ctl/acp for this run
-                ok = await h.interrupt_sample(str(data["id"]))
-                if not ok:
-                    logger.warning(
-                        "stop_sample %r: no ACP server for %r", data["id"], log_dir
-                    )
-            else:
+            # Post-M1-HYBRID the eval is a subprocess — same ACP per-sample
+            # cancel as ``import_running`` (without the flush-wait/import
+            # tail). ``log_dir`` locates the subprocess's ACP socket.
+            log_dir = data["log_dir"]
+            h = AttachedRun(log_dir=log_dir, description=log_dir)
+            await h._poll()  # noqa: SLF001 — discover ctl/acp for this run
+            ok = await h.interrupt_sample(str(data["id"]))
+            if not ok:
                 logger.warning(
-                    "stop_sample %r: no log_dir (in-process path removed)", data["id"]
+                    "stop_sample %r: no ACP server for %r", data["id"], log_dir
                 )
 
         case "switch":

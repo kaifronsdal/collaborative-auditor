@@ -26,10 +26,12 @@ type Props = {
 
 export default function FindingCard({ payload, send }: Props): JSX.Element {
   const first = payload.quotes[0];
-  // Best-effort "open": jump the desk to the first supporting quote.
-  const open = (): void => {
-    if (first) send({ t: "import_running", sample_id: first.sample_id });
-  };
+  // TODO(M1-HYBRID): `import_running` now requires `log_dir` to locate the
+  // subprocess's ACP socket / .eval, but `Quote` doesn't carry it. Thread
+  // `log` through `cite.py:Quote` → send `{t:"import", path, sample_id}`.
+  void first;
+  void send;
+  const open = undefined;
   return (
     <div className="out finding">
       <div className="out-head">
@@ -41,9 +43,11 @@ export default function FindingCard({ payload, send }: Props): JSX.Element {
           {payload.claim} · <b>{payload.quotes.length}</b> quotes
           {payload.signed_by && ` · ${payload.signed_by}`}
         </span>
-        <span className="out-actions">
-          <a onClick={open}>open</a>
-        </span>
+        {open && (
+          <span className="out-actions">
+            <a onClick={open}>open</a>
+          </span>
+        )}
       </div>
     </div>
   );

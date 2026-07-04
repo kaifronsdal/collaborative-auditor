@@ -182,6 +182,7 @@ class _WBTaskDisplay(TaskDisplay):
             total=self.total,
             model=str(self.profile.model),
             log_dir=os.path.dirname(self.profile.log_location),
+            location=self.profile.log_location,
         )
 
     @contextlib.contextmanager

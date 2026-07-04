@@ -125,6 +125,10 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
             p["task"] = line["task"]
             p["total"] = line["total"]
             p["log_dir"] = line.get("log_dir", "")
+            # ``location`` is known at start (``profile.log_location``) — fold
+            # it now so a finished-row click can ``{t:"import"}`` before the
+            # overall ``eval_done`` fires.
+            p["log"] = line.get("location") or p["log"]
             p["description"] = str(line.get("model") or "")
         elif wb == "eval_progress":
             p["done"] = line["done"]

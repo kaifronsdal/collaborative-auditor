@@ -207,7 +207,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
 
     const onRowClick = (row: SampleRow): void => {
       if (row.status === "running") {
-        send({ t: "import_running", sample_id: row.id });
+        send({ t: "import_running", sample_id: row.id, log_dir: payload.log_dir });
       } else if (log != null) {
         send({ t: "import", path: log, sample_id: row.id });
       } else {
@@ -216,7 +216,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
       markOpened(row.id);
     };
     const onStop = (row: SampleRow): void => {
-      send({ t: "stop_sample", id: row.id });
+      send({ t: "stop_sample", id: row.id, log_dir: payload.log_dir });
       stopping.current.add(row.id);
       rerender();
     };

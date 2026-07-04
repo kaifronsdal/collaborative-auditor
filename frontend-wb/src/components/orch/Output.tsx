@@ -227,16 +227,7 @@ const AUDIT_ID_RE = />(a-[0-9a-f]{4})(?=<)/g;
 
 /** plotly.js attaches `.on(event, cb)` to the graph div once `Plotly.newPlot`
  *  has run on it. `window.Plotly` is bundled in main.tsx. */
-type PlotlyDiv = HTMLDivElement & {
-  on: (ev: string, cb: (d: PlotlyClick) => void) => void;
-  removeAllListeners?: (ev: string) => void;
-  /** Trace array `Plotly.newPlot` stores on the div. */
-  data?: Array<{ customdata?: unknown }>;
-};
-type PlotlyClick = { points: Array<{ customdata?: unknown[] }> };
-
 function HtmlOutput({ html }: { html: string }): JSX.Element {
-  const send = useSession((s) => s.send);
   const hostRef = useRef<HTMLDivElement>(null);
   const isPlotly = html.includes("plotly-graph-div");
   const isDF = html.includes('class="dataframe"');
@@ -257,9 +248,12 @@ function HtmlOutput({ html }: { html: string }): JSX.Element {
   // into a fresh node. Skip remote `src` scripts (the plotly CDN loader,
   // MathJax): we bundle `plotly.js-basic-dist-min` in main.tsx and mount it on
   // `window`, so the inline `Plotly.newPlot(divId, …)` script resolves without
-  // the network fetch the screenshot harness can't make. Then wire
-  // `plotly_click` → `customdata[0]` (the audit id the workbench styler
-  // stashes per-point) navigates the desk.
+  // the network fetch the screenshot harness can't make.
+  //
+  // TODO(M1-HYBRID): re-wire `plotly_click` → open-in-auditor once
+  // `customdata` encodes a `log_dir`/`log` (plots.py `link()`); the old
+  // `{t:"import_running", sample_id}` path needs `log_dir` to locate the
+  // subprocess's ACP socket.
   //
   // §17: `Plotly.newPlot` is synchronous and heavy, so paint a
   // `.plotly-loading` placeholder first, yield one frame via rAF, then mount.
@@ -277,34 +271,9 @@ function HtmlOutput({ html }: { html: string }): JSX.Element {
         live.textContent = s.textContent;
         s.replaceWith(live);
       }
-      const gd = host.querySelector<PlotlyDiv>(".plotly-graph-div");
-      // `.on` is only patched onto the div after `Plotly.newPlot` runs (which
-      // the inline script above does synchronously) — guard in case the bundle
-      // hasn't attached it yet.
-      if (gd && typeof gd.on === "function") {
-        gd.on("plotly_click", (d) => {
-          const raw = String(d.points[0]?.customdata?.[0] ?? "");
-          const bare = raw.replace(/^wb:\/\/[^/]+\//, "");
-          if (!bare) return;
-          send({ t: "import_running", sample_id: bare });
-        });
-        // UI-AUDIT §C: only advertise the click affordance when at least one
-        // trace actually carries `customdata` (i.e. the workbench styler ran).
-        if (gd.data?.some((t) => t.customdata)) {
-          host.insertAdjacentHTML(
-            "beforeend",
-            '<div class="fx-more plotly-hint">click a point to open in auditor</div>'
-          );
-        }
-      }
     });
-    return () => {
-      cancelAnimationFrame(raf);
-      host
-        .querySelector<PlotlyDiv>(".plotly-graph-div")
-        ?.removeAllListeners?.("plotly_click");
-    };
-  }, [isPlotly, html, send]);
+    return () => cancelAnimationFrame(raf);
+  }, [isPlotly, html]);
 
   if (isPlotly) {
     return <div ref={hostRef} className="out bare plotly-host" />;
