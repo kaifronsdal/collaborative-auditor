@@ -52,20 +52,27 @@ from inspect_ai.log._file import (  # noqa: PLC2701
     read_eval_log_sample_summaries_async,
 )
 from inspect_ai.model import ChatMessage, GenerateConfig, ModelOutput
-from inspect_ai.tool import ToolCall, ToolChoice, ToolInfo
+from inspect_ai.tool import ToolChoice, ToolInfo
 
-from workbench._smoke_util import FakeConn
+from workbench.m1._fixtures import (
+    HYBRID_CORE_TURNS,
+    demo_eval_cmd,
+    mock_orch_session,
+    orch_by_turn,
+    settle,
+    wait_gate,
+    wb_events,
+)
 from workbench.m1.attach import AttachedRun
 from workbench.m1.kernel import OrchestratorKernel
-from workbench.m1.orchestrator import ORCH_SOURCE, _prewarm  # noqa: PLC2701
-from workbench.m1.wire import STREAM_MIME, WB_MIME, DisplayEvent
+from workbench.m1.orchestrator import _prewarm  # noqa: PLC2701
 from workbench.m1.proposals import Gate
 from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
+from workbench.m1.wire import STREAM_MIME, WB_MIME, DisplayEvent
 from workbench.session import Session
 
 N = 4
-AUDIT_TASK = str(Path(__file__).parent / "m1" / "_audit_task.py")
 
 #: A tiny mockllm task with a per-sample sleep so ``AttachedRun._poll`` sees
 #: at least one tick with ``status == "started"`` before the log settles.
@@ -186,12 +193,7 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
     task = asyncio.create_task(
         review_seeds(seeds=["a", "b"] * 6, description="test", config={})
     )
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if orch.gate.pending:
-            break
-    assert len(orch.gate.pending) == 1, "review_seeds gate not registered"
-    (pid,) = orch.gate.pending
+    pid = await wait_gate(orch.gate)
     assert orch.gate.resolve(pid, {"surviving": ["s0", "s1"]})
     result = json.loads(await task)  # ToolResult has no dict — encoded
     assert result["approved"] is True, result
@@ -204,24 +206,14 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
     task = asyncio.create_task(
         review_seeds(seeds=["x"], description="deny me", config={})
     )
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if orch.gate.pending:
-            break
-    (pid,) = orch.gate.pending
-    orch.gate.resolve(pid, {"denied": True, "reason": "too broad"})
+    orch.gate.resolve(await wait_gate(orch.gate), {"denied": True, "reason": "too broad"})
     result = json.loads(await task)
     assert result == {"approved": False, "seeds": ["x"], "reason": "too broad"}, result
     print("✓ review_seeds: denied → approved=False, reason carried")
 
     # ---- ask_human ---------------------------------------------------------
     task = asyncio.create_task(ask_human(question="proceed?", options=["y", "n"]))
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if orch.gate.pending:
-            break
-    (pid,) = orch.gate.pending
-    orch.gate.resolve(pid, "y")
+    orch.gate.resolve(await wait_gate(orch.gate), "y")
     assert await task == "y"
     print("✓ ask_human: gate → 'y'")
 
@@ -233,12 +225,7 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
             description="see turn 3",
         )
     )
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if orch.gate.pending:
-            break
-    (pid,) = orch.gate.pending
-    orch.gate.resolve(pid, {"signed": True, "by": "tester"})
+    orch.gate.resolve(await wait_gate(orch.gate), {"signed": True, "by": "tester"})
     result = json.loads(await task)
     assert result["signed"] is True and result["quotes"][0]["sample_id"] == "s0", result
     print("✓ review_finding: gate → signed")
@@ -375,20 +362,12 @@ async def _run_interrupt() -> None:  # noqa: PLR0915
     flushes to ``.eval`` within 5s while its siblings keep running.
     """
     log_dir = tempfile.mkdtemp(prefix="wb-interrupt-")
+    cmd = demo_eval_cmd(
+        n=3, turns=5, turn_sleep=2.0, log_dir=log_dir, acp=True, display="none"
+    )
+    # ``exec`` (not ``shell``) so ``proc.terminate()`` reaches inspect directly.
     proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "inspect_ai",
-        "eval",
-        f"{AUDIT_TASK}@demo",
-        "-T", "n=3",
-        "-T", "turns=5",
-        "-T", "turn_sleep=2.0",
-        "--model", "mockllm/model",
-        "--log-dir", log_dir,
-        "--log-buffer", "1",
-        "--acp-server",
-        "--display", "none",
+        *cmd.split(),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -456,49 +435,24 @@ async def _run_interrupt() -> None:  # noqa: PLR0915
 
 # -- step 4: agent registration (Orchestrator end-to-end) --------------------
 
-
-def _tool_call(fn: str, **args: Any) -> ModelOutput:
-    out = ModelOutput.from_content(model="mockllm", content=f"→ {fn}")
-    out.choices[0].message.tool_calls = [
-        ToolCall(id="c", function=fn, type="function", arguments=args)
-    ]
-    return out
+_E2E_BY_TURN = orch_by_turn(HYBRID_CORE_TURNS(3, "runs/r1"))  # type: ignore[arg-type]
 
 
-def _e2e_script(span_id: str) -> Any:
-    """mockllm ``custom_outputs``: write_file → bash(inspect eval) → python(attach)."""
-    bash_cmd = (
-        f"{sys.executable} -m inspect_ai eval {AUDIT_TASK}@demo -T n=3 "
-        f"--model mockllm/model --log-dir runs/r1 --log-buffer 1"
-    )
-    turns = [
-        _tool_call("write_file", path="seeds.json", content='["a","b","c"]'),
-        _tool_call("bash", cmd=bash_cmd, timeout=120),
-        _tool_call(
-            "python",
-            code="h = wb.attach('runs/r1')\nawait h.wait()\nh.n_done",
-        ),
-        ModelOutput.from_content(model="mockllm", content="done."),
-    ]
-
-    def outputs(
-        input: list[ChatMessage],  # noqa: A002
-        tools: list[ToolInfo],
-        tool_choice: ToolChoice,
-        config: GenerateConfig,
-    ) -> ModelOutput:
-        n = sum(1 for m in input if m.role == "assistant")
-        # First call: verify all 8 tools are registered on the agent.
-        if n == 0:
-            names = {t.name for t in tools}
-            expected = {
-                "python", "bash", "read_file", "write_file", "edit_file",
-                "ask_human", "review_seeds", "review_finding",
-            }
-            assert expected <= names, f"missing tools: {expected - names}"
-        return turns[min(n, len(turns) - 1)]
-
-    return outputs
+def _e2e_outputs(
+    input: list[ChatMessage],  # noqa: A002
+    tools: list[ToolInfo],
+    tool_choice: ToolChoice,
+    config: GenerateConfig,
+) -> ModelOutput:
+    """``HYBRID_CORE_TURNS`` plus a first-call assertion that all 8 tools are wired."""
+    if not any(m.role == "assistant" for m in input):
+        expected = {
+            "python", "bash", "read_file", "write_file", "edit_file",
+            "ask_human", "review_seeds", "review_finding",
+        }
+        names = {t.name for t in tools}
+        assert expected <= names, f"missing tools: {expected - names}"
+    return _E2E_BY_TURN(input, tools, tool_choice, config)
 
 
 async def _wait_tool(session: Session, fn: str, *, timeout: float = 60) -> dict[str, Any]:
@@ -512,116 +466,90 @@ async def _wait_tool(session: Session, fn: str, *, timeout: float = 60) -> dict[
     raise AssertionError(f"tool {fn!r} did not settle within {timeout}s")
 
 
-def _wb_events(session: Session) -> list[dict[str, Any]]:
-    """All orchestrator ``InfoEvent.data`` payloads that carry a WB_MIME bundle."""
-    out = []
-    for e in session.events.values():
-        if e["event"] == "info" and e.get("source") == ORCH_SOURCE:
-            b = e["data"].get("bundle") or {}
-            if WB_MIME in b:
-                out.append(e["data"])
-    return out
-
-
 async def _run_e2e() -> None:  # noqa: PLR0915
-    session = Session()
-    await session.start()
-    conn = FakeConn()
-    session.connections.append(conn)
-
     span_id = "smoke-hybrid-e2e"
     sdir = Path.home() / ".workbench" / "sessions" / span_id
     shutil.rmtree(sdir, ignore_errors=True)
 
-    await session.start_orchestrator(
-        model="mockllm/model",
-        model_args={"custom_outputs": _e2e_script(span_id)},
-        span_id=span_id,
-        max_turns=6,
-    )
-    orch = session.orchestrator
-    assert orch is not None
-    assert str(orch.session_dir) == str(sdir), (orch.session_dir, sdir)
+    async with mock_orch_session(
+        _e2e_outputs, max_turns=6, span_id=span_id
+    ) as (session, orch, _):
+        assert str(orch.session_dir) == str(sdir), (orch.session_dir, sdir)
 
-    # ---- t1: write_file --------------------------------------------------
-    orch.step()
-    ev = await _wait_tool(session, "write_file")
-    assert "wrote" in str(ev.get("result")), ev.get("result")
-    assert (sdir / "seeds.json").read_text() == '["a","b","c"]'
-    print("✓ e2e t1: write_file → seeds.json in session_dir")
+        # ---- t1: write_file --------------------------------------------------
+        orch.step()
+        ev = await _wait_tool(session, "write_file")
+        assert "wrote" in str(ev.get("result")), ev.get("result")
+        assert (sdir / "seeds.json").read_text() == '["a","b","c"]'
+        print("✓ e2e t1: write_file → seeds.json in session_dir")
 
-    # ---- t2: bash("inspect eval …@demo") --------------------------------
-    orch.step()
-    ev = await _wait_tool(session, "bash", timeout=120)
-    result = str(ev.get("result"))
-    assert "[exit 0]" in result, f"subprocess eval failed:\n{result}"
-    assert '{"wb":' not in result, "protocol lines leaked to model text"
-    # bash allocated kernel turn 1; its {"wb":"eval_start"} folded to a
-    # kind:"eval_run" ProgressCard on the wire.
-    bash_cards = [
-        d for d in _wb_events(session)
-        if d["turn"] == 1 and d["bundle"][WB_MIME].get("kind") == "eval_run"
-    ]
-    assert bash_cards, "no eval_run card from bash turn"
-    assert bash_cards[0]["stable"] is True
-    p = bash_cards[0]["bundle"][WB_MIME]
-    # Stable display_id → session.events holds the *latest* fold: eval_done.
-    assert p["task"] == "demo" and p["total"] == 3, p
-    assert p["finished"] is True and p["done"] == 3, p
-    assert len(p["rows"]["done"]) == 3 and p["rows"]["running"] == [], p["rows"]
-    assert (sdir / "runs" / "r1").is_dir(), "log_dir not under session_dir"
-    print(
-        "✓ e2e t2: bash → eval_run card (turn 1, folded to done=3/3), "
-        "log @ runs/r1"
-    )
+        # ---- t2: bash("inspect eval …@demo") --------------------------------
+        orch.step()
+        ev = await _wait_tool(session, "bash", timeout=120)
+        result = str(ev.get("result"))
+        assert "[exit 0]" in result, f"subprocess eval failed:\n{result}"
+        assert '{"wb":' not in result, "protocol lines leaked to model text"
+        # bash allocated kernel turn 1; its {"wb":"eval_start"} folded to a
+        # kind:"eval_run" ProgressCard on the wire.
+        bash_cards = [
+            d for d in wb_events(session)
+            if d["turn"] == 1 and d["bundle"][WB_MIME].get("kind") == "eval_run"
+        ]
+        assert bash_cards, "no eval_run card from bash turn"
+        assert bash_cards[0]["stable"] is True
+        p = bash_cards[0]["bundle"][WB_MIME]
+        # Stable display_id → session.events holds the *latest* fold: eval_done.
+        assert p["task"] == "demo" and p["total"] == 3, p
+        assert p["finished"] is True and p["done"] == 3, p
+        assert len(p["rows"]["done"]) == 3 and p["rows"]["running"] == [], p["rows"]
+        assert (sdir / "runs" / "r1").is_dir(), "log_dir not under session_dir"
+        print(
+            "✓ e2e t2: bash → eval_run card (turn 1, folded to done=3/3), "
+            "log @ runs/r1"
+        )
 
-    # ---- t3: python("wb.attach('runs/r1')") ------------------------------
-    orch.step()
-    ev = await _wait_tool(session, "python")
-    result = str(ev.get("result"))
-    assert "\n3\n" in result or result.strip().startswith("3"), (
-        f"h.n_done != 3 in tool result:\n{result}"
-    )
-    h = orch.kernel.shell.user_ns["h"]
-    assert isinstance(h, AttachedRun) and h.finished and h.n_done == 3, (
-        type(h), h.finished, h.n_done,
-    )
-    # relative "runs/r1" resolved against session_dir (via Workbench threading).
-    assert h.log_dir == str(sdir / "runs" / "r1"), h.log_dir
-    print("✓ e2e t3: wb.attach('runs/r1') → session_dir-resolved, n_done=3")
+        # ---- t3: python("wb.attach('runs/r1')") ------------------------------
+        orch.step()
+        ev = await _wait_tool(session, "python")
+        result = str(ev.get("result"))
+        assert "3/3" in result, f"attach card text missing 3/3:\n{result}"
+        h = orch.kernel.shell.user_ns["h"]
+        assert isinstance(h, AttachedRun) and h.finished and h.n_done == 3, (
+            type(h), h.finished, h.n_done,
+        )
+        # relative "runs/r1" resolved against session_dir (via Workbench threading).
+        assert h.log_dir == str(sdir / "runs" / "r1"), h.log_dir
+        print("✓ e2e t3: wb.attach('runs/r1') → session_dir-resolved, n_done=3")
 
-    # ---- no in-process eval_async: every eval_run card is from the bash
-    # turn (subprocess wb_display) or the attach turn (AttachedRun poll).
-    # A RunHandle.launch would emit kind:"eval_run" from some other turn.
-    run_cards = [
-        d for d in _wb_events(session)
-        if d["bundle"][WB_MIME].get("kind") == "eval_run"
-    ]
-    turns_seen = {d["turn"] for d in run_cards}
-    assert turns_seen <= {1, 2}, (
-        f"eval_run cards at unexpected turns {turns_seen - {1, 2}} — "
-        f"in-process RunHandle.launch?"
-    )
-    attach_ids = {d["bundle"][WB_MIME]["id"] for d in run_cards if d["turn"] == 2}
-    assert attach_ids == {h.id}, (
-        f"attach-turn eval_run cards not all from AttachedRun: {attach_ids}"
-    )
-    # bash turn registered in _turn_msg (rewind bookkeeping covers it).
-    assert 1 in orch._turn_msg and 2 in orch._turn_msg, orch._turn_msg
-    print(
-        f"✓ e2e: {len(run_cards)} eval_run card(s) at turns {sorted(turns_seen)} "
-        f"— no in-process RunHandle.launch"
-    )
+        # ---- no in-process eval_async: every eval_run card is from the bash
+        # turn (subprocess wb_display) or the attach turn (AttachedRun poll).
+        # A RunHandle.launch would emit kind:"eval_run" from some other turn.
+        run_cards = [
+            d for d in wb_events(session)
+            if d["bundle"][WB_MIME].get("kind") == "eval_run"
+        ]
+        turns_seen = {d["turn"] for d in run_cards}
+        assert turns_seen <= {1, 2}, (
+            f"eval_run cards at unexpected turns {turns_seen - {1, 2}} — "
+            f"in-process RunHandle.launch?"
+        )
+        attach_ids = {d["bundle"][WB_MIME]["id"] for d in run_cards if d["turn"] == 2}
+        assert attach_ids == {h.id}, (
+            f"attach-turn eval_run cards not all from AttachedRun: {attach_ids}"
+        )
+        # bash turn registered in _turn_msg (rewind bookkeeping covers it).
+        assert 1 in orch._turn_msg and 2 in orch._turn_msg, orch._turn_msg
+        print(
+            f"✓ e2e: {len(run_cards)} eval_run card(s) at turns {sorted(turns_seen)} "
+            f"— no in-process RunHandle.launch"
+        )
 
-    # ---- t4: no tool call → parks ---------------------------------------
-    orch.step()
-    for _ in range(200):
-        await asyncio.sleep(0)
-        if orch.status == "paused":
-            break
-    assert orch.status == "paused"
+        # ---- t4: no tool call → parks ---------------------------------------
+        orch.step()
+        await settle(200)
+        assert orch.status == "paused"
 
-    await session.close()
+    # cwd restored by mock_orch_session — safe to rmtree the session_dir.
     shutil.rmtree(sdir, ignore_errors=True)
 
 

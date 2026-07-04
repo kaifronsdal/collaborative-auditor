@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import shutil
 import time
 from pathlib import Path
@@ -29,9 +30,10 @@ from typing import Any
 
 import anyio
 
+from workbench.m1._fixtures import wb_events
 from workbench.m1.attach import AttachedRun
-from workbench.m1.wire import WB_MIME
 from workbench.m1.orchestrator import ORCH_SOURCE
+from workbench.m1.wire import WB_MIME
 from workbench.session import Session
 
 TIMEOUT_S = 600
@@ -40,6 +42,7 @@ POLL_S = 2.0
 
 async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR0912, PLR0915
     t0 = time.monotonic()
+    orig_cwd = os.getcwd()
     session = Session()
     await session.start()
 
@@ -135,7 +138,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR09
         e for e in python_evs if "wb.attach" in str(e.get("arguments", {}).get("code", ""))
     ]
     run_cards = [
-        d for d in _wb_events(session)
+        d for d in wb_events(session)
         if d["bundle"][WB_MIME].get("kind") == "eval_run"
     ]
     tool_errors = [
@@ -169,7 +172,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR09
 
         assert run_cards, (
             f"no WB_MIME kind='eval_run' card in session.events "
-            f"({len(_wb_events(session))} WB_MIME events total)"
+            f"({len(wb_events(session))} WB_MIME events total)"
         )
         print(
             f"✓ {len(run_cards)} eval_run card(s) at turn(s) "
@@ -259,6 +262,9 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR09
         print("=" * 72)
 
         await session.close()
+        # ``Orchestrator.__init__`` chdir'd into ``session_dir``; restore
+        # before rmtree so the process cwd isn't left pointing at nothing.
+        os.chdir(orig_cwd)
         if not keep:
             shutil.rmtree(session_dir, ignore_errors=True)
 
@@ -287,17 +293,6 @@ def _tool_events(session: Session) -> list[dict[str, Any]]:
         ),
         key=lambda e: e.get("timestamp", ""),
     )
-
-
-def _wb_events(session: Session) -> list[dict[str, Any]]:
-    """All orchestrator ``InfoEvent.data`` payloads carrying a WB_MIME bundle."""
-    out = []
-    for e in session.events.values():
-        if e["event"] == "info" and e.get("source") == ORCH_SOURCE:
-            b = e["data"].get("bundle") or {}
-            if WB_MIME in b:
-                out.append(e["data"])
-    return out
 
 
 def _find_wb_payload(session: Session, display_id: str) -> dict[str, Any] | None:

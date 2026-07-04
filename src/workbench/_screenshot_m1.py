@@ -18,21 +18,23 @@ from __future__ import annotations
 
 import asyncio
 import shutil
-import sys
 from pathlib import Path
 
 import anyio
-from inspect_ai.model import ChatMessage, GenerateConfig, ModelOutput
-from inspect_ai.tool import ToolCall, ToolChoice, ToolInfo
 from playwright.async_api import Page, async_playwright
 
 from workbench._smoke_fixtures import _backend, _free_port, _vite
+from workbench.m1._fixtures import (
+    HYBRID_CORE_TURNS,
+    TurnSpec,
+    orch_by_turn,
+    wait_gate,
+)
 from workbench.server import sessions
 from workbench.session import Session
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "frontend-wb" / "screenshots" / "m1"
-AUDIT_TASK = str(Path(__file__).parent / "m1" / "_audit_task.py")
 SPAN_ID = "m1shots"
 
 
@@ -64,7 +66,6 @@ CELLS: dict[int, str] = {
         "})"
     ),
     2: "ans = await wb.ask_human('proceed?', ['y', 'n'])",
-    4: "h = wb.attach('runs/r1')\nawait h.wait()\nh",
     5: (
         "df = pd.DataFrame({'id': ['a-3f2c', 'a-9b01', 'a-c4e7'],\n"
         "                   'score': [0.82, 0.71, 0.68]})\n"
@@ -92,8 +93,6 @@ CELLS: dict[int, str] = {
 PROSE: dict[int, str] = {
     1: "Loaded the seed set and previewing the top-scoring items.",
     2: "I need to ask the human before proceeding.",
-    3: "Launching a 12-sample scored eval; the card ticks while I keep going.",
-    4: "Attaching to the run's log directory for analysis.",
     5: "Here is a bar chart of the counts.",
     6: "This cell will raise.",
     7: "Proposing a batch of 12 audits — this will gate.",
@@ -102,19 +101,18 @@ PROSE: dict[int, str] = {
     10: "Letting this run for a while.",
 }
 
-# Turn 3 (M1-HYBRID replacement for `wb.run_eval`): a real subprocess eval.
-# The `bash` tool sets ``WORKBENCH_DISPLAY=1`` so ``wb_display.register()``
-# swaps in the JSON-line driver; `_fold_eval` in ``tools.py`` mounts the
-# ``ProgressCard``. ``--max-samples 4`` staggers completion into three waves
-# so the non-throttled ``eval_progress`` on each ``sample_complete`` carries a
+# Turns 3+4 (M1-HYBRID replacement for `wb.run_eval`): a real subprocess eval
+# via ``bash`` then ``wb.attach`` on its log_dir — the shared happy-path
+# triple minus its ``write_file`` prelude. The ``bash`` tool sets
+# ``WORKBENCH_DISPLAY=1`` so ``wb_display.register()`` swaps in the JSON-line
+# driver; ``_fold_eval`` in ``tools.py`` mounts the ``ProgressCard``.
+# ``--max-samples 4`` staggers completion into three waves so the
+# non-throttled ``eval_progress`` on each ``sample_complete`` carries a
 # populated ``running`` list for ~6s — long enough for 04a to catch
 # ``.row-dot-running`` before ``eval_done`` folds it away.
-BASH_EVAL = (
-    f"{sys.executable} -m inspect_ai eval {AUDIT_TASK}@demo "
-    "-T n=12 -T turns=3 -T turn_sleep=1.0 "
-    "--model mockllm/model --log-dir runs/r1 --log-buffer 1 "
-    "--max-samples 4 --acp-server"
-)
+_BASH_EVAL, _ATTACH = HYBRID_CORE_TURNS(
+    12, "runs/r1", turns=3, turn_sleep=1.0, acp=True, max_samples=4
+)[1:]
 
 # Turn 9 (M1-HYBRID step 5): a `write_file` + `bash` pair. One plain echo
 # (→ `.out-stream` + visible in `.bash-result`) followed by synthetic
@@ -132,11 +130,11 @@ _WB_LINES = (
     '"done":3,"errors":0}\''
 )
 
-TURNS: list[tuple[str, list[tuple[str, dict]]]] = [
+TURNS: list[TurnSpec] = [
     (PROSE[1], [("python", {"code": CELLS[1]})]),
     (PROSE[2], [("python", {"code": CELLS[2]})]),
-    (PROSE[3], [("bash", {"cmd": BASH_EVAL, "timeout": 120})]),
-    (PROSE[4], [("python", {"code": CELLS[4]})]),
+    _BASH_EVAL,
+    _ATTACH,
     (PROSE[5], [("python", {"code": CELLS[5]})]),
     (PROSE[6], [("python", {"code": CELLS[6]})]),
     (
@@ -161,32 +159,8 @@ TURNS: list[tuple[str, list[tuple[str, dict]]]] = [
         ],
     ),
     (PROSE[10], [("python", {"code": CELLS[10]})]),
+    ("Acknowledged — waiting on you.", []),
 ]
-
-
-def _call(prose: str, calls: list[tuple[str, dict]]) -> ModelOutput:
-    out = ModelOutput.from_content(model="mockllm", content=prose)
-    out.choices[0].message.tool_calls = [
-        ToolCall(id=f"c{i}", function=fn, type="function", arguments=args)
-        for i, (fn, args) in enumerate(calls)
-    ]
-    return out
-
-
-def _orch_outputs(
-    input: list[ChatMessage],  # noqa: A002
-    tools: list[ToolInfo],
-    tool_choice: ToolChoice,
-    config: GenerateConfig,
-) -> ModelOutput:
-    del tools, tool_choice, config
-    n = sum(1 for m in input if m.role == "assistant")
-    if n < len(TURNS):
-        prose, calls = TURNS[n]
-        return _call(prose, calls)
-    return ModelOutput.from_content(
-        model="mockllm", content="Acknowledged — waiting on you."
-    )
 
 
 # ── screenshot driver ───────────────────────────────────────────────────────
@@ -197,15 +171,6 @@ async def _shot(page: Page, name: str, *, full: bool = False, clip=None) -> None
     path = OUT / f"{name}.png"
     await page.screenshot(path=path, full_page=full, clip=clip)
     print(f"  {path.relative_to(REPO)}")
-
-
-async def _wait_for(cond, *, timeout: float = 15.0, interval: float = 0.02) -> None:
-    """Poll ``cond()`` until truthy or timeout."""
-    deadline = asyncio.get_running_loop().time() + timeout
-    while not cond():
-        if asyncio.get_running_loop().time() > deadline:
-            raise TimeoutError(f"timed out waiting for {cond}")
-        await asyncio.sleep(interval)
 
 
 async def _scroll_tail(col) -> None:
@@ -231,7 +196,7 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
 
         await session.start_orchestrator(
             model="mockllm/model",
-            model_args={"custom_outputs": _orch_outputs},
+            model_args={"custom_outputs": orch_by_turn(TURNS)},  # type: ignore[arg-type]
             span_id=SPAN_ID,
             max_turns=len(TURNS) + 4,
         )
@@ -290,8 +255,7 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
 
             # ── turn 2: gate pending (do NOT resolve yet) ───────────────────
             orch.step()
-            await _wait_for(lambda: orch.gate.pending)
-            (gid,) = orch.gate.pending
+            gid = await wait_gate(orch.gate)
             await page.wait_for_selector(".orch-col .out.gated", timeout=10_000)
             await asyncio.sleep(0.15)
             await _shot(page, "03-gate-pending", clip=await orch_col.bounding_box())
@@ -385,8 +349,7 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
 
             # ── turn 7: review_seeds → GateCard[run_proposal] ───────────────
             orch.step()
-            await _wait_for(lambda: orch.gate.pending, timeout=20.0)
-            (gid,) = orch.gate.pending
+            gid = await wait_gate(orch.gate)
             await page.wait_for_selector(
                 ".turn[data-turn='7'] .out.gated", timeout=15_000
             )
@@ -422,8 +385,7 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
 
             # ── turn 8: wb.cite → CiteProposal gate → FindingCard ───────────
             orch.step()
-            await _wait_for(lambda: orch.gate.pending, timeout=15.0)
-            (gid,) = orch.gate.pending
+            gid = await wait_gate(orch.gate)
             await page.wait_for_selector(
                 ".turn[data-turn='8'] .out.gated .cite-quotes", timeout=10_000
             )

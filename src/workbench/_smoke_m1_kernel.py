@@ -24,11 +24,12 @@ import time
 
 import anyio
 
+from workbench.m1._fixtures import wait_for, wait_gate
 from workbench.m1.inspect_repr import ns_size_estimate, short_repr
 from workbench.m1.kernel import OrchestratorKernel
 from workbench.m1.proposals import Gate
-from workbench.m1.wire import STREAM_MIME, WB_KINDS, WB_MIME, DisplayEvent
 from workbench.m1.wb import Workbench
+from workbench.m1.wire import STREAM_MIME, WB_KINDS, WB_MIME, DisplayEvent
 
 
 async def _amain() -> None:
@@ -85,13 +86,7 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
     turn = asyncio.create_task(
         k.run_turn("ans = await wb.ask_human('proceed?', ['y', 'n'])\nans")
     )
-    # let the cell reach the await
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if gate.pending:
-            break
-    assert len(gate.pending) == 1, "gate future not registered"
-    (pid,) = gate.pending
+    pid = await wait_gate(gate)
     pending_evs = [ev for ev in k.outputs[k._turn_counter] if ev.id == pid]
     assert len(pending_evs) == 1 and not pending_evs[0].update
     assert pending_evs[0].bundle[WB_MIME]["pending"] is True
@@ -177,13 +172,7 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
             "wb.ask_human('one?'), wb.ask_human('two?'))\n(a, b)"
         )
     )
-    for _ in range(50):
-        await asyncio.sleep(0)
-        if len(gate.pending) == 2:
-            break
-    assert len(gate.pending) == 2, (
-        f"both gates should publish before either blocks: {gate.pending}"
-    )
+    await wait_for(lambda: len(gate.pending) == 2, tick=0)
     for pid in list(gate.pending):
         q = next(
             ev.bundle[WB_MIME]["question"]
