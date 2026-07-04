@@ -74,8 +74,10 @@ def audit(seeds_file: str, config: str | dict[str, Any] = "{}") -> Task:
 
 
 @solver
-def _slow(turns: int = 1, turn_sleep: float = 0.0) -> Solver:
+def _slow(turns: int = 1, turn_sleep: float = 0.0, fail_on: str = "") -> Solver:
     async def solve(state: TaskState, generate: Generate) -> TaskState:
+        if fail_on and str(state.sample_id) == fail_on:
+            raise RuntimeError(f"deliberate failure on {fail_on}")
         for _ in range(turns):
             if turn_sleep:
                 await anyio.sleep(turn_sleep)
@@ -94,14 +96,15 @@ def _always_one() -> Any:
 
 
 @task
-def demo(n: int = 3, turns: int = 1, turn_sleep: float = 0.0) -> Task:
+def demo(n: int = 3, turns: int = 1, turn_sleep: float = 0.0, fail_on: str = "") -> Task:
     """Trivial task: N samples, ``turns`` generates each with an optional
     per-turn sleep, constant score. With ``turn_sleep=0`` (default) it
     exercises ``eval_start`` / ``eval_progress`` / ``eval_sample_done`` /
     ``eval_done`` under ``mockllm/model``; with ``turns>1, turn_sleep>0``
-    it holds samples running long enough for the ACP-interrupt smoke."""
+    it holds samples running long enough for the ACP-interrupt smoke.
+    ``fail_on="s1"`` makes that one sample raise (erroring-sample coverage)."""
     return Task(
         dataset=[Sample(input=f"seed {i}", id=f"s{i}") for i in range(n)],
-        solver=_slow(turns, turn_sleep),
+        solver=_slow(turns, turn_sleep, fail_on),
         scorer=_always_one(),
     )
