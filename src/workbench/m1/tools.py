@@ -139,14 +139,21 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 for r in line.get("running", [])
             ]
         elif wb == "eval_sample_done":
+            sid = str(line["id"])
             p["rows"]["done"].append({
-                "id": str(line["id"]),
+                "id": sid,
                 "status": "error" if line.get("error") else "done",
                 "input": "",
                 "turns": None,
                 "error": line.get("error"),
                 "scores": line.get("scores") or {},
             })
+            # Prune from ``running`` immediately so the sample doesn't render
+            # in both lists for the tick before the next ``eval_progress``
+            # (React duplicate-key warning; step-8 finding 2).
+            p["rows"]["running"] = [
+                r for r in p["rows"]["running"] if r["id"] != sid
+            ]
         elif wb == "eval_done":
             p["finished"] = True
             p["done"] = line["done"]
@@ -230,8 +237,15 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
             # is a click.Choice bound to that env var, so click rejects it
             # before Python runs. ``wb_display.register()`` (via the
             # ``inspect_ai`` entry point) monkeypatches the active display
-            # when ``WORKBENCH_DISPLAY`` is set instead.
-            env = {**os.environ, "WORKBENCH_DISPLAY": "1"}
+            # when ``WORKBENCH_DISPLAY`` is set instead. ``NO_COLOR`` +
+            # ``INSPECT_HOOKS_QUIET`` suppress the aisitools ANSI banner that
+            # otherwise leaks into ``.out-stream`` via ``stderr=STDOUT``.
+            env = {
+                **os.environ,
+                "WORKBENCH_DISPLAY": "1",
+                "NO_COLOR": "1",
+                "INSPECT_HOOKS_QUIET": "1",
+            }
             with _turn(orch):
                 proc = await asyncio.create_subprocess_shell(
                     cmd, cwd=session_dir, env=env, stdout=PIPE, stderr=STDOUT
