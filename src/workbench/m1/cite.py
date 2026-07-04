@@ -25,12 +25,18 @@ from workbench.m1.kernel import WB_MIME, Gate
 
 @dataclass
 class Quote:
-    """One supporting transcript excerpt: ``sample_id`` at turn ``at``."""
+    """One supporting transcript excerpt: ``sample_id`` at turn ``at``.
+
+    ``log`` is the ``.eval`` file the sample lives in, so ``FindingCard``'s
+    *open* link can send ``{t:"import", path: log, sample_id}`` — quotes
+    reference *finished* samples, hence a file path not a ``log_dir``.
+    """
 
     sample_id: str
     at: int
     role: str
     text: str
+    log: str = ""
 
 
 def _as_quote(q: Any) -> Quote:
@@ -41,7 +47,7 @@ def _as_quote(q: Any) -> Quote:
     d = dict(q)
     if "sample_id" not in d and "audit_id" in d:
         d["sample_id"] = d.pop("audit_id")
-    return Quote(**d)
+    return Quote(**{k: d[k] for k in ("sample_id", "at", "role", "text", "log") if k in d})
 
 
 # -- proposal (gated card) ----------------------------------------------------

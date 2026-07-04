@@ -2,8 +2,9 @@
 
 The agent plots with ``px.*`` directly; these are the handful of helpers
 that *significantly* cut agent code vs. a one-liner. Every mark carries
-its ``wb://`` ref in ``customdata[0]`` so the frontend's ``plotly_click``
-handler can navigate to the transcript.
+its ``wb://`` ref in ``customdata[0]`` (and, when ``link(log=…)`` was
+used, the ``.eval`` path in ``customdata[1]``) so the frontend's
+``plotly_click`` handler can ``{t:"import"}`` the transcript.
 """
 
 from __future__ import annotations
@@ -308,9 +309,19 @@ def install_template() -> None:
 
 
 def link(
-    fig: go.Figure, ids: pd.Series | Sequence[str], *, scheme: str = "wb://audit/"
+    fig: go.Figure,
+    ids: pd.Series | Sequence[str],
+    *,
+    log: str | None = None,
+    scheme: str = "wb://audit/",
 ) -> go.Figure:
-    """Retrofit ``customdata[0] = wb://audit/{id}`` onto traces lacking it.
+    """Retrofit ``customdata = [wb://audit/{id}, log?]`` onto traces lacking it.
+
+    ``customdata[0]`` is the ``wb://`` ref (shown in the hover);
+    ``customdata[1]`` is the ``.eval`` file path when ``log`` is given —
+    the frontend's ``plotly_click`` reads it to send ``{t:"import", path:
+    log, sample_id}``. Without ``log`` the click handler warns and no-ops
+    (points reference *finished* samples, so it needs the file, not a dir).
 
     Prefer passing ``custom_data=["audit_id"]`` to ``px.*`` directly; this
     is for figures built without it. Assumes single-trace or traces that
@@ -318,7 +329,10 @@ def link(
     (multi-trace), pass ``custom_data=[id_col]`` to ``px.*`` directly
     instead.
     """
-    refs = np.asarray([[f"{scheme}{i}"] for i in ids])
+    if log is None:
+        refs = np.asarray([[f"{scheme}{i}"] for i in ids])
+    else:
+        refs = np.asarray([[f"{scheme}{i}", log] for i in ids])
     for tr in fig.data:
         if tr.customdata is None:
             tr.customdata = refs

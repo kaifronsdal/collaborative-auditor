@@ -4,7 +4,7 @@
  * bundle; this card is the in-column acknowledgement.
  *
  * Payload from `Finding._repr_mimebundle_` (workbench/m1/cite.py):
- * `{kind, id, claim, quotes: [{sample_id, at, role, text}], signed_by}`.
+ * `{kind, id, claim, quotes: [{sample_id, at, role, text, log}], signed_by}`.
  */
 import type { JSX } from "react";
 import type { Up } from "../../../lib/wire";
@@ -14,7 +14,7 @@ export type FindingPayload = {
   kind: "finding";
   id: string;
   claim: string;
-  quotes: Quote[];
+  quotes: Array<Quote & { log?: string }>;
   signed_by: string | null;
 };
 
@@ -26,12 +26,11 @@ type Props = {
 
 export default function FindingCard({ payload, send }: Props): JSX.Element {
   const first = payload.quotes[0];
-  // TODO(M1-HYBRID): `import_running` now requires `log_dir` to locate the
-  // subprocess's ACP socket / .eval, but `Quote` doesn't carry it. Thread
-  // `log` through `cite.py:Quote` → send `{t:"import", path, sample_id}`.
-  void first;
-  void send;
-  const open = undefined;
+  // Quotes reference *finished* samples → `{t:"import", path: .eval}` (not
+  // `import_running`, which needs a `log_dir` to find the ACP socket).
+  const open = first?.log
+    ? () => send({ t: "import", path: first.log!, sample_id: first.sample_id })
+    : undefined;
   return (
     <div className="out finding">
       <div className="out-head">
