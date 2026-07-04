@@ -281,6 +281,10 @@ function PromptBody({
 
   const opts = payload.options ?? [];
   const showKeys = opts.length > 3;
+  // Single-row layout when the whole request fits on one line — a y/n
+  // shouldn't cost 110px of column. Falls back to the stacked title/actions
+  // layout for long questions or >3 options.
+  const inline = payload.question.length <= 50 && opts.length > 0 && opts.length <= 3;
 
   const answer = (v: string): void => resolve(v);
 
@@ -328,6 +332,36 @@ function PromptBody({
     </div>
   );
 
+  const buttons = opts.map((opt, i) => (
+    <button
+      key={opt}
+      type="button"
+      className={`gate-btn ${i === 0 ? "primary" : "ghost"}`}
+      onClick={() => answer(opt)}
+    >
+      {showKeys && <sup className="ask-opt-key">{i + 1}</sup>}
+      {opt}
+    </button>
+  ));
+
+  if (inline) {
+    return (
+      <div ref={rootRef} tabIndex={-1}>
+        <div className="gate-body gate-inline">
+          <i className="bi bi-question-circle" />
+          <span className="gate-q">{payload.question}</span>
+          {buttons}
+          {!ownOpen && (
+            <a className="ask-other" onClick={() => setOwnOpen(true)}>
+              other…
+            </a>
+          )}
+        </div>
+        {ownOpen && <div className="gate-actions gate-actions-own">{ownRow}</div>}
+      </div>
+    );
+  }
+
   return (
     <div ref={rootRef} tabIndex={-1}>
       <div className="gate-body">
@@ -338,19 +372,7 @@ function PromptBody({
       </div>
       {opts.length > 0 ? (
         <>
-          <div className="gate-actions">
-            {opts.map((opt, i) => (
-              <button
-                key={opt}
-                type="button"
-                className={`gate-btn ${i === 0 ? "primary" : "ghost"}`}
-                onClick={() => answer(opt)}
-              >
-                {showKeys && <sup className="ask-opt-key">{i + 1}</sup>}
-                {opt}
-              </button>
-            ))}
-          </div>
+          <div className="gate-actions">{buttons}</div>
           {ownOpen ? (
             <div className="gate-actions gate-actions-own">{ownRow}</div>
           ) : (

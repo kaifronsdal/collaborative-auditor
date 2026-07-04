@@ -244,6 +244,23 @@
   box-shadow: 0 1px 3px hsl(0 0% 0% / .06), 0 6px 16px hsl(0 0% 0% / .05);
 }
 .gate-body { padding: 12px 14px 4px; }
+/* prompt: single-row variant when the question is short (≤50 chars) and
+   options ≤3 — icon · question · buttons · `other…` all on one line. */
+.gate-body.gate-inline {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px;
+}
+.gate-inline > i.bi { color: var(--ink-dim); font-size: 15px; flex-shrink: 0; }
+.gate-inline > .gate-q {
+  flex: 1; min-width: 0;
+  font: 14px/1.45 var(--sans); color: var(--ink);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.gate-inline > .gate-btn { flex-shrink: 0; }
+.out.gated .gate-inline .ask-other {
+  display: inline; padding: 0; margin: 0 0 0 4px;
+  font-size: 11px; text-align: left; flex-shrink: 0;
+}
 .gate-title {
   display: flex; align-items: flex-start; gap: 10px;
   font: 14px/1.45 var(--sans); color: var(--ink);
@@ -735,6 +752,9 @@
    still contains the prose margins so `.turn-sep` rhythm stays symmetric. */
 .ba-host:has(> .asst-prose) { display: flow-root; }
 .ba-host:has(> .asst-prose) > .block-actions {
+  /* Prose first line is 15px/1.55 ≈ 23px; bare icons here are ~15px tall
+     (border/padding stripped below). `top: 0` pins them to the ascender of
+     the first line — visually flush with the text top, matching claude.ai. */
   top: 0; right: 0; bottom: auto; left: auto; gap: 4px;
 }
 .ba-host:has(> .asst-prose) > .block-actions button {
