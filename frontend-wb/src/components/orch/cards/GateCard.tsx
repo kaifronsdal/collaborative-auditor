@@ -20,7 +20,7 @@
  * Resolved state collapses to a compact receipt chip
  * (`✓ {q} · you answered {a} · HH:MM`); denied uses `✕` in `--danger`.
  */
-import { useEffect, useMemo, useRef, useState, type JSX } from "react";
+import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 
 import Modal from "../../Modal";
 import type { Up } from "../../../lib/wire";
@@ -127,11 +127,7 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
           <span>{v.title}</span>
         </div>
         <div className="gate-sub">{v.subtitle}</div>
-        {payload.kind === "run_proposal" ? (
-          <SeedPeek payload={payload} struck={struck} toggle={toggle} />
-        ) : (
-          <QuotePeek payload={payload} struck={struck} toggle={toggle} />
-        )}
+        <CheckListPeek v={v} struck={struck} toggle={toggle} />
         <a className="gate-more" onClick={() => setModalOpen(true)}>
           view all {v.n} {v.noun} <i className="bi bi-arrow-right" />
         </a>
@@ -169,7 +165,6 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
       {modalOpen && (
         <ReviewModal
           v={v}
-          payload={payload}
           struck={struck}
           setStruck={setStruck}
           toggle={toggle}
@@ -186,6 +181,9 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
 
 // -- variant config -----------------------------------------------------------
 
+/** One checklist row — shared shape for the inline peek and `ReviewModal`. */
+type Row = { key: string; text: string; head?: JSX.Element };
+
 type Variant = {
   icon: string;
   title: string;
@@ -193,6 +191,12 @@ type Variant = {
   noun: string;
   n: number;
   kept: number;
+  /** Full seed/quote list normalised to `Row` — both `<CheckListPeek>`
+   *  (first `peekCap`) and `<ReviewModal>` (all, filterable) read this. */
+  rows: Row[];
+  peekCap: number;
+  peekClass: string;
+  peekRow: (r: Row) => ReactNode;
   approveLabel: string;
   buildVerdict: () => unknown;
   denyVerdict: (reason: string) => unknown;
@@ -212,6 +216,12 @@ function variant(p: RunProposalPayload | CiteProposalPayload, struck: Set<string
       noun: "seeds",
       n: p.seeds.length,
       kept: surviving.length,
+      rows: p.seeds.map((s) => ({ key: s.id, text: s.text })),
+      peekCap: 3,
+      peekClass: "gp-row",
+      peekRow: (r) => (
+        <span className="gp-text" title={r.text}>{ellipsis(r.text, 80)}</span>
+      ),
       approveLabel: `approve ${surviving.length * p.n_per_seed}`,
       buildVerdict: () => ({ surviving: surviving.map((s) => s.id) }),
       denyVerdict: (reason) => ({ denied: true, reason }),
@@ -225,6 +235,21 @@ function variant(p: RunProposalPayload | CiteProposalPayload, struck: Set<string
     noun: "quotes",
     n: p.quotes.length,
     kept: kept.length,
+    rows: p.quotes.map((qt, i) => ({
+      key: String(i),
+      text: qt.text,
+      head: (
+        <div className="cite-q-head">
+          <a className="qref" href={`wb://audit/${qt.sample_id}`}>{qt.sample_id}</a>
+          {" "}· t{qt.at} · {qt.role}
+        </div>
+      ),
+    })),
+    peekCap: 2,
+    peekClass: "cite-q",
+    peekRow: (r) => (
+      <div className="cite-q-body">{r.head}<div className="cite-q-text">{r.text}</div></div>
+    ),
     approveLabel: `sign ${kept.length}`,
     buildVerdict: () => ({ signed: true, edits: { quotes: kept } }),
     denyVerdict: (reason) => ({ signed: false, reason }),
@@ -388,62 +413,32 @@ function PromptBody({
   );
 }
 
-// -- run_proposal peek --------------------------------------------------------
+// -- checklist peek (seed/quote) ----------------------------------------------
 
-type PeekProps<P> = { payload: P; struck: Set<string>; toggle: (k: string) => void };
-
-function SeedPeek({ payload, struck, toggle }: PeekProps<RunProposalPayload>): JSX.Element {
+/** `.gate-peek`: first-`v.peekCap` rows as strike-toggle checkboxes. Row body
+ *  and label class are variant-supplied; the checkbox/struck wiring is shared. */
+function CheckListPeek({
+  v,
+  struck,
+  toggle,
+}: {
+  v: Variant;
+  struck: Set<string>;
+  toggle: (k: string) => void;
+}): JSX.Element {
   return (
-    <div className="gate-peek">
-      {payload.seeds.slice(0, 3).map((s) => {
-        const isStruck = struck.has(s.id);
-        return (
-          <label
-            key={s.id}
-            className={`gp-row${isStruck ? " gp-struck" : ""}`}
-            title={s.text}
-          >
-            <input
-              type="checkbox"
-              className="sp-check"
-              checked={!isStruck}
-              onChange={() => toggle(s.id)}
-            />
-            <span className="gp-text">{ellipsis(s.text, 80)}</span>
-          </label>
-        );
-      })}
-    </div>
-  );
-}
-
-// -- cite_proposal peek -------------------------------------------------------
-
-function QuotePeek({ payload, struck, toggle }: PeekProps<CiteProposalPayload>): JSX.Element {
-  return (
-    <div className="gate-peek cite-quotes">
-      {payload.quotes.slice(0, 2).map((q, i) => {
-        const key = String(i);
-        return (
-          <label key={i} className={`cite-q${struck.has(key) ? " gp-struck" : ""}`}>
-            <input
-              type="checkbox"
-              className="sp-check"
-              checked={!struck.has(key)}
-              onChange={() => toggle(key)}
-            />
-            <div className="cite-q-body">
-              <div className="cite-q-head">
-                <a className="qref" href={`wb://audit/${q.sample_id}`}>
-                  {q.sample_id}
-                </a>{" "}
-                · t{q.at} · {q.role}
-              </div>
-              <div className="cite-q-text">{q.text}</div>
-            </div>
-          </label>
-        );
-      })}
+    <div className={`gate-peek${v.peekClass === "cite-q" ? " cite-quotes" : ""}`}>
+      {v.rows.slice(0, v.peekCap).map((r) => (
+        <label key={r.key} className={`${v.peekClass}${struck.has(r.key) ? " gp-struck" : ""}`}>
+          <input
+            type="checkbox"
+            className="sp-check"
+            checked={!struck.has(r.key)}
+            onChange={() => toggle(r.key)}
+          />
+          {v.peekRow(r)}
+        </label>
+      ))}
     </div>
   );
 }
@@ -452,7 +447,6 @@ function QuotePeek({ payload, struck, toggle }: PeekProps<CiteProposalPayload>):
 
 function ReviewModal({
   v,
-  payload,
   struck,
   setStruck,
   toggle,
@@ -460,7 +454,6 @@ function ReviewModal({
   onApprove,
 }: {
   v: Variant;
-  payload: RunProposalPayload | CiteProposalPayload;
   struck: Set<string>;
   setStruck: (s: Set<string>) => void;
   toggle: (k: string) => void;
@@ -469,26 +462,12 @@ function ReviewModal({
 }): JSX.Element {
   const [q, setQ] = useState("");
 
-  type Row = { key: string; text: string; head?: JSX.Element };
-  const rows: Row[] =
-    payload.kind === "run_proposal"
-      ? payload.seeds.map((s) => ({ key: s.id, text: s.text }))
-      : payload.quotes.map((qt, i) => ({
-          key: String(i),
-          text: qt.text,
-          head: (
-            <div className="cite-q-head">
-              <a className="qref">{qt.sample_id}</a> · t{qt.at} · {qt.role}
-            </div>
-          ),
-        }));
-
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return needle ? rows.filter((r) => r.text.toLowerCase().includes(needle)) : rows;
-  }, [q, rows]);
+    return needle ? v.rows.filter((r) => r.text.toLowerCase().includes(needle)) : v.rows;
+  }, [q, v.rows]);
 
-  const allKeys = rows.map((r) => r.key);
+  const allKeys = v.rows.map((r) => r.key);
 
   return (
     <Modal

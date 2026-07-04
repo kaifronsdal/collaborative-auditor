@@ -18,6 +18,7 @@ import { marked } from "marked";
 import type { ChatMessage, ToolCallError, ToolEvent } from "@tsmono/inspect-common";
 
 import { useSession } from "../../store/session";
+import { contentText, resultText } from "../tool-renderers/util";
 import { BlockActions, CopyBtn } from "./BlockActions";
 import { Output } from "./Output";
 import {
@@ -227,14 +228,6 @@ function linkifyRefs(html: string): string {
   });
 }
 
-function contentText(content: ChatMessage["content"]): string {
-  return typeof content === "string"
-    ? content
-    : content
-        .map((c) => (c.type === "text" ? c.text : c.type === "reasoning" ? "" : ""))
-        .join("");
-}
-
 function AssistantProse({
   content,
   pending,
@@ -286,6 +279,84 @@ function UserAsk({ msg }: { msg: ChatMessage }): JSX.Element {
   return (
     <div className="ask-wrap">
       <div className="ask-bubble">{contentText(msg.content)}</div>
+    </div>
+  );
+}
+
+// ── cell shell (shared by CodeCell / BashCell) ──────────────────────────────
+
+/** UI-AUDIT §C: collapsed-first. A settled, non-erroring cell is noise —
+ *  show a one-line gist. `forceOpen` (running/errored) wins; a user's manual
+ *  toggle sticks (later transitions leave it alone once `userToggled`). */
+function useCollapsedFirst(forceOpen: boolean): [open: boolean, toggle: () => void] {
+  const [collapsed, setCollapsed] = useState(!forceOpen);
+  const userToggled = useRef(false);
+  useEffect(() => {
+    if (!userToggled.current) setCollapsed(!forceOpen);
+  }, [forceOpen]);
+  const toggle = (): void => {
+    if (forceOpen) return;
+    userToggled.current = true;
+    setCollapsed((v) => !v);
+  };
+  return [forceOpen || !collapsed, toggle];
+}
+
+type CellShellProps = {
+  className?: string;
+  /** Head icon; defaults to the open/closed chevron. */
+  icon?: ReactNode;
+  /** Open-state head label (`python · N lines`). */
+  lang: ReactNode;
+  /** Collapsed-state one-line preview. */
+  gist: ReactNode;
+  /** Variant-specific right-cluster (bg-chip, detach button, …). */
+  chips?: ReactNode;
+  /** Renders `.cell-status.err` before `chips` when set. */
+  errChip?: string;
+  turn: number;
+  dur?: number;
+  open: boolean;
+  /** `undefined` → head is inert (forced open). */
+  onToggle?: () => void;
+  actions?: ReactNode;
+  children: ReactNode;
+};
+
+/** The `.code-cell > .cc-head + body` frame both cell variants render into.
+ *  `children`/`actions` mount only when `open`. */
+function CellShell(p: CellShellProps): JSX.Element {
+  const { open, onToggle, dur } = p;
+  const cls = `code-cell${open ? "" : " collapsed"}${p.className ? ` ${p.className}` : ""}`;
+  return (
+    <div className={cls}>
+      <div
+        className="cc-head"
+        {...(onToggle && { role: "button", tabIndex: 0, onClick: onToggle })}
+      >
+        {p.icon ?? <i className={`bi bi-chevron-${open ? "down" : "right"} cc-chev`} />}
+        {open ? (
+          <span className="cc-gist cc-lang">{p.lang}</span>
+        ) : (
+          <code className="cc-gist">{p.gist}</code>
+        )}
+        {p.errChip && (
+          <span className="cell-status err" title={p.errChip}>
+            <i className="bi bi-exclamation-triangle-fill" /> error
+          </span>
+        )}
+        {p.chips}
+        {dur != null && (
+          <span className="cc-dur" title={`ran for ${dur.toFixed(2)}s`}>
+            {dur.toFixed(1)}s
+          </span>
+        )}
+        <span className="turn-no">turn {p.turn}</span>
+      </div>
+      {open && p.children}
+      {/* Actions only when expanded — the collapsed head is a single ~28px row
+          where an absolute button would collide with `.turn-no`. */}
+      {open && p.actions && <BlockActions>{p.actions}</BlockActions>}
     </div>
   );
 }
@@ -351,194 +422,108 @@ function CodeCell({
   ns: NsSummary;
 }): JSX.Element {
   const send = useSession((s) => s.send);
-  // UI-AUDIT §C: collapsed-first. A settled, non-erroring cell is noise —
-  // show a one-line gist. Running/errored cells are forced open (you need to
-  // see what's executing / what blew up). A user's manual expand sticks: once
-  // `userToggled`, later transitions (running → settled) leave it alone.
   const forceOpen = running || errored;
-  const [collapsed, setCollapsed] = useState(!forceOpen);
-  const userToggled = useRef(false);
-  useEffect(() => {
-    if (!userToggled.current) setCollapsed(!forceOpen);
-  }, [forceOpen]);
-  const open = forceOpen || !collapsed;
-
-  const cls =
-    "code-cell" +
-    (open ? "" : " collapsed") +
-    (detached || background ? " bg" : "");
+  const [open, toggle] = useCollapsedFirst(forceOpen);
   // `run in background` is only offered on the *live* blocking cell:
   // `running` (ToolEvent still `pending`) implies this is the latest turn —
   // the agent loop can't advance past an unfinished tool call.
-  // Already-detached/background cells don't need it.
   const canDetach = running && !detached && !background;
   const showBgChip = detached || background || settledBg != null;
-  // When expanded the body already shows line 1, so the head gist would just
-  // duplicate it — swap for a faint `python · N lines` label instead.
   const loc = code.trimEnd().split("\n").length;
-  const gist: ReactNode = open
-    ? `python · ${loc} line${loc === 1 ? "" : "s"}`
-    : tokenizeGist(firstNonBlankLine(code), ns);
-  const toggle = (): void => {
-    if (forceOpen) return;
-    userToggled.current = true;
-    setCollapsed((v) => !v);
-  };
   return (
-    <div className={cls}>
-      <div
-        className="cc-head"
-        {...(!forceOpen && { role: "button", tabIndex: 0, onClick: toggle })}
-      >
-        <i className={`bi bi-chevron-${open ? "down" : "right"} cc-chev`} />
-        {open ? (
-          <span className="cc-gist cc-lang">{gist}</span>
-        ) : (
-          <code className="cc-gist">{gist}</code>
-        )}
-        {errored && !running && !interrupted && (
-          <span className="cell-status err" title="cell raised">
-            <i className="bi bi-exclamation-triangle-fill" /> error
-          </span>
-        )}
-        {interrupted && (
-          <span className="cell-status interrupted" title="interrupted by user">
-            interrupted
-          </span>
-        )}
-        {showBgChip && (
-          <span
-            className="cc-bg-chip"
-            title={
-              settledBg
-                ? `background cell settled; result bound to \`${settledBg}\``
-                : "running in background; result will post here"
-            }
-          >
-            {settledBg ? `done · ${settledBg}` : "bg"}
-          </span>
-        )}
-        {canDetach && (
-          <button
-            type="button"
-            className="cc-bg-btn"
-            title="Detach: keep running in background, unblock the orchestrator"
-            onClick={(e) => {
-              e.stopPropagation();
-              send({ t: "detach_cell" });
-            }}
-          >
-            <i className="bi bi-layer-backward" /> run in background
-          </button>
-        )}
-        {duration != null && (
-          <span className="cc-dur" title={`cell ran for ${duration.toFixed(2)}s`}>
-            {duration.toFixed(1)}s
-          </span>
-        )}
-        <span className="turn-no">turn {turn}</span>
-      </div>
-      {open && (
-        <pre>
-          <code>{code}</code>
-        </pre>
-      )}
-      {/* Only when expanded — the collapsed head is a single ~28px row where an
-          absolute button would collide with `.turn-no`, and copying a one-line
-          gist isn't worth the affordance. */}
-      {open && (
-        <BlockActions>
-          <CopyBtn text={code} title="copy code" />
-        </BlockActions>
-      )}
-    </div>
+    <CellShell
+      className={detached || background ? "bg" : undefined}
+      lang={`python · ${loc} line${loc === 1 ? "" : "s"}`}
+      gist={tokenizeGist(firstNonBlankLine(code), ns)}
+      turn={turn}
+      dur={duration}
+      open={open}
+      onToggle={forceOpen ? undefined : toggle}
+      actions={<CopyBtn text={code} title="copy code" />}
+      errChip={errored && !running && !interrupted ? "cell raised" : undefined}
+      chips={
+        <>
+          {interrupted && (
+            <span className="cell-status interrupted" title="interrupted by user">
+              interrupted
+            </span>
+          )}
+          {showBgChip && (
+            <span
+              className="cc-bg-chip"
+              title={
+                settledBg
+                  ? `background cell settled; result bound to \`${settledBg}\``
+                  : "running in background; result will post here"
+              }
+            >
+              {settledBg ? `done · ${settledBg}` : "bg"}
+            </span>
+          )}
+          {canDetach && (
+            <button
+              type="button"
+              className="cc-bg-btn"
+              title="Detach: keep running in background, unblock the orchestrator"
+              onClick={(e) => {
+                e.stopPropagation();
+                send({ t: "detach_cell" });
+              }}
+            >
+              <i className="bi bi-layer-backward" /> run in background
+            </button>
+          )}
+        </>
+      }
+    >
+      <pre>
+        <code>{code}</code>
+      </pre>
+    </CellShell>
   );
 }
 
 // ── bash cell (M1-HYBRID.md §`bash` tool) ───────────────────────────────────
-
-function resultText(ev: ToolEvent): string {
-  const r = ev.result;
-  if (typeof r === "string") return r;
-  if (Array.isArray(r))
-    return r.map((c) => ("text" in c ? c.text : `[${c.type}]`)).join("");
-  if (r != null && typeof r === "object" && "text" in r) return String(r.text);
-  return r == null ? "" : String(r);
-}
 
 function BashCell({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Element {
   const cmd = typeof ev.arguments.cmd === "string" ? ev.arguments.cmd : "";
   const running = ev.pending === true;
   const errored = ev.error != null;
   const background = ev.arguments.background === true;
-  // Non-python tools don't emit `cell_done`, so read wall-clock from the
-  // ToolEvent's own timing (`working_time` settles when `pending` clears).
-  const duration =
-    typeof ev.working_time === "number" ? ev.working_time : undefined;
-  const result = resultText(ev);
-
-  // Same collapsed-first behaviour as `.code-cell`.
+  const result = resultText(ev.result);
   const forceOpen = running || errored;
-  const [collapsed, setCollapsed] = useState(!forceOpen);
-  const userToggled = useRef(false);
-  useEffect(() => {
-    if (!userToggled.current) setCollapsed(!forceOpen);
-  }, [forceOpen]);
-  const open = forceOpen || !collapsed;
-  const toggle = (): void => {
-    if (forceOpen) return;
-    userToggled.current = true;
-    setCollapsed((v) => !v);
-  };
-
-  const cls =
-    "code-cell bash-cell" + (open ? "" : " collapsed") + (background ? " bg" : "");
-  const gist = open
-    ? `bash${background ? " · bg" : ""}`
-    : firstNonBlankLine(cmd);
+  const [open, toggle] = useCollapsedFirst(forceOpen);
   return (
-    <div className={cls}>
-      <div
-        className="cc-head"
-        {...(!forceOpen && { role: "button", tabIndex: 0, onClick: toggle })}
-      >
-        <i className="bi bi-terminal cc-chev" />
-        <span className="cc-prompt">$</span>
-        {open ? (
-          <span className="cc-gist cc-lang">{gist}</span>
-        ) : (
-          <code className="cc-gist">{gist}</code>
-        )}
-        {errored && !running && (
-          <span className="cell-status err" title="command failed">
-            <i className="bi bi-exclamation-triangle-fill" /> error
-          </span>
-        )}
-        {background && <span className="cc-bg-chip">bg</span>}
-        {duration != null && (
-          <span className="cc-dur" title={`ran for ${duration.toFixed(2)}s`}>
-            {duration.toFixed(1)}s
-          </span>
-        )}
-        <span className="turn-no">turn {turn}</span>
-      </div>
-      {open && (
+    <CellShell
+      className={`bash-cell${background ? " bg" : ""}`}
+      icon={
         <>
-          <pre>
-            <code>{cmd}</code>
-          </pre>
-          {(result || ev.error) && (
-            <pre className="bash-result">
-              {result}
-              {ev.error && <span className="err">{ev.error.message}</span>}
-            </pre>
-          )}
-          <BlockActions>
-            <CopyBtn text={cmd} title="copy command" />
-          </BlockActions>
+          <i className="bi bi-terminal cc-chev" />
+          <span className="cc-prompt">$</span>
         </>
+      }
+      lang={`bash${background ? " · bg" : ""}`}
+      gist={firstNonBlankLine(cmd)}
+      turn={turn}
+      // Non-python tools don't emit `cell_done`, so read wall-clock from the
+      // ToolEvent's own timing (`working_time` settles when `pending` clears).
+      dur={typeof ev.working_time === "number" ? ev.working_time : undefined}
+      open={open}
+      onToggle={forceOpen ? undefined : toggle}
+      actions={<CopyBtn text={cmd} title="copy command" />}
+      errChip={errored && !running ? "command failed" : undefined}
+      chips={background && <span className="cc-bg-chip">bg</span>}
+    >
+      <pre>
+        <code>{cmd}</code>
+      </pre>
+      {(result || ev.error) && (
+        <pre className="bash-result">
+          {result}
+          {ev.error && <span className="err">{ev.error.message}</span>}
+        </pre>
       )}
-    </div>
+    </CellShell>
   );
 }
 
@@ -562,11 +547,11 @@ function FileReceipt({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Element
   const bytes =
     typeof content === "string"
       ? new TextEncoder().encode(content).length
-      : resultText(ev).length;
+      : resultText(ev.result).length;
   return (
     <div
       className={`file-receipt${ev.error ? " err" : ""}`}
-      title={ev.error ? ev.error.message : resultText(ev)}
+      title={ev.error ? ev.error.message : resultText(ev.result)}
     >
       <i className="bi bi-file-earmark" />
       <span className="fr-verb">{verb}</span>

@@ -14,6 +14,7 @@
  *                  empty. `.iv-url` in the footer shows basename only.
  */
 import type { ChatMessage } from "@tsmono/inspect-common";
+import { basename } from "@tsmono/util";
 
 import { useState, type JSX } from "react";
 
@@ -53,8 +54,6 @@ type Props = {
 /** Short role tag for the gutter (UI-AUDIT §C). */
 const roleTag = (r: ChatMessage["role"]): string =>
   r === "assistant" ? "asst" : r === "system" ? "sys" : r;
-
-const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() ?? p;
 
 // -- shared shell -------------------------------------------------------------
 

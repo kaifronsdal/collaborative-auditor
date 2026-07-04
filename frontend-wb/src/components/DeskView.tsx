@@ -4,6 +4,7 @@ import { type JSX, useCallback, useEffect, useRef, useState } from "react";
 
 import { useSession } from "../store/session";
 import { Column, type ColumnHandle } from "./Column";
+import { ComposerTextarea } from "./ComposerTextarea";
 import { OrchColumn } from "./orch/OrchColumn";
 import { SwimlaneColumn } from "./SwimlaneColumn";
 import { IconClose, IconPause, IconPlay, IconSend } from "./icons";
@@ -151,21 +152,11 @@ export function DeskView(): JSX.Element {
             />
             {/* Composer docks under the auditor column — the only thing it sends to. */}
             <div className="composer">
-              <textarea
-                className="composer-input"
-                rows={1}
+              <ComposerTextarea
                 value={feedback}
-                onChange={(e) => {
-                  setFeedback(e.target.value);
-                  const t = e.target;
-                  t.style.height = "auto";
-                  t.style.height = `${Math.min(t.scrollHeight, 140)}px`;
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    if (!isEnded || hasText) primary.onClick();
-                  }
+                setValue={setFeedback}
+                onEnter={() => {
+                  if (!isEnded || hasText) primary.onClick();
                 }}
                 placeholder="Steer the auditor…"
               />

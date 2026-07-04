@@ -15,6 +15,9 @@
  *   the footer; on finish each scanner's `df_head` HTML renders inline.
  */
 import { useRef, useState, type JSX } from "react";
+
+import { basename } from "@tsmono/util";
+
 import type { Up } from "../../../lib/wire";
 
 // -- payload shapes -----------------------------------------------------------
@@ -80,8 +83,6 @@ type StatusFilter = "all" | SampleRow["status"];
 /** `"ValueError: bad seed"` → `"ValueError"`. */
 const errClass = (e: string | null | undefined): string =>
   e?.split(/[:(\n]/, 1)[0].trim() || "error";
-
-const basename = (p: string): string => p.replace(/\/+$/, "").split("/").pop() ?? p;
 
 /** First numeric value in a row's score dict, or `null`. */
 const firstNumeric = (scores: Record<string, unknown>): number | null => {

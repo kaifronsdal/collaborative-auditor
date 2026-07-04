@@ -1,3 +1,5 @@
+import type { ChatMessage } from "@tsmono/inspect-common";
+
 /** Cast an arg to string, or `""` if absent / wrong type. */
 export const str = (v: unknown): string => (typeof v === "string" ? v : "");
 
@@ -20,4 +22,12 @@ export function resultText(result: unknown): string {
   }
   if (typeof result === "object" && "text" in result) return String((result as { text: unknown }).text);
   return JSON.stringify(result);
+}
+
+/** Flatten `ChatMessage.content` (string or block list) to plain text,
+ *  dropping non-text blocks (reasoning/image/…). */
+export function contentText(content: ChatMessage["content"]): string {
+  return typeof content === "string"
+    ? content
+    : content.map((c) => (c.type === "text" ? c.text : "")).join("");
 }

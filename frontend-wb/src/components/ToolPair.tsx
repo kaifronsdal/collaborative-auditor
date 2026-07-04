@@ -16,6 +16,7 @@ import { type JSX, useEffect, useRef, useState } from "react";
 
 import { Chevron, StatusDot } from "./icons";
 import { renderTool } from "./tool-renderers";
+import { resultText } from "./tool-renderers/util";
 
 export type RewriteDraft = {
   status: "pending" | "ready" | "error";
@@ -96,18 +97,6 @@ function signature(args: Record<string, unknown>): string {
     }
   }
   return parts.join(" · ");
-}
-
-function resultText(result: unknown): string {
-  if (result == null) return "";
-  if (typeof result === "string") return result;
-  if (typeof result === "number" || typeof result === "boolean") return String(result);
-  if (Array.isArray(result)) {
-    return result
-      .map((r) => (r && typeof r === "object" && "text" in r ? r.text : `[${r?.type ?? "?"}]`))
-      .join("\n");
-  }
-  return JSON.stringify(result);
 }
 
 /** Capture the current `window.getSelection()` if it lives inside `root`. */

@@ -24,6 +24,7 @@ import type { ChatMessage, Event } from "@tsmono/inspect-common";
 import { useEvents } from "../../lib/selectors";
 import type { Status } from "../../lib/wire";
 import { useSession } from "../../store/session";
+import { ComposerTextarea } from "../ComposerTextarea";
 import { IconPause, IconPlay, IconSend, IconStep, IconStop } from "../icons";
 import { ShimmerBubble } from "../ShimmerBubble";
 import { OrchTurn, type NsSummary } from "./OrchTurn";
@@ -50,7 +51,11 @@ const STATUS_TEXT: Record<Status, string> = {
 
 /** Tri-state header dot class. `running` splits into generating (blue) vs
  *  kernel-executing (amber) by whether the current cell's `ToolEvent` is
- *  pending; `waiting` (gate) is purple. */
+ *  pending; `waiting` (gate) is purple.
+ *
+ *  TODO(Batch G): `.rl-dot-idle/gen/exec/gate` currently live in `orch.css`
+ *  (owned by another agent this batch); move all 7 states to `styles.css`
+ *  alongside the M0 `.rl-dot-*` rules. */
 function dotClass(status: Status, cellRunning: boolean): string {
   if (status === "waiting") return "gate";
   if (status === "running") return cellRunning ? "exec" : "gen";
@@ -234,23 +239,10 @@ export function OrchColumn(): JSX.Element {
             <i className="bi bi-arrow-down" /> {unseen} new
           </button>
         )}
-        <textarea
-          className="composer-input"
-          rows={1}
+        <ComposerTextarea
           value={text}
-          onChange={(e) => {
-            setText(e.target.value);
-            const el = e.target;
-            el.style.height = "auto";
-            el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              if (cellRunning) interruptAndSend();
-              else sendText();
-            }
-          }}
+          setValue={setText}
+          onEnter={cellRunning ? interruptAndSend : sendText}
           placeholder="Instruct the orchestrator…"
         />
         <div className="composer-lower">
