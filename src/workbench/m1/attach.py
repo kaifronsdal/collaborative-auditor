@@ -46,13 +46,13 @@ from inspect_ai.log._file import (  # noqa: PLC2701
 )
 from IPython.display import display
 
-from workbench.m1.kernel import WB_MIME
-from workbench.m1.run import (
+from workbench.m1.handles import (
     SampleRow,
     _finite_or_none,  # noqa: PLC2701
     _first_numeric,  # noqa: PLC2701
     _PollingHandle,  # noqa: PLC2701
 )
+from workbench.m1.kernel import WB_MIME
 
 
 @dataclass(kw_only=True)

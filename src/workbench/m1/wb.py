@@ -12,10 +12,11 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from workbench.m1 import proposals
 from workbench.m1.attach import AttachedRun
-from workbench.m1.cite import Finding, Quote, cite
-from workbench.m1.kernel import Prompt
+from workbench.m1.handles import ScanHandle
 from workbench.m1.plots import Plots
+from workbench.m1.proposals import Finding, Gate, Prompt, Quote
 from workbench.m1.read import (
     Excerpt,
     TranscriptRef,
@@ -23,10 +24,8 @@ from workbench.m1.read import (
     read_transcript,
     transcript,
 )
-from workbench.m1.run import RunProposal, ScanHandle
 
 if TYPE_CHECKING:
-    from workbench.m1.kernel import Gate
     from workbench.session import Session
 
 
@@ -40,7 +39,7 @@ class Workbench:
 
     def __init__(
         self,
-        gate: "Gate",
+        gate: Gate,
         session: "Session | None",  # noqa: ARG002
         *,
         session_dir: str | None = None,
@@ -83,20 +82,7 @@ class Workbench:
         """Propose a seed list for human approval (in-cell alias of the
         ``review_seeds`` tool). The human may strike seeds or deny outright;
         returns ``{"approved": bool, "seeds": list[str], "reason": str|None}``."""
-        cfg = dict(config or {})
-        prop = RunProposal(
-            seeds=list(seeds),
-            config=cfg,
-            description=description,
-            n_per_seed=int(cfg.get("n_per_seed", 1)),
-            model=cfg.get("model"),
-        )
-        await self._gate(prop)
-        return {
-            "approved": not prop.denied,
-            "seeds": prop.seeds,
-            "reason": (prop.verdict or {}).get("reason"),
-        }
+        return await proposals.review_seeds(self._gate, seeds, description, config)
 
     async def cite(
         self,
@@ -108,8 +94,8 @@ class Workbench:
     ) -> Finding:
         """Propose a finding for the human to sign. Always blocks; deny
         returns an unsigned ``Finding`` (no exception)."""
-        return await cite(
-            self._gate, claim, list(quotes), grades_ref=grades_ref, description=description
+        return await proposals.cite(
+            self._gate, claim, quotes, grades_ref=grades_ref, description=description
         )
 
     #: Plot helpers over ``px.*`` — ``link``/``annotate_top``/``paired_slope``/

@@ -29,8 +29,7 @@ import time
 import traceback
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from typing import Any, ClassVar, Protocol, Self
+from typing import Any, ClassVar, Self
 from uuid import uuid4
 
 from IPython.core.interactiveshell import ExecutionResult, InteractiveShell
@@ -103,106 +102,14 @@ class TurnResult:
     duration: float = 0.0
 
 
-# -- gating -------------------------------------------------------------------
-
-
-class Proposal(Protocol):
-    """A gated card: renders pending, awaits a verdict, then renders resolved."""
-
-    id: str
-
-    def _repr_mimebundle_(
-        self, include: Any = None, exclude: Any = None
-    ) -> dict[str, Any]: ...
-
-    def resolve(self, verdict: Any) -> None: ...
-
-
-@dataclass
-class Prompt:
-    """The minimal working gated helper for the spike (``wb.ask_human``)."""
-
-    question: str
-    options: list[str] | None = None
-    id: str = field(default_factory=lambda: uuid4().hex)
-    answer: str | None = None
-    answered_at: str | None = None
-
-    def resolve(self, verdict: Any) -> None:
-        self.answer = str(verdict)
-        self.answered_at = datetime.now(UTC).isoformat()
-
-    def _repr_mimebundle_(
-        self, include: Any = None, exclude: Any = None
-    ) -> dict[str, Any]:
-        pending = self.answer is None
-        return {
-            "text/plain": (
-                f"<Prompt {self.id[:6]} · {self.question!r} · pending>"
-                if pending
-                else f"<Prompt {self.id[:6]} → {self.answer!r}>"
-            ),
-            WB_MIME: {
-                "kind": "prompt",
-                "id": self.id,
-                "question": self.question,
-                "options": self.options,
-                "answer": self.answer,
-                "answered_at": self.answered_at,
-                "pending": pending,
-            },
-        }
-
-
-class Gate:
-    """``display(proposal)`` → ``await Future`` → ``dh.update(resolved)``.
-
-    The WS handler resolves via ``.resolve()``. Extracted from the kernel so
-    ``Workbench`` can hold the gate directly instead of reaching through
-    ``kernel``.
-    """
-
-    def __init__(self, on_change: Callable[[], None] | None = None) -> None:
-        self.pending: dict[str, asyncio.Future[Any]] = {}
-        #: Fired whenever ``pending`` gains or loses an entry — the
-        #: ``Orchestrator`` hooks this to ``session.broadcast_status()`` so
-        #: the header flips to/from ``waiting`` the moment a gate opens
-        #: (UI-ITERATION §Backend-needed).
-        self.on_change = on_change
-
-    async def __call__(self, proposal: Proposal) -> Any:
-        dh = display(proposal, display_id=proposal.id)
-        fut: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-        self.pending[proposal.id] = fut
-        if self.on_change is not None:
-            self.on_change()
-        try:
-            verdict = await fut
-        finally:
-            self.pending.pop(proposal.id, None)
-            if self.on_change is not None:
-                self.on_change()
-        proposal.resolve(verdict)
-        dh.update(proposal)
-        return verdict
-
-    def resolve(self, display_id: str, verdict: Any) -> bool:
-        """Resolve a pending gate. Returns ``False`` if ``display_id`` unknown."""
-        fut = self.pending.get(display_id)
-        if fut is None or fut.done():
-            return False
-        fut.set_result(verdict)
-        return True
-
-
 # -- kernel -------------------------------------------------------------------
 
 
 class OrchestratorKernel:
     """One in-process IPython shell driving the M1 orchestrator turn loop.
 
-    Owns the ``InteractiveShell``, the per-turn output lists, the ``Gate``,
-    and the background-cell task registry. The ``Session`` integration is a
+    Owns the ``InteractiveShell``, the per-turn output lists, and the
+    background-cell task registry. The ``Session`` integration is a
     single ``on_display`` callback: ``Orchestrator`` hooks it to
     ``Orchestrator._on_display → session.emit(InfoEvent)`` so every kernel
     output lands on the wire in emission order alongside the M0 event stream.
@@ -248,8 +155,6 @@ class OrchestratorKernel:
         self._current_detach: asyncio.Event | None = None
         #: source of each still-running cell, for ``shadow_warning``.
         self._bg_code: dict[int, str] = {}
-
-        self.gate = Gate()
 
         # Refs only — no swap. ``__enter__`` re-captures and swaps; keeping
         # a valid ``_real_stderr`` here means ``_forward``/``_showtraceback``

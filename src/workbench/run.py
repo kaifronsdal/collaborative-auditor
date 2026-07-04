@@ -57,8 +57,8 @@ from inspect_petri.target import (
 from shortuuid import uuid
 
 from workbench.auditor import workbench_auditor
-from workbench.gate import StepGated
 from workbench.sources import GEN_SOURCE, TARGET_GEN_SOURCE
+from workbench.step import StepGated
 from workbench.view import Role, Status
 
 if TYPE_CHECKING:

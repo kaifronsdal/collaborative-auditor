@@ -63,6 +63,7 @@ from workbench.m1.kernel import (
     OrchestratorKernel,
 )
 from workbench.m1.orchestrator import ORCH_SOURCE, _prewarm  # noqa: PLC2701
+from workbench.m1.proposals import Gate
 from workbench.m1.tools import _session_dir, make_tools  # noqa: PLC2701
 from workbench.m1.wb import Workbench
 from workbench.session import Session
@@ -119,10 +120,10 @@ async def _amain() -> None:
 
 
 async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa: PLR0915
-    # Duck-typed orch: ``make_tools`` reads ``.kernel``/``.span_id``, and
-    # ``_turn`` reads ``.state``/``._turn_msg`` (rewind bookkeeping).
+    # Duck-typed orch: ``make_tools`` reads ``.kernel``/``.gate``/``.span_id``,
+    # and ``_turn`` reads ``.state``/``._turn_msg`` (rewind bookkeeping).
     orch = SimpleNamespace(
-        kernel=k, span_id="smoke-hybrid", state=None, _turn_msg={}
+        kernel=k, gate=Gate(), span_id="smoke-hybrid", state=None, _turn_msg={}
     )
     session_dir = _session_dir(orch)
     (bash, read_file, write_file, edit_file, ask_human, review_seeds, review_finding) = (
@@ -186,16 +187,16 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
     )
     for _ in range(50):
         await asyncio.sleep(0)
-        if k.gate.pending:
+        if orch.gate.pending:
             break
-    assert len(k.gate.pending) == 1, "review_seeds gate not registered"
-    (pid,) = k.gate.pending
-    assert k.gate.resolve(pid, {"surviving": ["s0", "s1"]})
+    assert len(orch.gate.pending) == 1, "review_seeds gate not registered"
+    (pid,) = orch.gate.pending
+    assert orch.gate.resolve(pid, {"surviving": ["s0", "s1"]})
     result = json.loads(await task)  # ToolResult has no dict — encoded
     assert result["approved"] is True, result
     assert result["seeds"] == ["a", "b"], result
     assert result["reason"] is None, result
-    assert not k.gate.pending
+    assert not orch.gate.pending
     print("✓ review_seeds: {surviving:[s0,s1]} → approved, seeds=['a','b']")
 
     # ---- review_seeds: deny → approved=False -------------------------------
@@ -204,10 +205,10 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
     )
     for _ in range(50):
         await asyncio.sleep(0)
-        if k.gate.pending:
+        if orch.gate.pending:
             break
-    (pid,) = k.gate.pending
-    k.gate.resolve(pid, {"denied": True, "reason": "too broad"})
+    (pid,) = orch.gate.pending
+    orch.gate.resolve(pid, {"denied": True, "reason": "too broad"})
     result = json.loads(await task)
     assert result == {"approved": False, "seeds": ["x"], "reason": "too broad"}, result
     print("✓ review_seeds: denied → approved=False, reason carried")
@@ -216,10 +217,10 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
     task = asyncio.create_task(ask_human(question="proceed?", options=["y", "n"]))
     for _ in range(50):
         await asyncio.sleep(0)
-        if k.gate.pending:
+        if orch.gate.pending:
             break
-    (pid,) = k.gate.pending
-    k.gate.resolve(pid, "y")
+    (pid,) = orch.gate.pending
+    orch.gate.resolve(pid, "y")
     assert await task == "y"
     print("✓ ask_human: gate → 'y'")
 
@@ -233,10 +234,10 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
     )
     for _ in range(50):
         await asyncio.sleep(0)
-        if k.gate.pending:
+        if orch.gate.pending:
             break
-    (pid,) = k.gate.pending
-    k.gate.resolve(pid, {"signed": True, "by": "tester"})
+    (pid,) = orch.gate.pending
+    orch.gate.resolve(pid, {"signed": True, "by": "tester"})
     result = json.loads(await task)
     assert result["signed"] is True and result["quotes"][0]["sample_id"] == "s0", result
     print("✓ review_finding: gate → signed")
@@ -265,7 +266,7 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
 
 
 async def _run_attach(k: OrchestratorKernel) -> bool:  # noqa: PLR0915
-    k.shell.user_ns["wb"] = Workbench(k.gate, session=None)
+    k.shell.user_ns["wb"] = Workbench(Gate(), session=None)
 
     task_file = os.path.join(tempfile.gettempdir(), "wb_smoke_hybrid_task.py")
     with open(task_file, "w") as f:

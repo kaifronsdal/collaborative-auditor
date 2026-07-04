@@ -26,6 +26,7 @@ from inspect_ai.solver import generate
 
 from workbench.m1.kernel import STREAM_MIME, WB_MIME, OrchestratorKernel
 from workbench.m1.orchestrator import _prewarm  # noqa: PLC2701
+from workbench.m1.proposals import Gate
 from workbench.m1.wb import Workbench
 
 
@@ -51,7 +52,7 @@ async def _run(k: OrchestratorKernel) -> None:
         print("- wb.scan: inspect_scout not installed, skipping")
         return
 
-    k.shell.user_ns["wb"] = Workbench(k.gate, session=None)
+    k.shell.user_ns["wb"] = Workbench(Gate(), session=None)
     k.shell.user_ns["grep_scanner"] = grep_scanner
 
     # seed a 4-sample mockllm .eval to scan over

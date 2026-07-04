@@ -758,7 +758,7 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             # coroutine interprets it (edits/denied/answer).
             if session.orchestrator is None:
                 return
-            ok = session.orchestrator.kernel.gate.resolve(
+            ok = session.orchestrator.gate.resolve(
                 data["display_id"], data.get("verdict")
             )
             if not ok:

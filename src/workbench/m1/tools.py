@@ -10,7 +10,7 @@ Seven inspect ``Tool`` s the orchestrator agent gets alongside ``python``:
 - ``read_file`` / ``write_file`` / ``edit_file`` — resolved relative to
   ``session_dir``; plain string returns, no display side-effects.
 - ``ask_human`` / ``review_seeds`` / ``review_finding`` — thin wrappers
-  around ``kernel.gate(proposal)`` (same ``Gate`` primitive as in-cell
+  around ``orch.gate(proposal)`` (same ``Gate`` primitive as in-cell
   ``wb.ask_human`` etc., just exposed at the tool level).
 
 All eight are closures over the ``Orchestrator`` (for ``.kernel`` and
@@ -34,9 +34,9 @@ from uuid import uuid4
 from inspect_ai.tool import Tool, tool
 from inspect_ai.tool._tools._execute import code_viewer  # noqa: PLC2701
 
-from workbench.m1.cite import CiteProposal, _as_quote  # noqa: PLC2701
-from workbench.m1.kernel import STREAM_MIME, WB_MIME, DisplayEvent, Prompt
-from workbench.m1.run import RunProposal
+from workbench.m1 import proposals
+from workbench.m1.kernel import STREAM_MIME, WB_MIME, DisplayEvent
+from workbench.m1.proposals import Prompt
 
 if TYPE_CHECKING:
     from workbench.m1.orchestrator import Orchestrator
@@ -389,7 +389,7 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 options: Optional fixed choices (rendered as buttons).
             """
             with _turn(orch):
-                return str(await kernel.gate(Prompt(question, options)))
+                return str(await orch.gate(Prompt(question, options)))
 
         return execute
 
@@ -409,22 +409,12 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 description: One-line rationale for the run.
                 config: Run config (``model``, ``max_turns``, ``n_per_seed``, …).
             """
-            cfg = dict(config or {})
-            prop = RunProposal(
-                seeds=list(seeds),
-                config=cfg,
-                description=description,
-                n_per_seed=int(cfg.get("n_per_seed", 1)),
-                model=cfg.get("model"),
-            )
             with _turn(orch):
-                await kernel.gate(prop)
+                result = await proposals.review_seeds(
+                    orch.gate, seeds, description, config
+                )
             # inspect's ``ToolResult`` doesn't include ``dict`` — encode.
-            return json.dumps({
-                "approved": not prop.denied,
-                "seeds": prop.seeds,
-                "reason": (prop.verdict or {}).get("reason"),
-            })
+            return json.dumps(result)
 
         return execute
 
@@ -441,18 +431,15 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                     (each ``{"sample_id","at","role","text"}``).
                 description: Context for the reviewer.
             """
-            prop = CiteProposal(
-                claim=claim,
-                quotes=[_as_quote(q) for q in quotes],
-                grades_ref=None,
-                description=description,
-            )
             with _turn(orch):
-                await kernel.gate(prop)
+                finding = await proposals.cite(
+                    orch.gate, claim, quotes, description=description
+                )
             return json.dumps({
-                "signed": prop.signed,
-                "quotes": [vars(q) for q in prop.quotes],
-                "reason": (prop.verdict or {}).get("reason"),
+                "signed": finding.signed_by is not None,
+                "by": finding.signed_by,
+                "claim": finding.claim,
+                "quotes": [vars(q) for q in finding.quotes],
             })
 
         return execute

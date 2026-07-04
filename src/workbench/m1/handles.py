@@ -1,4 +1,4 @@
-"""M1 shared run primitives — post M1-HYBRID step 6.
+"""M1 live-job handles — post M1-HYBRID step 6 / M1-REFACTOR Batch A.
 
 The in-process ``eval_async`` launcher (``RunHandle.launch`` /
 ``AuditRunHandle.launch``), the ``CONTROL`` steer/stop registry,
@@ -8,14 +8,16 @@ via :class:`workbench.m1.attach.AttachedRun`. See ``M1-HYBRID.md`` and
 ``patches/CONCURRENT-EVAL-DESIGN.md`` for why concurrent in-process
 ``eval_async`` was abandoned.
 
-What remains here is what ``AttachedRun`` / ``ScanHandle`` /
-``review_seeds`` still share:
+What remains here is the polling-handle machinery ``AttachedRun`` and
+``ScanHandle`` share:
 
-- :class:`RunProposal` — the ``review_seeds`` gate card.
 - :class:`SampleRow` / :class:`_PollingHandle` — base for
   ``AttachedRun`` and ``ScanHandle``.
 - :class:`ScanHandle` — scout runs in-process (no ``eval_async``, so no
   concurrent-eval hazard).
+
+``RunProposal`` (the ``review_seeds`` gate card) lives in
+:mod:`workbench.m1.proposals`.
 """
 
 from __future__ import annotations
@@ -30,84 +32,6 @@ from uuid import uuid4
 from IPython.display import DisplayHandle, display
 
 from workbench.m1.kernel import WB_MIME
-
-# -- proposals (gated cards) --------------------------------------------------
-
-
-@dataclass
-class RunProposal:
-    """The pre-launch gate card for ``review_seeds``.
-
-    ``resolve()`` receives the WS ``approve`` verdict (``{"denied": bool,
-    "seeds": list[str] | None, "reason": str | None}``); the human may have
-    struck seeds. The resolved bundle shows ``approved by …`` and the
-    surviving count.
-    """
-
-    seeds: list[str]
-    config: dict[str, Any]
-    description: str
-    n_per_seed: int = 1
-    #: Target-model id for the config line on the gate card (UI-AUDIT §A).
-    model: str | None = None
-    id: str = field(default_factory=lambda: uuid4().hex)
-    verdict: dict[str, Any] | None = None
-
-    @property
-    def n(self) -> int:
-        return len(self.seeds) * self.n_per_seed
-
-    def resolve(self, verdict: Any) -> None:
-        v = verdict or {}
-        self.verdict = v
-        if not isinstance(v, dict):
-            return
-        # Frontend (UI-AUDIT §A) sends ``surviving`` as a list of seed *ids*
-        # (``s{i}`` — matching the ``seeds`` payload below); accept that, or
-        # the older ``seeds`` shape (list of texts, or list of ``{id,text}``).
-        if (surviving := v.get("surviving")) is not None:
-            keep = set(surviving)
-            self.seeds = [s for i, s in enumerate(self.seeds) if f"s{i}" in keep]
-        elif (edited := v.get("seeds")) is not None:
-            self.seeds = [
-                e["text"] if isinstance(e, dict) else e for e in edited
-            ]
-
-    @property
-    def denied(self) -> bool:
-        return bool(self.verdict and self.verdict.get("denied"))
-
-    def _repr_mimebundle_(
-        self, include: Any = None, exclude: Any = None
-    ) -> dict[str, Any]:
-        pending = self.verdict is None
-        text = (
-            f"<RunProposal {self.id[:6]} · {self.n} audits · {self.description!r} · pending>"
-            if pending
-            else f"<RunProposal {self.id[:6]} · "
-            f"{'DENIED' if self.denied else f'approved · {self.n} audits'}>"
-        )
-        return {
-            "text/plain": text,
-            WB_MIME: {
-                "kind": "run_proposal",
-                "id": self.id,
-                "description": self.description,
-                "n": self.n,
-                "n_per_seed": self.n_per_seed,
-                "seeds": [
-                    {"id": f"s{i}", "text": s[:200]} for i, s in enumerate(self.seeds)
-                ],
-                "config": {
-                    "model": self.model,
-                    "n_per_seed": self.n_per_seed,
-                    **self.config,
-                },
-                "pending": pending,
-                "verdict": self.verdict,
-            },
-        }
-
 
 # -- run handles --------------------------------------------------------------
 

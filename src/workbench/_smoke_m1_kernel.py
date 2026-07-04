@@ -31,6 +31,7 @@ from workbench.m1.kernel import (
     DisplayEvent,
     OrchestratorKernel,
 )
+from workbench.m1.proposals import Gate
 from workbench.m1.wb import Workbench
 
 
@@ -43,7 +44,8 @@ async def _amain() -> None:
 
 
 async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa: PLR0915
-    k.shell.user_ns["wb"] = Workbench(k.gate, session=None)
+    gate = Gate()
+    k.shell.user_ns["wb"] = Workbench(gate, session=None)
 
     # ---- 1. last-expr auto-display via displayhook -------------------------
     r = await k.run_turn("x = 41\nx + 1")
@@ -90,15 +92,15 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
     # let the cell reach the await
     for _ in range(50):
         await asyncio.sleep(0)
-        if k.gate.pending:
+        if gate.pending:
             break
-    assert len(k.gate.pending) == 1, "gate future not registered"
-    (pid,) = k.gate.pending
+    assert len(gate.pending) == 1, "gate future not registered"
+    (pid,) = gate.pending
     pending_evs = [ev for ev in k.outputs[k._turn_counter] if ev.id == pid]
     assert len(pending_evs) == 1 and not pending_evs[0].update
     assert pending_evs[0].bundle[WB_MIME]["pending"] is True
     # WS handler resolves it
-    assert k.gate.resolve(pid, "y")
+    assert gate.resolve(pid, "y")
     r = await turn
     assert r.success
     assert k.shell.user_ns["ans"] == "y"
@@ -106,7 +108,7 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
     assert len(prompt_evs) == 2
     assert prompt_evs[1].update and prompt_evs[1].bundle[WB_MIME]["pending"] is False
     assert prompt_evs[1].bundle[WB_MIME]["answer"] == "y"
-    assert not k.gate.pending, "gate future not cleaned up"
+    assert not gate.pending, "gate future not cleaned up"
     print("✓ _gate: pending → resolve() → update(resolved)")
 
     # ---- 5. background cell + [done] notification -------------------------
@@ -181,18 +183,18 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
     )
     for _ in range(50):
         await asyncio.sleep(0)
-        if len(k.gate.pending) == 2:
+        if len(gate.pending) == 2:
             break
-    assert len(k.gate.pending) == 2, (
-        f"both gates should publish before either blocks: {k.gate.pending}"
+    assert len(gate.pending) == 2, (
+        f"both gates should publish before either blocks: {gate.pending}"
     )
-    for pid in list(k.gate.pending):
+    for pid in list(gate.pending):
         q = next(
             ev.bundle[WB_MIME]["question"]
             for ev in k.outputs[k._turn_counter]
             if ev.id == pid and not ev.update
         )
-        k.gate.resolve(pid, q[:-1])  # answer with the question text sans '?'
+        gate.resolve(pid, q[:-1])  # answer with the question text sans '?'
     r = await turn
     assert r.success and k.shell.user_ns["a"] == "one" and k.shell.user_ns["b"] == "two"
     print("✓ asyncio.gather: both gates pending simultaneously, resolve independently")
@@ -228,7 +230,7 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
         print("· pandas not installed, skipping DataFrame check")
 
     # ---- 13. resolve unknown id is a no-op --------------------------------
-    assert k.gate.resolve("nope", "x") is False
+    assert gate.resolve("nope", "x") is False
 
     # ---- 14. quiet() race: later cell's ';' must not drop earlier's expr --
     ra = await k.run_turn("await asyncio.sleep(0.05)\n'survived'", background=True)
@@ -494,7 +496,7 @@ def _make_task(tag: str, n: int = 4) -> None:
 
 
 def _row(status: str) -> object:
-    from workbench.m1.run import SampleRow  # noqa: PLC0415
+    from workbench.m1.handles import SampleRow  # noqa: PLC0415
 
     return SampleRow(id="s", status=status, epoch=1, input="", turns=0)
 

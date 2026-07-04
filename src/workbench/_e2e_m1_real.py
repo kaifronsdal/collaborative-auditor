@@ -52,14 +52,14 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR09
     # moment ``review_seeds`` opens (the frontend hangs off
     # ``session.broadcast_status()`` which this hook drives).
     on_change_statuses: list[str] = []
-    orig_on_change = orch.kernel.gate.on_change
+    orig_on_change = orch.gate.on_change
 
     def _tap() -> None:
         on_change_statuses.append(orch.status)
         if orig_on_change is not None:
             orig_on_change()
 
-    orch.kernel.gate.on_change = _tap
+    orch.gate.on_change = _tap
 
     # The prompt (m1/prompt.py) says: seeds → review_seeds → bash(inspect
     # eval) → python(wb.attach). "Get my sign-off" makes the review_seeds
@@ -82,7 +82,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR09
     resolved_run_proposal: str | None = None
     interrupt_ok: bool | None = None
     while time.monotonic() < deadline:
-        for gid in list(orch.kernel.gate.pending):
+        for gid in list(orch.gate.pending):
             wb = _find_wb_payload(session, gid)
             if wb and wb.get("kind") == "run_proposal":
                 seeds = wb.get("seeds") or []
@@ -95,7 +95,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR09
             else:
                 verdict = {}
                 print(f"  auto-resolving pending gate {gid[:8]} → {{}}")
-            orch.kernel.gate.resolve(gid, verdict)
+            orch.gate.resolve(gid, verdict)
         # Opportunistic: once an ``AttachedRun`` handle surfaces in the
         # kernel namespace with in-flight samples, interrupt one over ACP.
         if interrupt_ok is None:

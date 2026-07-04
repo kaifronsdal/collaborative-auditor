@@ -290,14 +290,14 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
 
             # ── turn 2: gate pending (do NOT resolve yet) ───────────────────
             orch.step()
-            await _wait_for(lambda: orch.kernel.gate.pending)
-            (gid,) = orch.kernel.gate.pending
+            await _wait_for(lambda: orch.gate.pending)
+            (gid,) = orch.gate.pending
             await page.wait_for_selector(".orch-col .out.gated", timeout=10_000)
             await asyncio.sleep(0.15)
             await _shot(page, "03-gate-pending", clip=await orch_col.bounding_box())
 
             # resolve → PromptCard collapses to answered state
-            assert orch.kernel.gate.resolve(gid, "y")
+            assert orch.gate.resolve(gid, "y")
             await page.wait_for_selector(".orch-col .out.answered", timeout=10_000)
             await asyncio.sleep(0.15)
             await _shot(page, "03b-gate-resolved", clip=await orch_col.bounding_box())
@@ -385,8 +385,8 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
 
             # ── turn 7: review_seeds → GateCard[run_proposal] ───────────────
             orch.step()
-            await _wait_for(lambda: orch.kernel.gate.pending, timeout=20.0)
-            (gid,) = orch.kernel.gate.pending
+            await _wait_for(lambda: orch.gate.pending, timeout=20.0)
+            (gid,) = orch.gate.pending
             await page.wait_for_selector(
                 ".turn[data-turn='7'] .out.gated", timeout=15_000
             )
@@ -410,7 +410,7 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
 
             # approve 3/12 seeds → the tool returns `{"approved":true, seeds:
             # [3]}` (no launch); GateCard flips to the `.out.answered` receipt.
-            orch.kernel.gate.resolve(gid, {"surviving": ["s0", "s1", "s2"]})
+            orch.gate.resolve(gid, {"surviving": ["s0", "s1", "s2"]})
             await page.wait_for_selector(
                 ".turn[data-turn='7'] .out.answered", timeout=15_000
             )
@@ -422,15 +422,15 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
 
             # ── turn 8: wb.cite → CiteProposal gate → FindingCard ───────────
             orch.step()
-            await _wait_for(lambda: orch.kernel.gate.pending, timeout=15.0)
-            (gid,) = orch.kernel.gate.pending
+            await _wait_for(lambda: orch.gate.pending, timeout=15.0)
+            (gid,) = orch.gate.pending
             await page.wait_for_selector(
                 ".turn[data-turn='8'] .out.gated .cite-quotes", timeout=10_000
             )
             await _scroll_tail(orch_col)
             await _shot(page, "09-cite-proposal", clip=await orch_col.bounding_box())
 
-            orch.kernel.gate.resolve(gid, {"signed": True, "by": "reviewer"})
+            orch.gate.resolve(gid, {"signed": True, "by": "reviewer"})
             await page.wait_for_selector(
                 ".turn[data-turn='8'] .out.finding", timeout=10_000
             )

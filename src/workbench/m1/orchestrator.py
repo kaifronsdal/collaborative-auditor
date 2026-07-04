@@ -50,12 +50,13 @@ from inspect_ai.util import span
 from inspect_ai.util._display import init_display_type  # noqa: PLC2701
 from shortuuid import uuid
 
-from workbench.gate import StepGated
 from workbench.m1.kernel import DisplayEvent, OrchestratorKernel
 from workbench.m1.plots import install_template
 from workbench.m1.prompt import ORCHESTRATOR_SYSTEM_PROMPT
+from workbench.m1.proposals import Gate
 from workbench.m1.tools import _session_dir, make_tools  # noqa: PLC2701
 from workbench.m1.wb import Workbench
+from workbench.step import StepGated
 from workbench.view import Status
 
 if TYPE_CHECKING:
@@ -138,12 +139,12 @@ class Orchestrator(StepGated):
         # ``eval_async`` leaks ~8 stream events (M1-RUN-AUDITS.md §Required).
         _prewarm()
         install_template()
+        self.gate = Gate(on_change=self._broadcast_status_soon)
         self.kernel = OrchestratorKernel(
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
-        self.kernel.gate.on_change = self._broadcast_status_soon
         self.kernel.shell.user_ns["wb"] = Workbench(
-            self.kernel.gate, session, session_dir=str(self.session_dir)
+            self.gate, session, session_dir=str(self.session_dir)
         )
         self.kernel.shell.user_ns.update(_seed_analysis_ns())
         self._init_gate()
@@ -171,7 +172,7 @@ class Orchestrator(StepGated):
         # overlay must live here (not just in ``view()``) for the header to
         # flip on gate open/close. Preserve ``"ended"`` so ``StepGated``'s
         # ``!= "ended"`` guards still hold if a bg cell's gate outlives run().
-        if self._status != "ended" and self.kernel.gate.pending:
+        if self._status != "ended" and self.gate.pending:
             return "waiting"
         return self._status
 
@@ -275,7 +276,7 @@ class Orchestrator(StepGated):
             "span_id": self.span_id,
             "status": self.status,
             "model": self.model_name,
-            "pending_gates": list(self.kernel.gate.pending),
+            "pending_gates": list(self.gate.pending),
             "bg_cells": sorted(self.kernel.bg),
             "notifications": list(self.kernel.notifications),
         }
