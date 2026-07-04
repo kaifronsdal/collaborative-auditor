@@ -17,8 +17,8 @@ import type { ChatMessage } from "@tsmono/inspect-common";
 import { basename } from "@tsmono/util";
 
 import { useState, type JSX } from "react";
+import { Modal } from "@tsmono/react/components/Modal";
 
-import Modal from "../../Modal";
 import { renderContent } from "../../Bubble";
 import type { Up } from "../../../lib/wire";
 import type { ExcerptPayload, TranscriptPayload } from "../types";
@@ -104,10 +104,12 @@ export default function ReaderCard({ payload, displayId, send }: Props): JSX.Ele
       </div>
 
       <Modal
-        open={expanded}
-        onClose={() => setExpanded(false)}
+        show={expanded}
+        onHide={() => setExpanded(false)}
         title={`${payload.sample_id}${payload.at != null ? ` · turn ${payload.at}` : ""}`}
         width="min(820px, 92vw)"
+        className="wb-modal"
+        padded={false}
       >
         {msgList(true)}
       </Modal>

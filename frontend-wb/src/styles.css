@@ -972,16 +972,21 @@ body {
   --bs-border-color: var(--border);
   --bs-border-radius: var(--r-md);
   --bs-primary: var(--accent);
+  --vscode-editor-background: var(--bg-000);
   --vscode-foreground: var(--ink);
   --vscode-descriptionForeground: var(--ink-dim);
   --vscode-errorForeground: var(--danger);
   --vscode-focusBorder: var(--accent);
   --vscode-textLink-foreground: var(--accent);
   --vscode-widget-border: var(--border);
+  --vscode-widget-shadow: hsl(0 0% 0% / .28);
   --vscode-list-hoverBackground: var(--bg-100);
   --vscode-toolbar-hoverBackground: var(--bg-100);
   --inspect-font-size-smallest: var(--fs-xs);
 }
+/* @tsmono/react Modal defaults to 450px; the workbench's checklist modals want
+   the wider card the local Modal.tsx used to render. */
+.wb-modal { max-width: 640px; }
 
 /* Inline branch-point pager: ‹ idx/total ›. Always visible (unlike the
    hover-only .actions row below it) so fork points are scannable. */

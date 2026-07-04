@@ -21,8 +21,8 @@
  * (`✓ {q} · you answered {a} · HH:MM`); denied uses `✕` in `--danger`.
  */
 import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
+import { Modal } from "@tsmono/react/components/Modal";
 
-import Modal from "../../Modal";
 import type { Up } from "../../../lib/wire";
 import type {
   CiteProposalPayload,
@@ -437,9 +437,11 @@ function ReviewModal({
 
   return (
     <Modal
-      open
-      onClose={onClose}
+      show
+      onHide={onClose}
       title={`Review ${v.noun}`}
+      className="wb-modal"
+      padded={false}
       footer={
         <>
           <button type="button" className="gate-btn ghost" onClick={onClose}>
@@ -454,6 +456,7 @@ function ReviewModal({
     >
       <div className="grm-tools">
         <input
+          data-autofocus
           className="grm-search"
           placeholder={`search ${v.noun}…`}
           value={q}
