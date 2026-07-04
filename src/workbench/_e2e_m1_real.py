@@ -145,118 +145,122 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR09
     handles = _handles(orch)
 
     # ---- assert -------------------------------------------------------------
-    assert resolved_run_proposal is not None, (
-        f"no review_seeds gate opened ({len(review_evs)} review_seeds tool "
-        f"call(s), on_change fired {len(on_change_statuses)}×)"
-    )
-    assert "waiting" in on_change_statuses, (
-        f"Gate.on_change never observed status='waiting': {on_change_statuses}"
-    )
-    print(
-        f"✓ review_seeds gated → status='waiting' broadcast; "
-        f"resolved {resolved_run_proposal[:8]} with 3 seeds"
-    )
+    try:
+        assert resolved_run_proposal is not None, (
+            f"no review_seeds gate opened ({len(review_evs)} review_seeds tool "
+            f"call(s), on_change fired {len(on_change_statuses)}×)"
+        )
+        assert "waiting" in on_change_statuses, (
+            f"Gate.on_change never observed status='waiting': {on_change_statuses}"
+        )
+        print(
+            f"✓ review_seeds gated → status='waiting' broadcast; "
+            f"resolved {resolved_run_proposal[:8]} with 3 seeds"
+        )
 
-    assert eval_bash, (
-        f"no bash tool call with 'inspect eval' in cmd "
-        f"({len(bash_evs)} bash call(s) total)"
-    )
-    for e in eval_bash:
-        r = _tool_text(e)
-        assert '{"wb":' not in r, "wb-protocol lines leaked into model text"
-    print(f"✓ bash('inspect eval …') called ({len(eval_bash)}×)")
+        assert eval_bash, (
+            f"no bash tool call with 'inspect eval' in cmd "
+            f"({len(bash_evs)} bash call(s) total)"
+        )
+        for e in eval_bash:
+            r = _tool_text(e)
+            assert '{"wb":' not in r, "wb-protocol lines leaked into model text"
+        print(f"✓ bash('inspect eval …') called ({len(eval_bash)}×)")
 
-    assert run_cards, (
-        f"no WB_MIME kind='eval_run' card in session.events "
-        f"({len(_wb_events(session))} WB_MIME events total)"
-    )
-    print(
-        f"✓ {len(run_cards)} eval_run card(s) at turn(s) "
-        f"{sorted({d['turn'] for d in run_cards})}"
-    )
+        assert run_cards, (
+            f"no WB_MIME kind='eval_run' card in session.events "
+            f"({len(_wb_events(session))} WB_MIME events total)"
+        )
+        print(
+            f"✓ {len(run_cards)} eval_run card(s) at turn(s) "
+            f"{sorted({d['turn'] for d in run_cards})}"
+        )
 
-    assert eval_files, (
-        f"no .eval written under {session_dir / 'runs'} — subprocess never "
-        f"ran or crashed. bash results:\n"
-        + "\n".join(_tool_text(e)[-400:] for e in eval_bash)
-    )
-    print(f"✓ subprocess wrote .eval: {[p.name for p in eval_files]}")
+        assert eval_files, (
+            f"no .eval written under {session_dir / 'runs'} — subprocess never "
+            f"ran or crashed. bash results:\n"
+            + "\n".join(_tool_text(e)[-400:] for e in eval_bash)
+        )
+        print(f"✓ subprocess wrote .eval: {[p.name for p in eval_files]}")
 
-    assert attach_py, (
-        f"no python tool call with 'wb.attach' in code "
-        f"({len(python_evs)} python call(s) total)"
-    )
-    assert handles, "no AttachedRun instance found in kernel.shell.user_ns"
-    n_done = max(h.n_done for h in handles)
-    assert n_done > 0, (
-        f"AttachedRun.n_done == 0 for all handles "
-        f"({[(h.log_dir, h.n_done, h.total, h._status) for h in handles]})"  # noqa: SLF001
-    )
-    print(f"✓ wb.attach → AttachedRun, n_done={n_done}")
+        assert attach_py, (
+            f"no python tool call with 'wb.attach' in code "
+            f"({len(python_evs)} python call(s) total)"
+        )
+        assert handles, "no AttachedRun instance found in kernel.shell.user_ns"
+        n_done = max(h.n_done for h in handles)
+        assert n_done > 0, (
+            f"AttachedRun.n_done == 0 for all handles "
+            f"({[(h.log_dir, h.n_done, h.total, h._status) for h in handles]})"  # noqa: SLF001
+        )
+        print(f"✓ wb.attach → AttachedRun, n_done={n_done}")
 
-    if interrupt_ok is True:
-        print("✓ AttachedRun.interrupt_sample → True over ACP")
-    elif interrupt_ok is False:
-        print("WARN: interrupt_sample returned False (no ACP socket / sample gone)")
-    else:
-        print("WARN: no running sample observed in time to try interrupt_sample")
+        if interrupt_ok is True:
+            print("✓ AttachedRun.interrupt_sample → True over ACP")
+        elif interrupt_ok is False:
+            print("WARN: interrupt_sample returned False (no ACP socket / sample gone)")
+        else:
+            print("WARN: no running sample observed in time to try interrupt_sample")
 
-    # ---- summary ------------------------------------------------------------
-    print("\n" + "=" * 72)
-    print("E2E SUMMARY")
-    print("=" * 72)
-    print(f"  elapsed            : {elapsed:.1f}s")
-    print(f"  final status       : {orch.status}")
-    print(f"  orchestrator turns : {_n_assistant_turns(session)}")
-    print(f"  tool calls         : {len(tool_evs)} "
-          f"(bash={len(bash_evs)} python={len(python_evs)} review={len(review_evs)})")
-    print(f"  cell tracebacks    : {len(tool_errors)}")
-    for e in tool_errors:
-        print(f"    - {e.get('function')}: {_tool_text(e).splitlines()[-1][:100]}")
-    print(f"  eval_run cards     : {len(run_cards)}")
-    print(f"  session_dir        : {session_dir}")
-    print(f"  .eval files        : {[str(p) for p in eval_files]}")
-    print(f"  AttachedRun n_done : {[h.n_done for h in handles]}")
-    print(f"  review_seeds gate  : {resolved_run_proposal}")
-    print(f"  on_change statuses : {on_change_statuses}")
-    print(f"  interrupt_sample   : {interrupt_ok}")
-    print("=" * 72)
+        # ---- summary --------------------------------------------------------
+        print("\n" + "=" * 72)
+        print("E2E SUMMARY")
+        print("=" * 72)
+        print(f"  elapsed            : {elapsed:.1f}s")
+        print(f"  final status       : {orch.status}")
+        print(f"  orchestrator turns : {_n_assistant_turns(session)}")
+        print(f"  tool calls         : {len(tool_evs)} "
+              f"(bash={len(bash_evs)} python={len(python_evs)} review={len(review_evs)})")
+        print(f"  cell tracebacks    : {len(tool_errors)}")
+        for e in tool_errors:
+            print(f"    - {e.get('function')}: {_tool_text(e).splitlines()[-1][:100]}")
+        print(f"  eval_run cards     : {len(run_cards)}")
+        print(f"  session_dir        : {session_dir}")
+        print(f"  .eval files        : {[str(p) for p in eval_files]}")
+        print(f"  AttachedRun n_done : {[h.n_done for h in handles]}")
+        print(f"  review_seeds gate  : {resolved_run_proposal}")
+        print(f"  on_change statuses : {on_change_statuses}")
+        print(f"  interrupt_sample   : {interrupt_ok}")
+        print("=" * 72)
 
-    # ---- turn trace --------------------------------------------------------
-    print("\nTURN TRACE")
-    print("=" * 72)
-    ordered = sorted(session.events.values(), key=lambda e: e.get("timestamp", ""))
-    n = 0
-    for e in ordered:
-        if (
-            e["event"] == "model"
-            and not e.get("pending")
-            and session._resolve(e.get("span_id")) == ("orch", "orch")  # noqa: SLF001
-        ):
-            out = e.get("output") or {}
-            choices = out.get("choices") or []
-            content = choices[0]["message"]["content"] if choices else []
-            prose = "".join(
-                c.get("text", "")
-                for c in content
-                if isinstance(c, dict) and c.get("type") == "text"
-            ).strip()
-            if prose:
-                print(f"\n--- assistant prose ---\n{prose}\n")
-        if e["event"] == "tool" and not e.get("pending"):
-            n += 1
-            fn = e.get("function")
-            args = e.get("arguments") or {}
-            body = args.get("code") or args.get("cmd") or args
-            print(f"\n=== TOOL {n}: {fn} ===")
-            print(body if isinstance(body, str) else str(body)[:400])
-            print(f"--- result ({fn}) ---")
-            print(_tool_text(e) or "<empty>")
-    print("=" * 72)
+    finally:
+        # ---- turn trace ----------------------------------------------------
+        # Always emitted so assertion failures above still show what the
+        # orchestrator actually did.
+        print("\nTURN TRACE")
+        print("=" * 72)
+        ordered = sorted(session.events.values(), key=lambda e: e.get("timestamp", ""))
+        n = 0
+        for e in ordered:
+            if (
+                e["event"] == "model"
+                and not e.get("pending")
+                and session._resolve(e.get("span_id")) == ("orch", "orch")  # noqa: SLF001
+            ):
+                out = e.get("output") or {}
+                choices = out.get("choices") or []
+                content = choices[0]["message"]["content"] if choices else []
+                prose = "".join(
+                    c.get("text", "")
+                    for c in content
+                    if isinstance(c, dict) and c.get("type") == "text"
+                ).strip()
+                if prose:
+                    print(f"\n--- assistant prose ---\n{prose}\n")
+            if e["event"] == "tool" and not e.get("pending"):
+                n += 1
+                fn = e.get("function")
+                args = e.get("arguments") or {}
+                body = args.get("code") or args.get("cmd") or args
+                print(f"\n=== TOOL {n}: {fn} ===")
+                print(body if isinstance(body, str) else str(body)[:400])
+                print(f"--- result ({fn}) ---")
+                print(_tool_text(e) or "<empty>")
+        print("=" * 72)
 
-    await session.close()
-    if not keep:
-        shutil.rmtree(session_dir, ignore_errors=True)
+        await session.close()
+        if not keep:
+            shutil.rmtree(session_dir, ignore_errors=True)
 
 
 # -- helpers -----------------------------------------------------------------
