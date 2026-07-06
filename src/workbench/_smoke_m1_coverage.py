@@ -27,6 +27,7 @@ from workbench.m1._fixtures import (
     demo_eval_cmd,
     mock_orch_session,
     wait_for,
+    wait_running,
 )
 from workbench.m1.attach import AttachedRun
 from workbench.m1.kernel import OrchestratorKernel
@@ -148,38 +149,91 @@ async def _check_attach_empty_dir() -> None:
         shutil.rmtree(empty, ignore_errors=True)
 
 
-async def _check_acp_errors(done_log_dir: str) -> None:
-    # (a) no --acp-server (completed log_dir → no ctl → no ACP) → False
-    h = AttachedRun(log_dir=done_log_dir, description="no-acp")
-    await h._poll()
+async def _check_acp_and_handlers(read_dir: str) -> None:
+    """ACP-interrupt error paths + ``_dispatch`` M1 handlers, sharing one subprocess.
+
+    (a) no ``--acp-server`` (completed ``read_dir`` → no ctl) → ``False``.
+    (b) L4 primitives on ``read_dir``: ``discover`` populates ``.location``,
+        ``wait_for_sample("s0")`` returns immediately (already flushed) —
+        the ``_h_import_running`` head-half.
+    Then one live ``--acp-server`` subprocess serves:
+    (c) unknown sample id → ``False`` (ACP kept);
+    (d) ``_dispatch stop_sample`` → per-sample cancel → sample flushes;
+    (e) ``_dispatch detach_cell`` / ``cancel_cell`` / ``approve``;
+    (f) process dead → ``OSError`` on connect → ``False``, ``_acp`` reset.
+    """
+    # (a) no ACP server
+    h = await AttachedRun.discover(read_dir)
     assert await h.interrupt_sample("s0") is False
     assert h._acp is False
     print("✓ interrupt_sample: no ACP server → False")
 
-    # (b)+(c): live subprocess with --acp-server
+    # (b) L4: discover + wait_for_sample (import_running head-half)
+    assert h.location and h.location.endswith(".eval"), h.location
+    assert await h.wait_for_sample("s0", timeout=1.0) == h.location
+    print("✓ AttachedRun.discover + wait_for_sample on completed log_dir")
+
+    # (c)-(f): one live subprocess. ``exec`` (not ``shell``) so signals reach
+    # inspect directly (no /bin/sh middle-process).
     log_dir = tempfile.mkdtemp(prefix="wb-cov-acp-")
-    proc = await asyncio.create_subprocess_shell(
-        demo_eval_cmd(
-            n=2, turns=5, turn_sleep=1.5, log_dir=log_dir, acp=True, display="none"
-        ),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    cmd = demo_eval_cmd(
+        n=3, turns=5, turn_sleep=1.5, log_dir=log_dir, acp=True, display="none"
     )
+    proc = await asyncio.create_subprocess_exec(
+        *cmd.split(),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    turns: list[TurnSpec] = [
+        ("…", [("python", {"code": "await asyncio.sleep(30)"})]),
+        ("…", [("python", {"code": "ans = await wb.ask_human('ok?')"})]),
+    ]
     try:
         h2 = AttachedRun(log_dir=log_dir, description="acp")
-        for _ in range(100):
-            await h2._poll()
-            if h2.running_ids and isinstance(h2._ctl, tuple):
-                break
-            await asyncio.sleep(0.1)
-        assert h2.running_ids, f"no running samples (ctl={h2._ctl!r})"
+        await wait_running(h2)
 
-        # (b) unknown sample id → False (but _acp discovered and kept)
+        # (c) unknown sample id → False (but _acp discovered and kept)
         assert await h2.interrupt_sample("nonexistent") is False
         from inspect_ai.agent._acp.discovery import DiscoveredEval
         assert isinstance(h2._acp, DiscoveredEval), h2._acp
         print("✓ interrupt_sample: unknown sample_id → False (ACP kept)")
 
-        # (c) process dead → OSError on connect → False, _acp reset
+        async with mock_orch_session(turns, max_turns=6) as (session, orch, _conn):
+            # (d) stop_sample handler → per-sample ACP cancel → flush
+            target = h2.running_ids[0]
+            await _dispatch(
+                session, {"t": "stop_sample", "log_dir": log_dir, "id": target}
+            )
+            assert await h2.wait_for_sample(target, timeout=5.0) == h2.location
+            await h2._poll()
+            assert target not in h2.running_ids and h2.running_ids, h2.running_ids
+            print(f"✓ _dispatch stop_sample → {target!r} flushed via ACP")
+
+            # (e) detach_cell → cell backgrounded, agent unblocks
+            orch.step()
+            await wait_for(lambda: 1 in orch.kernel.bg)
+            await _dispatch(session, {"t": "detach_cell"})
+            await wait_for(lambda: 1 in orch.kernel._detached)
+            assert 1 in orch.kernel.bg, "detach cancelled the cell"
+            print("✓ _dispatch detach_cell → cell backgrounded, still running")
+
+            # cancel_cell → bg task cancelled
+            await _dispatch(session, {"t": "cancel_cell", "turn": 1})
+            await wait_for(lambda: 1 not in orch.kernel.bg)
+            assert any("cell-1 cancelled" in n for n in orch.kernel.notifications)
+            print("✓ _dispatch cancel_cell → bg task cancelled")
+
+            # approve → gate.resolve
+            orch.step()
+            await wait_for(lambda: orch.gate.pending)
+            (gid,) = orch.gate.pending
+            await _dispatch(session, {"t": "approve", "display_id": gid, "verdict": "yes"})
+            await wait_for(lambda: not orch.gate.pending)
+            assert orch.kernel.shell.user_ns.get("ans") == "yes"
+            # unknown id → no-op (logged, no raise)
+            await _dispatch(session, {"t": "approve", "display_id": "nope", "verdict": "x"})
+            print("✓ _dispatch approve → gate.resolve; unknown id → no-op")
+
+        # (f) process dead → OSError on connect → False, _acp reset
         proc.send_signal(signal.SIGKILL)
         await proc.wait()
         assert await h2.interrupt_sample(h2.running_ids[0]) is False
@@ -190,41 +244,6 @@ async def _check_acp_errors(done_log_dir: str) -> None:
             proc.kill()
             await proc.wait()
         shutil.rmtree(log_dir, ignore_errors=True)
-
-
-# -- 5. server.py M1 handlers via _dispatch ----------------------------------
-
-
-async def _check_server_handlers() -> None:
-    turns: list[TurnSpec] = [
-        ("…", [("python", {"code": "await asyncio.sleep(30)"})]),
-        ("…", [("python", {"code": "ans = await wb.ask_human('ok?')"})]),
-    ]
-    async with mock_orch_session(turns, max_turns=6) as (session, orch, _conn):
-        # ---- detach_cell → cell backgrounded, agent unblocks ---------------
-        orch.step()
-        await wait_for(lambda: 1 in orch.kernel.bg)
-        await _dispatch(session, {"t": "detach_cell"})
-        await wait_for(lambda: 1 in orch.kernel._detached)
-        assert 1 in orch.kernel.bg, "detach cancelled the cell"
-        print("✓ _dispatch detach_cell → cell backgrounded, still running")
-
-        # ---- cancel_cell → bg task cancelled -------------------------------
-        await _dispatch(session, {"t": "cancel_cell", "turn": 1})
-        await wait_for(lambda: 1 not in orch.kernel.bg)
-        assert any("cell-1 cancelled" in n for n in orch.kernel.notifications)
-        print("✓ _dispatch cancel_cell → bg task cancelled")
-
-        # ---- approve → gate.resolve ----------------------------------------
-        orch.step()
-        await wait_for(lambda: orch.gate.pending)
-        (gid,) = orch.gate.pending
-        await _dispatch(session, {"t": "approve", "display_id": gid, "verdict": "yes"})
-        await wait_for(lambda: not orch.gate.pending)
-        assert orch.kernel.shell.user_ns.get("ans") == "yes"
-        # unknown id → no-op (logged, no raise)
-        await _dispatch(session, {"t": "approve", "display_id": "nope", "verdict": "x"})
-        print("✓ _dispatch approve → gate.resolve; unknown id → no-op")
 
 
 # -- 6. wb.cite (in-cell) ----------------------------------------------------
@@ -291,11 +310,12 @@ async def _amain() -> None:
     _prewarm()
     _check_plots()
 
-    # One completed .eval reused by read.py + no-ACP checks.
+    # One completed .eval reused by read.py + no-ACP + L4 checks.
     read_dir = tempfile.mkdtemp(prefix="wb-cov-read-")
-    proc = await asyncio.create_subprocess_shell(
-        demo_eval_cmd(n=2, turns=1, turn_sleep=0, log_dir=read_dir, display="none"),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    cmd = demo_eval_cmd(n=2, turns=1, turn_sleep=0, log_dir=read_dir, display="none")
+    proc = await asyncio.create_subprocess_exec(
+        *cmd.split(),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
     )
     _, err = await proc.communicate()
     assert proc.returncode == 0, err.decode()
@@ -312,8 +332,7 @@ async def _amain() -> None:
 
     await _check_wb_display_error()
     await _check_attach_empty_dir()
-    await _check_acp_errors(read_dir)
-    await _check_server_handlers()
+    await _check_acp_and_handlers(read_dir)
 
     shutil.rmtree(read_dir, ignore_errors=True)
     print("\n✓ all M1 coverage smokes passed (7 HIGH-risk paths)")

@@ -42,15 +42,11 @@ import shutil
 import sys
 import tempfile
 import textwrap
-import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import anyio
-from inspect_ai.log._file import (
-    read_eval_log_sample_summaries_async,
-)
 from inspect_ai.model import ChatMessage, GenerateConfig, ModelOutput
 from inspect_ai.tool import ToolChoice, ToolInfo
 
@@ -60,7 +56,9 @@ from workbench.m1._fixtures import (
     mock_orch_session,
     orch_by_turn,
     settle,
+    wait_for,
     wait_gate,
+    wait_running,
     wb_events,
 )
 from workbench.m1.attach import AttachedRun
@@ -125,12 +123,13 @@ async def _amain() -> None:
 async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
     # Duck-typed orch: ``make_tools`` reads ``.kernel``/``.gate``/``.session_dir``,
     # and ``_turn`` calls ``.record_turn`` (rewind bookkeeping — no-op here).
-    session_dir = Path.home() / ".workbench" / "sessions" / "smoke-hybrid"
+    span = f"smoke-hybrid-{os.getpid()}"
+    session_dir = Path.home() / ".workbench" / "sessions" / span
     session_dir.mkdir(parents=True, exist_ok=True)
     orch = SimpleNamespace(
         kernel=k,
         gate=Gate(),
-        span_id="smoke-hybrid",
+        span_id=span,
         session_dir=session_dir,
         record_turn=lambda tid: None,
     )
@@ -245,9 +244,14 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
     assert "appears 2 times" in await edit_file(path="dup.txt", old="ab", new="X")
     assert "not found" in await read_file(path="missing.txt")
     assert (session_dir / "t.txt").read_text() == "bye"
-    print("✓ write_file / read_file / edit_file round-trip in session_dir")
+    # read_file offset/limit — 1-based numbering starts at ``offset+1``
+    await write_file(path="lines.txt", content="a\nb\nc\nd\n")
+    sl = (await read_file(path="lines.txt", offset=1, limit=2)).splitlines()
+    assert sl[:2] == ["     2\tb", "     3\tc"], sl
+    assert "1 more" in sl[2], sl
+    print("✓ write_file / read_file(offset,limit) / edit_file round-trip in session_dir")
 
-    shutil.rmtree(Path.home() / ".workbench" / "sessions" / "smoke-hybrid", ignore_errors=True)
+    shutil.rmtree(session_dir, ignore_errors=True)
 
 
 # -- step 3: wb.attach -------------------------------------------------------
@@ -256,13 +260,18 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
 async def _run_attach(k: OrchestratorKernel) -> bool:
     k.shell.user_ns["wb"] = Workbench(Gate())
 
-    task_file = os.path.join(tempfile.gettempdir(), "wb_smoke_hybrid_task.py")
-    with open(task_file, "w") as f:
-        f.write(TASK_SRC)
+    tmp = tempfile.mkdtemp(prefix="wb-attach-")
+    task_file = os.path.join(tmp, "task.py")
+    Path(task_file).write_text(TASK_SRC)
+    log_dir = os.path.join(tmp, "logs")
 
-    log_dir = "/tmp/wb-attach-test"
-    shutil.rmtree(log_dir, ignore_errors=True)
+    try:
+        return await _run_attach_in(k, task_file, log_dir)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
+
+async def _run_attach_in(k: OrchestratorKernel, task_file: str, log_dir: str) -> bool:
     # ---- 1. subprocess `inspect eval` + wb.attach in a kernel cell --------
     proc = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -283,10 +292,6 @@ async def _run_attach(k: OrchestratorKernel) -> bool:
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.PIPE,
     )
-    # Give the subprocess a moment to write its ctl discovery file + first
-    # log flush before we attach (otherwise the first poll finds nothing).
-    await asyncio.sleep(0.5)
-
     k.shell.user_ns["_LOG_DIR"] = log_dir
     r = await k.run_turn(
         "h = wb.attach(_LOG_DIR)\n"
@@ -374,15 +379,7 @@ async def _run_interrupt() -> None:
     stderr_task = asyncio.create_task(proc.stderr.read())  # type: ignore[union-attr]
     try:
         h = AttachedRun(log_dir=log_dir, description=log_dir)
-        # Poll until ctl + samples surface (subprocess start ≈ 1-2s).
-        for _ in range(100):
-            await h._poll()
-            if h.running_ids and h.location:
-                break
-            await asyncio.sleep(0.1)
-        assert h.running_ids, (
-            f"no running samples after 10s (ctl={h._ctl!r}, log={h.location})"
-        )
+        await wait_running(h)
         assert h.location and h.location.endswith(".eval")
         target = h.running_ids[0]
         siblings = [i for i in h.running_ids if i != target]
@@ -395,18 +392,7 @@ async def _run_interrupt() -> None:
         )
 
         # Interrupted sample flushes to the ``.eval`` under --log-buffer 1.
-        deadline = asyncio.get_running_loop().time() + 5.0
-        while True:
-            try:
-                summaries = await read_eval_log_sample_summaries_async(h.location)
-            except (zipfile.BadZipFile, ValueError):
-                summaries = []
-            if any(str(s.id) == target for s in summaries):
-                break
-            assert asyncio.get_running_loop().time() < deadline, (
-                f"{target!r} did not flush within 5s"
-            )
-            await asyncio.sleep(0.1)
+        await h.wait_for_sample(target, timeout=5.0)
 
         # Siblings still running — the interrupt was per-sample.
         await h._poll()
@@ -457,17 +443,24 @@ def _e2e_outputs(
 
 async def _wait_tool(session: Session, fn: str, *, timeout: float = 60) -> dict[str, Any]:
     """Poll ``session.events`` until a ``ToolEvent(function=fn)`` has settled."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        for e in session.events.values():
-            if e["event"] == "tool" and e.get("function") == fn and not e.get("pending"):
-                return e
-        await asyncio.sleep(0.05)
-    raise AssertionError(f"tool {fn!r} did not settle within {timeout}s")
+    def _find() -> dict[str, Any] | None:
+        return next(
+            (
+                e
+                for e in session.events.values()
+                if e["event"] == "tool" and e.get("function") == fn and not e.get("pending")
+            ),
+            None,
+        )
+
+    await wait_for(_find, timeout=timeout, tick=0.05)
+    ev = _find()
+    assert ev is not None
+    return ev
 
 
 async def _run_e2e() -> None:
-    span_id = "smoke-hybrid-e2e"
+    span_id = f"smoke-hybrid-e2e-{os.getpid()}"
     sdir = Path.home() / ".workbench" / "sessions" / span_id
     shutil.rmtree(sdir, ignore_errors=True)
 

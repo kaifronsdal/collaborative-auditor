@@ -30,7 +30,7 @@ from typing import Any
 
 import anyio
 
-from workbench.m1._fixtures import wb_events
+from workbench.m1._fixtures import tool_result_text, wb_events
 from workbench.m1.attach import AttachedRun
 from workbench.m1.orchestrator import ORCH_SOURCE
 from workbench.m1.wire import WB_MIME
@@ -142,7 +142,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
         if d["bundle"][WB_MIME].get("kind") == "eval_run"
     ]
     tool_errors = [
-        e for e in tool_evs if e.get("error") or "Traceback" in _tool_text(e)
+        e for e in tool_evs if e.get("error") or "Traceback" in tool_result_text(e)
     ]
     eval_files = sorted((session_dir / "runs").rglob("*.eval"))
     handles = _handles(orch)
@@ -166,7 +166,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
             f"({len(bash_evs)} bash call(s) total)"
         )
         for e in eval_bash:
-            r = _tool_text(e)
+            r = tool_result_text(e)
             assert '{"wb":' not in r, "wb-protocol lines leaked into model text"
         print(f"✓ bash('inspect eval …') called ({len(eval_bash)}×)")
 
@@ -182,7 +182,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
         assert eval_files, (
             f"no .eval written under {session_dir / 'runs'} — subprocess never "
             f"ran or crashed. bash results:\n"
-            + "\n".join(_tool_text(e)[-400:] for e in eval_bash)
+            + "\n".join(tool_result_text(e)[-400:] for e in eval_bash)
         )
         print(f"✓ subprocess wrote .eval: {[p.name for p in eval_files]}")
 
@@ -216,7 +216,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
               f"(bash={len(bash_evs)} python={len(python_evs)} review={len(review_evs)})")
         print(f"  cell tracebacks    : {len(tool_errors)}")
         for e in tool_errors:
-            print(f"    - {e.get('function')}: {_tool_text(e).splitlines()[-1][:100]}")
+            print(f"    - {e.get('function')}: {tool_result_text(e).splitlines()[-1][:100]}")
         print(f"  eval_run cards     : {len(run_cards)}")
         print(f"  session_dir        : {session_dir}")
         print(f"  .eval files        : {[str(p) for p in eval_files]}")
@@ -258,7 +258,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
                 print(f"\n=== TOOL {n}: {fn} ===")
                 print(body if isinstance(body, str) else str(body)[:400])
                 print(f"--- result ({fn}) ---")
-                print(_tool_text(e) or "<empty>")
+                print(tool_result_text(e) or "<empty>")
         print("=" * 72)
 
         await session.close()
@@ -314,13 +314,6 @@ def _handles(orch: Any) -> list[AttachedRun]:
             seen.add(id(v))
             out.append(v)
     return out
-
-
-def _tool_text(e: dict[str, Any]) -> str:
-    r = e.get("result")
-    if isinstance(r, list):
-        return "".join(c.get("text", "") for c in r if isinstance(c, dict))
-    return str(r or "")
 
 
 if __name__ == "__main__":

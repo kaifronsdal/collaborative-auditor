@@ -26,6 +26,7 @@ Run:  ``uv run python -m workbench._smoke_m1_features``
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -175,6 +176,7 @@ async def _test_rewind_and_persist() -> None:
         f"resume history truncated to {resumed_assistants} assistant"
     )
     await sess2.close()
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 # ── 3: interrupt-and-send ──────────────────────────────────────────────────

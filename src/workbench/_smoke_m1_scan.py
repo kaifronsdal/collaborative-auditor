@@ -17,6 +17,7 @@ Run:  ``uv run python -m workbench._smoke_m1_scan``
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 
 import anyio
@@ -86,6 +87,7 @@ async def _run(k: OrchestratorKernel) -> None:
         f"✓ wb.scan: {sh.n_done}/{sh.total} via grep_scanner, "
         f"df['g'] {len(df)} rows, {len(scan_evs)} ticks"
     )
+    shutil.rmtree(log_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

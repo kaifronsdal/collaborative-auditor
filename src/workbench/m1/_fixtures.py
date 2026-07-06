@@ -32,6 +32,7 @@ from workbench.m1.wire import WB_MIME
 from workbench.session import Session
 
 if TYPE_CHECKING:
+    from workbench.m1.attach import AttachedRun
     from workbench.m1.orchestrator import Orchestrator
     from workbench.m1.proposals import Gate
 
@@ -45,9 +46,10 @@ __all__ = [
     "orch_by_turn",
     "orch_events",
     "settle",
-    "tool_call",
+    "tool_result_text",
     "wait_for",
     "wait_gate",
+    "wait_running",
     "wb_events",
 ]
 
@@ -161,6 +163,23 @@ async def wait_for(
         await asyncio.sleep(tick)
 
 
+async def wait_running(h: AttachedRun, *, timeout: float = 10.0) -> None:
+    """Poll ``h._poll()`` until ``running_ids`` and ``location`` surface.
+
+    Collapses the inline ``for _ in range(100): await h._poll(); if
+    h.running_ids …`` subprocess-startup loops in the ACP-interrupt smokes.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not (h.running_ids and h.location):
+        await h._poll()
+        if asyncio.get_running_loop().time() > deadline:
+            raise TimeoutError(
+                f"no running samples after {timeout}s "
+                f"(ctl={h._ctl!r}, log={h.location})"
+            )
+        await asyncio.sleep(0.1)
+
+
 async def wait_gate(gate: Gate, *, timeout: float = 2.0) -> str:
     """Poll until ``gate.pending`` is non-empty; return the one pending id.
 
@@ -184,6 +203,14 @@ def orch_events(session: Session) -> list[dict[str, Any]]:
         for e in session.events.values()
         if e["event"] == "info" and e.get("source") == ORCH_SOURCE
     ]
+
+
+def tool_result_text(ev: dict[str, Any]) -> str:
+    """Flatten a dumped ``ToolEvent.result`` (str or ``list[Content]``) to text."""
+    r = ev.get("result")
+    if isinstance(r, list):
+        return "".join(c.get("text", "") for c in r if isinstance(c, dict))
+    return str(r or "")
 
 
 def wb_events(session: Session) -> list[dict[str, Any]]:

@@ -27,11 +27,10 @@ from workbench._smoke_fixtures import _backend, _free_port, _vite
 from workbench.m1._fixtures import (
     HYBRID_CORE_TURNS,
     TurnSpec,
-    orch_by_turn,
+    mock_orch_session,
     wait_gate,
 )
 from workbench.server import sessions
-from workbench.session import Session
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "frontend-wb" / "screenshots" / "m1"
@@ -189,19 +188,12 @@ async def _amain() -> None:
     # `wb.attach` (multiple `.eval` files) or the `.file-receipt` byte count.
     shutil.rmtree(Path.home() / ".workbench" / "sessions" / SPAN_ID, ignore_errors=True)
 
-    async with _backend(ws_port), _vite(ws_port, ui_port):
-        session = Session()
-        await session.start()
+    async with (
+        _backend(ws_port),
+        _vite(ws_port, ui_port),
+        mock_orch_session(TURNS, span_id=SPAN_ID) as (session, orch, _conn),  # type: ignore[arg-type]
+    ):
         sessions[SPAN_ID] = session
-
-        await session.start_orchestrator(
-            model="mockllm/model",
-            model_args={"custom_outputs": orch_by_turn(TURNS)},  # type: ignore[arg-type]
-            span_id=SPAN_ID,
-            max_turns=len(TURNS) + 4,
-        )
-        orch = session.orchestrator
-        assert orch is not None
 
         async with async_playwright() as pw:
             browser = await pw.chromium.launch()
@@ -549,8 +541,6 @@ async def _amain() -> None:
                     print(f"  ! {e}")
 
             await browser.close()
-
-        await session.close()
 
     print(f"\n{len(list(OUT.glob('*.png')))} screenshots → {OUT}")
 

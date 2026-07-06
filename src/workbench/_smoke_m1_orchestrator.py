@@ -19,6 +19,7 @@ Run:  ``uv run python -m workbench._smoke_m1_orchestrator``
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from workbench.m1._fixtures import (
     mock_orch_session,
     orch_events,
     settle,
+    tool_result_text,
 )
 from workbench.m1.orchestrator import ORCH_SOURCE
 from workbench.session import Session
@@ -86,7 +88,7 @@ async def _amain() -> None:
             if e["event"] == "tool" and e.get("function") == "python"
         ]
         assert tool_evs, "no python ToolEvent in session.events"
-        result_text = _tool_result_text(tool_evs[0])
+        result_text = tool_result_text(tool_evs[0])
         assert "'v2'" in result_text and "'v1'" not in result_text, result_text
         # Last-expr `2` present; §5 timing suffix `[N.Ns]` is the final line.
         assert "hello" in result_text and "\n2\n" in result_text, result_text
@@ -197,6 +199,7 @@ async def _amain() -> None:
     )
 
     await sess2.close()
+    shutil.rmtree(tmpdir, ignore_errors=True)
     print("\n✓ all M1.1 wire + M1.3 persistence smoke checks passed")
 
 
@@ -205,14 +208,6 @@ def _text(e: dict[str, Any]) -> str:
     if "application/vnd.jupyter.stream+json" in b:
         return b["application/vnd.jupyter.stream+json"]["text"]
     return b.get("text/plain", "")
-
-
-def _tool_result_text(tool_ev: dict[str, Any]) -> str:
-    # ToolEvent.result may be str or list[Content]; mockllm path yields str.
-    r = tool_ev.get("result")
-    if isinstance(r, list):
-        return "".join(c.get("text", "") for c in r if isinstance(c, dict))
-    return r or ""
 
 
 if __name__ == "__main__":
