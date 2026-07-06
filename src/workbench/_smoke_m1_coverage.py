@@ -133,6 +133,22 @@ async def _check_wb_display_error() -> None:
 # -- 4. attach.py: interrupt_sample error paths ------------------------------
 
 
+async def _check_attach_empty_dir() -> None:
+    """e2e-v3 secondary finding: subprocess crashed before writing any
+    ``.eval``; ``.wait()`` sat the full timeout on an empty ``log_dir``.
+    Now bails after ``_grace`` seconds with a diagnostic error."""
+    empty = tempfile.mkdtemp(prefix="wb-cov-empty-")
+    try:
+        h = AttachedRun(log_dir=empty, description="empty", _grace=0.5)
+        h._watcher = asyncio.create_task(h._watch())  # noqa: SLF001
+        await h.wait(timeout=5)
+        assert h.finished
+        assert h.error and "no eval log appeared" in h.error, h.error
+        print(f"✓ attach empty log_dir: bailed after grace ({h.error[:40]}…)")
+    finally:
+        shutil.rmtree(empty, ignore_errors=True)
+
+
 async def _check_acp_errors(done_log_dir: str) -> None:
     # (a) no --acp-server (completed log_dir → no ctl → no ACP) → False
     h = AttachedRun(log_dir=done_log_dir, description="no-acp")
@@ -296,6 +312,7 @@ async def _amain() -> None:
         await _check_wb_cite(k, gate)
 
     await _check_wb_display_error()
+    await _check_attach_empty_dir()
     await _check_acp_errors(read_dir)
     await _check_server_handlers()
 
