@@ -92,15 +92,23 @@ accepts free-text (any `provider/model` string) — that's the
 primary path and always works, including for vLLM/sglang/local
 endpoints where enumeration is impossible. Suggestions are a
 convenience layer on top.
-**Fix:** `GET /models` returns whatever it can cheaply enumerate:
-inspect's registered provider names (so `provider/` autocompletes)
-+ per-provider `list_models()` where the SDK offers it (Anthropic
-`client.models.list()`, OpenAI `client.models.list()`, Google
-genai `list_models()`) + `model_palette.py` `MODEL_ORDER` as a
-static fallback. Providers without a list API (`vllm/`, `hf/`,
-`sglang/`, project predep proxies) just return the provider prefix
-— user types the rest. Cache 5min. **M** (mostly optional — P1.1's
-free-text picker for the orchestrator is the actual blocker).
+**Fix:** `GET /models` → `{providers: [...], suggestions:
+{provider: [id, ...]}}`, all offline:
+- providers: `ensure_entry_points()` then
+  `registry_find(lambda i: i.type=="modelapi")` →
+  `registry_unqualified_name` on each. Gets all ~28 built-in +
+  extension providers (narwhal etc.) registered via the
+  `inspect_ai` entry-point group.
+- suggestions: `inspect_ai.model._model_data.read_model_info()`
+  (hand-maintained YAML per first-party org — anthropic/openai/
+  gdm/grok/mistral/deepseek/together, with context-len/aliases)
+  merged with our `model_palette.MODEL_ORDER`. Map org→provider
+  (`gdm`→`google`). Gateway/local providers (`vllm/`, `sglang/`,
+  `ollama/`, `hf/`, `openrouter/`) return prefix only — user
+  types the rest.
+No live SDK calls needed. **S** — ~40 LOC in `server.py` +
+`ModelPicker` fetches on mount. (Still optional — P1.1's
+free-text picker for the orchestrator is the actual blocker.)
 
 ### P1.4 `model_args` unreachable from wire
 `base_url` / `api_key` / provider kwargs are plumbed
