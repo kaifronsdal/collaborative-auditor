@@ -14,7 +14,7 @@
  * - `scan` — one row *per scanner* (not one card per scanner). Location in
  *   the footer; on finish each scanner's `df_head` HTML renders inline.
  */
-import { useRef, useState, type JSX } from "react";
+import { Fragment, useRef, useState, type JSX } from "react";
 
 import { basename } from "@tsmono/util";
 
@@ -198,9 +198,18 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
 
     // -- §3 controls (filter chips + search + sortable header) ----
     if (payload.total > 8) {
-      const counts = { all: rows.length, running: 0, done: 0, error: 0 };
+      // `rows` is only what the poller has streamed so far — `total` is the
+      // authoritative count for the `all(N)` chip.
+      const counts = {
+        all: Math.max(payload.total || 0, rows.length),
+        running: 0,
+        done: 0,
+        error: 0,
+      };
       for (const r of rows) if (r.status in counts) counts[r.status as keyof typeof counts]++;
       const chips: StatusFilter[] = ["all", "running", "done", "error"];
+      // Header mirrors the row skeleton: id | flex-1 spacer | score / status /
+      // turns (each sized to its data column via `.pc-col-{c}`) | `.ar-slot`.
       const cols: SortCol[] = ["id", "score", "status", "turns"];
       controls = (
         <>
@@ -227,15 +236,19 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
               onChange={(e) => setTextFilter(e.target.value)}
             />
           </div>
-          <div className="pc-cols hstack g14">
-            {cols.map((c) => (
-              <a key={c} className="pc-col" onClick={() => clickSort(c)}>
-                {c}
-                {sortCol === c && (
-                  <i className={`bi bi-caret-${sortDir === "asc" ? "up" : "down"}-fill`} />
-                )}
-              </a>
+          <div className="pc-cols hstack g10">
+            {cols.map((c, i) => (
+              <Fragment key={c}>
+                {i === 1 && <span style={{ flex: 1 }} />}
+                <a className={`pc-col pc-col-${c}`} onClick={() => clickSort(c)}>
+                  {c}
+                  {sortCol === c && (
+                    <i className={`bi bi-caret-${sortDir === "asc" ? "up" : "down"}-fill`} />
+                  )}
+                </a>
+              </Fragment>
             ))}
+            <span className="ar-slot" />
           </div>
         </>
       );
@@ -390,30 +403,32 @@ function RunRow({
           <b>{fmtScore(row.scores)}</b>
         </span>
       ) : (
-        <span className="er-score">
+        <span className="er-score truncate">
           {Object.entries(row.scores)
             .map(([k, v]) => `${k}=${String(v)}`)
             .join(" ")}
         </span>
       )}
       {status}
-      {onStop && !stopping && (
-        <button
-          className="ar-stop"
-          title="stop this sample"
-          onClick={(e) => {
-            e.stopPropagation();
-            onStop();
-          }}
-        >
-          <i className="bi bi-stop-fill" />
-        </button>
-      )}
-      {opened && (
-        <span className="ar-opened" title="opened in auditor">
-          <i className="bi bi-box-arrow-up-right" />
-        </span>
-      )}
+      <span className="ar-slot">
+        {onStop && !stopping && (
+          <button
+            className="ar-stop"
+            title="stop this sample"
+            onClick={(e) => {
+              e.stopPropagation();
+              onStop();
+            }}
+          >
+            <i className="bi bi-stop-fill" />
+          </button>
+        )}
+        {opened && (
+          <span className="ar-opened" title="opened in auditor">
+            <i className="bi bi-box-arrow-up-right" />
+          </span>
+        )}
+      </span>
     </div>
   );
 }
@@ -436,7 +451,8 @@ function Histogram({
   if (nums.length < 2) return null;
   const lo = Math.min(...nums);
   const hi = Math.max(...nums);
-  const span = hi - lo || 1;
+  if (hi === lo) return null;
+  const span = hi - lo;
   const bins = new Array<number>(10).fill(0);
   for (const s of nums) bins[Math.min(9, Math.floor(((s - lo) / span) * 10))]++;
   const peak = Math.max(...bins);

@@ -115,7 +115,7 @@ _BASH_EVAL, _ATTACH = HYBRID_CORE_TURNS(
 )[1:]
 
 # Turn 9 (M1-HYBRID step 5): a `write_file` + `bash` pair. One plain echo
-# (→ `.out-stream` + visible in `.bash-result`) followed by synthetic
+# (→ `.out-stream`; suppresses `.bash-result`) followed by synthetic
 # ``{"wb":"eval_*"}`` lines so the ``.bash-cell`` renders with a live
 # ``ProgressCard`` output beneath it — no real inspect subprocess.
 _WB_LINES = (
@@ -320,11 +320,11 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
 
             # ── turn 4: wb.attach('runs/r1') → AttachedRun card ─────────────
             # The eval is already done, so `await h.wait()` settles on the
-            # first poll; `.pc-hist` renders (`AttachedRun` populates
-            # `payload.scores`, unlike `_fold_eval`).
+            # first poll and the card renders `finished` (`.stat.ok`). The
+            # `@demo` scorer is constant → `.pc-hist` stays hidden (§8).
             orch.step()
             await page.wait_for_selector(
-                ".turn[data-turn='4'] .pc-hist", timeout=30_000
+                ".turn[data-turn='4'] .stat.ok", timeout=30_000
             )
             await asyncio.sleep(0.2)
             await _scroll_tail(orch_col)
@@ -418,13 +418,14 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
             await _scroll_tail(orch_col)
             await _shot(page, "14-bash-cell", clip=await orch_col.bounding_box())
 
-            # ── 14b: expand the `.bash-cell` → `$` head + cmd body + ───────
-            # `.bash-result` (`→ 3 seeds queued\n[exit 0]`).
+            # ── 14b: expand the `.bash-cell` → `$` head + cmd body ─────────
+            # (no `.bash-result` — the `.out-stream` below already carries
+            # stdout, `hasStream` suppresses the duplicate).
             await orch_col.locator(
                 ".turn[data-turn='9'] .bash-cell .cc-head[role='button']"
             ).click()
             await page.wait_for_selector(
-                ".turn[data-turn='9'] .bash-result", timeout=5_000
+                ".turn[data-turn='9'] .bash-cell:not(.collapsed) pre", timeout=5_000
             )
             await _scroll_tail(orch_col)
             await _shot(page, "14b-bash-expanded", clip=await orch_col.bounding_box())

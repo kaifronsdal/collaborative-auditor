@@ -116,6 +116,11 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
     return out;
   }, [outputs]);
 
+  // `bash` stdout arrives twice when the kernel wraps it: once as the tool
+  // result (`.bash-result`) and again as `STREAM_MIME` outputs below. When the
+  // stream path fired, the `.bash-result` block is redundant.
+  const hasStream = displays.some((o) => o.data.bundle[STREAM_MIME] != null);
+
   return (
     <div className="turn" data-turn={turn}>
       {userInput.map((m) => (
@@ -135,6 +140,7 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
           settledBg={settledBg}
           ns={ns}
           hasTbCard={hasTbCard}
+          hasStream={hasStream}
           cellDone={cellDone}
         />
       ))}
@@ -177,6 +183,7 @@ function ToolCell({
   settledBg,
   ns,
   hasTbCard,
+  hasStream,
   cellDone,
 }: {
   ev: ToolEvent;
@@ -185,6 +192,7 @@ function ToolCell({
   settledBg: string | undefined;
   ns: NsSummary;
   hasTbCard: boolean;
+  hasStream: boolean;
   cellDone: CellDonePayload | undefined;
 }): JSX.Element {
   const fn = ev.function;
@@ -205,11 +213,11 @@ function ToolCell({
       />
     );
   }
-  if (fn === "bash") return <BashCell ev={ev} turn={turn} />;
+  if (fn === "bash") return <BashCell ev={ev} turn={turn} hasStream={hasStream} />;
   if (FILE_TOOLS.has(fn)) return <FileReceipt ev={ev} turn={turn} />;
   if (REVIEW_TOOLS.has(fn)) return <ReviewReceipt ev={ev} turn={turn} />;
   // Unknown tool — render as a bash-shaped cell so args/result stay visible.
-  return <BashCell ev={ev} turn={turn} />;
+  return <BashCell ev={ev} turn={turn} hasStream={hasStream} />;
 }
 
 // ── assistant prose ─────────────────────────────────────────────────────────
@@ -484,7 +492,17 @@ function CodeCell({
 
 // ── bash cell (M1-HYBRID.md §`bash` tool) ───────────────────────────────────
 
-function BashCell({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Element {
+function BashCell({
+  ev,
+  turn,
+  hasStream,
+}: {
+  ev: ToolEvent;
+  turn: number;
+  /** Turn has `STREAM_MIME` outputs — those already carry stdout, so skip the
+   *  `.bash-result` body to avoid rendering the same lines twice. */
+  hasStream: boolean;
+}): JSX.Element {
   const cmd = typeof ev.arguments.cmd === "string" ? ev.arguments.cmd : "";
   const running = ev.pending === true;
   const errored = ev.error != null;
@@ -516,7 +534,7 @@ function BashCell({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Element {
       <pre>
         <code>{cmd}</code>
       </pre>
-      {(result || ev.error) && (
+      {!hasStream && (result || ev.error) && (
         <pre className="bash-result">
           {result}
           {ev.error && <span className="err">{ev.error.message}</span>}

@@ -336,6 +336,9 @@
   position: absolute; top: 4px; right: 6px; z-index: 1; pointer-events: none;
 }
 .out-wrap:has(.out-head .out-live) > .out-live { display: none; }
+/* The corner badge sits over the head's right edge; on hover `.out-actions`
+   fades in underneath it — reserve room so the two don't overlap. */
+.out-wrap:has(> .out-live) .out-head { padding-right: 46px; }
 
 /* ---- GateCard: pending "request from agent" shell ------------------------ */
 /* Neutral card (Linear/GitHub confirm-dialog idiom): white body with a
@@ -424,6 +427,7 @@
 .gate-desc {
   padding: 8px 14px 0;
   font: 12.5px/1.4 var(--sans); color: var(--ink-dim);
+  word-break: break-word;
 }
 .sp-check { accent-color: var(--gate); margin: 0; flex-shrink: 0; }
 .gate-deny-reason {
@@ -466,7 +470,9 @@ sup.ask-opt-key {
 }
 .gate-receipt > i.bi { color: var(--ok); font-size: 13px; flex-shrink: 0; }
 .gate-receipt.denied > i.bi { color: var(--danger); }
-.gate-receipt-value { color: var(--ink); font-weight: 600; flex-shrink: 0; }
+.gate-receipt-value {
+  margin-left: auto; color: var(--ink); font-weight: 600; flex-shrink: 0;
+}
 .gate-receipt-time {
   margin-left: auto; color: var(--ink-faint); font: 10.5px var(--mono);
   flex-shrink: 0;
@@ -661,16 +667,22 @@ sup.ask-opt-key {
   min-width: 30px; text-align: right;
 }
 .ar-opened { font-size: 10px; color: var(--accent-text); flex-shrink: 0; }
-/* §9 per-sample stop: hover-reveal, sits right of the status slot. Invisible
-   + collapsed so the right column doesn't rag when only some rows have it. */
+/* Fixed-width right slot (stop button and/or `↗ opened`) — always rendered,
+   so the score/status/turns columns keep a straight right edge whether or not
+   a row has either. */
+.ar-slot {
+  width: 36px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px;
+}
+/* §9 per-sample stop: hover-reveal inside `.ar-slot`. */
 .ar-stop {
   width: 18px; height: 18px; padding: 0; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
   border: none; border-radius: var(--r-sm); background: none; cursor: pointer;
   color: var(--ink-faint); font-size: 12px;
-  opacity: 0; margin-left: -28px; transition: opacity .12s, margin-left .12s;
+  opacity: 0; transition: opacity .12s;
 }
-.audit-row:hover .ar-stop, .eval-row:hover .ar-stop { opacity: 1; margin-left: 0; }
+.audit-row:hover .ar-stop, .eval-row:hover .ar-stop { opacity: 1; }
 .ar-stop:hover { background: var(--bg-200); color: var(--danger); }
 
 /* ---- pandas `.dataframe` HTML output (rendered `.out.bare`, UI-AUDIT §C) ---- */
@@ -803,6 +815,11 @@ sup.ask-opt-key {
 .pc-col:first-child { width: 74px; }  /* matches 64px .er-id + 10px gap */
 .pc-col:hover { color: var(--ink-mid); }
 .pc-col i { font-size: 9px; color: var(--accent-text); }
+/* Right-cluster header labels sized to their data-column counterparts
+   (`.ar-grade`/`.er-score`, `.ar-status`, `.ar-turns`). */
+.pc-col-score  { min-width: 30px; justify-content: flex-end; }
+.pc-col-status { min-width: 60px; justify-content: center; }
+.pc-col-turns  { min-width: 30px; justify-content: flex-end; }
 
 /* §8 score histogram — 10-bin sparkline below the counter line. */
 .pc-hist-wrap {
