@@ -5,7 +5,7 @@
  * list with `{N} more`/`collapse`.
  *
  * Variants (dispatched on `payload.kind`):
- * - `audit_run`/`eval_run` — one row per sample. Row click imports it into
+ * - `eval_run` — one row per sample. Row click imports it into
  *   the M0 desk (`{t:"import"}` for finished, `{t:"import_running"}` for
  *   live). Opened rows keep a persistent `↗` glyph. When `total > 8` a
  *   `.pc-filter` chip row + `.pc-cols` sortable header appear (M1-FEATURES
@@ -26,11 +26,10 @@ import type {
 } from "../types";
 
 export type { ScanPayload };
-export type RunPayload = EvalRunPayload;
 type SampleRow = SampleRowPayload;
 type ScannerStat = ScanPayload["per_scanner"][string];
 
-export type ProgressPayload = RunPayload | ScanPayload;
+export type ProgressPayload = EvalRunPayload | ScanPayload;
 
 type Props = {
   payload: ProgressPayload;
@@ -52,14 +51,6 @@ const firstNumeric = (scores: Record<string, unknown>): number | null => {
   for (const v of Object.values(scores)) if (typeof v === "number") return v;
   return null;
 };
-
-/** First numeric score, rendered as `·NN` (mockup convention). */
-function fmtScore(scores: Record<string, unknown>): string {
-  const n = firstNumeric(scores);
-  if (n != null) return `·${Math.round(n * 100).toString().padStart(2, "0")}`;
-  const keys = Object.keys(scores);
-  return keys.length ? String(scores[keys[0]]) : "—";
-}
 
 // -- shared shell -------------------------------------------------------------
 
@@ -143,7 +134,6 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
     title = payload.task.toLowerCase();
     const rows = [...(payload.rows.running ?? []), ...(payload.rows.done ?? [])];
     errored = (payload.rows.done ?? []).filter((r) => r.status === "error").length;
-    const audit = payload.kind === "audit_run";
     const log = payload.log;
 
     // -- §3 filter → sort ----
@@ -188,7 +178,6 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
       <RunRow
         key={r.id}
         row={r}
-        audit={audit}
         opened={opened.current.has(r.id)}
         stopping={r.status === "running" && stopping.current.has(r.id)}
         onClick={() => onRowClick(r)}
@@ -341,18 +330,16 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
   );
 }
 
-// -- run row (audit_run / eval_run) -------------------------------------------
+// -- run row (eval_run) -------------------------------------------------------
 
 function RunRow({
   row,
-  audit,
   opened,
   stopping,
   onClick,
   onStop,
 }: {
   row: SampleRow;
-  audit: boolean;
   opened: boolean;
   stopping: boolean;
   onClick: () => void;
@@ -373,7 +360,7 @@ function RunRow({
 
   return (
     <div
-      className={`${audit ? "audit-row" : "eval-row"} hstack g10`}
+      className="eval-row hstack g10"
       role="button"
       tabIndex={0}
       title={row.status === "running" ? "watch live in auditor" : "open transcript in auditor"}
@@ -387,7 +374,7 @@ function RunRow({
     >
       <i className={`bi bi-record-fill row-dot row-dot-${row.status}`} />
       <a
-        className={`qref ${audit ? "ar-id" : "er-id"}`}
+        className="qref er-id"
         href={`wb://audit/${row.id}`}
         onClick={(e) => {
           e.preventDefault();
@@ -398,17 +385,11 @@ function RunRow({
         {row.id}
       </a>
       <span className="ar-seed truncate">{row.input}</span>
-      {audit ? (
-        <span className="ar-grade" title={Object.keys(row.scores).join(", ")}>
-          <b>{fmtScore(row.scores)}</b>
-        </span>
-      ) : (
-        <span className="er-score truncate">
-          {Object.entries(row.scores)
-            .map(([k, v]) => `${k}=${String(v)}`)
-            .join(" ")}
-        </span>
-      )}
+      <span className="er-score truncate">
+        {Object.entries(row.scores)
+          .map(([k, v]) => `${k}=${String(v)}`)
+          .join(" ")}
+      </span>
       {status}
       <span className="ar-slot">
         {onStop && !stopping && (

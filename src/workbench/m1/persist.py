@@ -21,8 +21,8 @@ refs regardless of load order.
 
 The kernel's ``user_ns`` is *not* persisted (arbitrary Python objects — same
 limitation as a Jupyter kernel restart). The resumed agent gets a
-``[kernel restarted …]`` note pointing at any ``RunHandle`` log dirs seen in
-the pre-save event stream so it can re-read results via ``audits_df``.
+``[kernel restarted …]`` note pointing at any ``eval_run`` log dirs seen in
+the pre-save event stream so it can re-read results via ``wb.attach``.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from inspect_ai.event import Event, SpanBeginEvent
-from inspect_ai.event._pool import _expand_refs  # noqa: PLC2701
+from inspect_ai.event._pool import _expand_refs
 from inspect_ai.log import (
     EvalConfig,
     EvalDataset,
@@ -44,8 +44,8 @@ from inspect_ai.log import (
 )
 from pydantic import TypeAdapter
 
-from workbench.m1.wire import WB_MIME
 from workbench.m1.orchestrator import ORCH_SOURCE
+from workbench.m1.wire import WB_MIME
 
 if TYPE_CHECKING:
     from workbench.m1.orchestrator import Orchestrator
@@ -54,25 +54,24 @@ if TYPE_CHECKING:
 
 ORCH_EVAL = "orchestrator.eval"
 
-_RUN_KINDS = frozenset({"audit_run", "eval_run"})
 _EVENTS = TypeAdapter(list[Event])
 
 
-def _collect_run_log_dirs(session: "Session") -> list[str]:
-    """``log_dir`` from every ``RunHandle`` display card seen so far."""
+def _collect_run_log_dirs(session: Session) -> list[str]:
+    """``log_dir`` from every ``eval_run`` display card seen so far."""
     out: list[str] = []
     for ev in session.events.values():
         if ev.get("event") != "info" or ev.get("source") != ORCH_SOURCE:
             continue
         wb = (ev.get("data") or {}).get("bundle", {}).get(WB_MIME)
-        if wb and wb.get("kind") in _RUN_KINDS:
+        if wb and wb.get("kind") == "eval_run":
             log_dir = wb.get("log_dir")
             if log_dir and log_dir not in out:
                 out.append(log_dir)
     return out
 
 
-def save_orchestrator(orch: "Orchestrator", session: "Session", d: Path) -> None:
+def save_orchestrator(orch: Orchestrator, session: Session, d: Path) -> None:
     """Write ``{d}/orchestrator.eval`` — messages + expanded events + metadata."""
     messages = list(orch.state.messages) if orch.state is not None else []
     # A ``rewind()`` that hasn't been ``_apply_rewind``-ed yet (save landed
@@ -139,7 +138,7 @@ def save_orchestrator(orch: "Orchestrator", session: "Session", d: Path) -> None
     write_eval_log(log, d / ORCH_EVAL)
 
 
-def load_orchestrator(session: "Session", d: Path) -> dict[str, Any]:
+def load_orchestrator(session: Session, d: Path) -> dict[str, Any]:
     """Read ``orchestrator.eval``, merge events into ``session``, return resume kwargs.
 
     ``read_eval_log`` returns events with fully-expanded ``ModelEvent.input``

@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from workbench.session import Session
 
 
-def build_auditor_timeline(session: "Session") -> dict[str, Any]:
+def build_auditor_timeline(session: Session) -> dict[str, Any]:
     """The session-wide auditor `Timeline`, one `TimelineSpan` per `Branch`.
 
     Tree shape comes from `session.audit_history` (PETRI-L2-HISTORY): each

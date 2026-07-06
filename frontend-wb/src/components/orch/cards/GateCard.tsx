@@ -31,7 +31,6 @@ import type {
 } from "../types";
 
 export type { CiteProposalPayload, PromptPayload, RunProposalPayload };
-export type Quote = CiteProposalPayload["quotes"][number];
 export type GatePayload = PromptPayload | RunProposalPayload | CiteProposalPayload;
 
 type Props = {

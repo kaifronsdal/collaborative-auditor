@@ -53,7 +53,7 @@ _S_RAMP = (10, -14)  # delta from provider base S at (dark, light) ends
 
 def _hsl(h: int, s: int, lightness: int) -> str:
     """HSL → ``#rrggbb``. Clamps so nothing goes near-black/white."""
-    import colorsys  # noqa: PLC0415
+    import colorsys
 
     lightness = max(18, min(84, lightness))
     s = max(0, min(95, s))
@@ -156,9 +156,7 @@ def model_label(model_id: str) -> str:
     parts = [p for p in n.replace("_", "-").split("-") if p]
     out: list[str] = []
     for p in parts:
-        if p in LOWERCASE_TOKENS:
-            out.append(p)
-        elif re.fullmatch(r"\d+(\.\d+)?[a-z]?", p):  # 5.4, 4o, 3n
+        if p in LOWERCASE_TOKENS or re.fullmatch(r"\d+(\.\d+)?[a-z]?", p):
             out.append(p)
         else:
             t = p[:1].upper() + p[1:]
@@ -415,7 +413,7 @@ def survival(
     dashes = ("solid", "dash", "dot", "dashdot")
     fig = go.Figure()
     for i, (name, g) in enumerate(df.groupby(group) if group else [("", df)]):
-        g = g.sort_values(time)
+        g = g.sort_values(time)  # noqa: PLW2901
         s = 1.0 - g[event].cumsum() / len(g)
         fig.add_scatter(
             x=g[time],

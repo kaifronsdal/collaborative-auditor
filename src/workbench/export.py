@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from workbench.run import Branch
 
 
-def export_branch(branch: "Branch", path: str | Path) -> None:
+def export_branch(branch: Branch, path: str | Path) -> None:
     """Write `branch` (and its descendants) as a one-sample `.eval` log.
 
     The sample's store holds an `AuditTape` (`trajectories` =

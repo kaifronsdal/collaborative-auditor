@@ -39,12 +39,12 @@ sync_repo() {
   local src=$1 dst=$2
   echo "→ $dst"
   wssh "$vm" "mkdir -p $dst"
-  rsync -az --delete "$src/src/" "$vm:$dst/src/"
+  rsync -azc --delete "$src/src/" "$vm:$dst/src/"
   # packaging metadata the editable build reads; requirements*.txt may not
   # exist (petri has none) — expand locally and skip if empty.
   local extras=("$src/pyproject.toml" "$src/README.md")
   for f in "$src"/requirements*.txt; do [[ -e $f ]] && extras+=("$f"); done
-  rsync -az "${extras[@]}" "$vm:$dst/"
+  rsync -azc "${extras[@]}" "$vm:$dst/"
 }
 
 sync_repo "$here"    "$r_here"
@@ -52,7 +52,7 @@ sync_repo "$inspect" "$r_inspect"
 sync_repo "$petri"   "$r_petri"
 
 # uv.lock only for the top-level project (deps are editable, not locked).
-rsync -az "$here/uv.lock" "$vm:$r_here/"
+rsync -azc "$here/uv.lock" "$vm:$r_here/"
 
 echo "→ uv sync --frozen"
 wssh "$vm" "cd $r_here && SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 uv sync --frozen"

@@ -92,7 +92,6 @@ export type CiteProposalPayload = {
   verdict: { signed?: boolean; by?: string; reason?: string } | null;
   claim: string;
   quotes: QuotePayload[];
-  grades_ref: string | null;
   description: string;
 };
 
@@ -107,9 +106,7 @@ export type FindingPayload = {
 // -- progress cards -----------------------------------------------------------
 
 export type EvalRunPayload = {
-  /** `audit_run` is the pre-HYBRID in-process kind — same shape, still in
-   *  `persist._RUN_KINDS` and the `CARDS` registry for replay of old logs. */
-  kind: "eval_run" | "audit_run";
+  kind: "eval_run";
   id: string;
   task: string;
   description: string;

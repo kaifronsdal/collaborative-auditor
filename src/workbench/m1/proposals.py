@@ -29,7 +29,6 @@ from workbench.m1.wire import (
     wb_bundle,
 )
 
-
 # -- gate ---------------------------------------------------------------------
 
 
@@ -251,7 +250,6 @@ class CiteProposal(BaseProposal):
 
     claim: str
     quotes: list[Quote]
-    grades_ref: str | None
     description: str
 
     def resolve(self, verdict: Any) -> None:
@@ -280,7 +278,6 @@ class CiteProposal(BaseProposal):
             "kind": "cite_proposal",
             "claim": self.claim,
             "quotes": [cast("QuotePayload", vars(q)) for q in self.quotes],
-            "grades_ref": self.grades_ref,
             "description": self.description,
         }
         return self._bundle(
@@ -351,7 +348,6 @@ async def cite(
     claim: str,
     quotes: Sequence[Quote | dict[str, Any]],
     *,
-    grades_ref: str | None = None,
     description: str,
 ) -> Finding:
     """Propose a finding, block on the human's signature, return it.
@@ -365,7 +361,6 @@ async def cite(
     prop = CiteProposal(
         claim=claim,
         quotes=[_as_quote(q) for q in quotes],
-        grades_ref=grades_ref,
         description=description,
     )
     await gate(prop)

@@ -51,11 +51,7 @@ const STATUS_TEXT: Record<Status, string> = {
 
 /** Tri-state header dot class. `running` splits into generating (blue) vs
  *  kernel-executing (amber) by whether the current cell's `ToolEvent` is
- *  pending; `waiting` (gate) is purple.
- *
- *  TODO(Batch G): `.rl-dot-idle/gen/exec/gate` currently live in `orch.css`
- *  (owned by another agent this batch); move all 7 states to `styles.css`
- *  alongside the M0 `.rl-dot-*` rules. */
+ *  pending; `waiting` (gate) is purple. */
 function dotClass(status: Status, cellRunning: boolean): string {
   if (status === "waiting") return "gate";
   if (status === "running") return cellRunning ? "exec" : "gen";

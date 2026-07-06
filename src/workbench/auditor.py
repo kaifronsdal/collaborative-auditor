@@ -1,18 +1,14 @@
 """The workbench's auditor agent — petri's loop, with a two-method hook seam.
 
-One function serves both the M0 desk (one audit, human-in-loop) and M1 batch
-runs (N audits inside ``eval_async``, unattended). The differences reduce to
-where operator messages are drained from and whether a step-gate blocks:
-
-- M0: ``Branch`` implements ``TurnHooks`` — ``pre_turn`` awaits the desk gate,
-  drains ``branch.queued["auditor"]``, and flips ``branch.generating``.
-- M1 batch (subprocess ``_audit_task.py``): ``_NoHooks`` — ``pre_turn``
-  returns ``([], False)``; the subprocess runs unattended.
+Drives the M0 desk (one audit, human-in-loop). ``Branch`` implements
+``TurnHooks`` — ``pre_turn`` awaits the desk gate, drains
+``branch.queued["auditor"]``, and flips ``branch.generating``. M1 batch
+runs live in subprocesses via the ``bash`` tool (``_audit_task.py`` →
+``inspect_petri.audit``) and never enter this loop.
 
 Everything else — divergent-serve emit, the ``if not tape.pending`` replay
-burn-through, the ``TURN_END_SOURCE`` anchor — is replay mechanics, not an
-M0/M1 difference: batch has no forks/edits so ``tape.pending`` is always
-empty and those paths are inert. They stay unconditional.
+burn-through, the ``TURN_END_SOURCE`` anchor — is replay mechanics, not
+an M0/M1 difference. They stay unconditional.
 
 Compaction and realism-filter are ordinary parameters defaulting off (M0's
 default — a watching operator would be surprised by silent context rewrites,
@@ -50,20 +46,19 @@ from inspect_petri._auditor import (
     auditor_tools,
     run_turn_tools,
 )
-from inspect_petri._auditor.agent import AUDITOR_CONTINUE_PROMPT  # noqa: PLC2701
+from inspect_petri._auditor.agent import AUDITOR_CONTINUE_PROMPT
 
 from workbench.sources import GEN_SOURCE, TURN_END_SOURCE
 
 
 class TurnHooks(Protocol):
-    """The two per-turn seams that differ between desk and batch."""
+    """The two per-turn desk seams — implemented by ``Branch``."""
 
-    async def pre_turn(self) -> tuple[list[ChatMessage], bool]:
+    async def pre_turn(self) -> list[ChatMessage]:
         """Called before each *live* generate (once ``tape.pending`` is drained).
 
-        May block (M0's step-gate). Returns ``(messages to inject, stop-now)``
-        — ``stop-now`` breaks the loop cleanly (M1's ``wb.stop`` path; M0
-        stops via task-cancel and never returns ``True`` here).
+        May block (the desk's step-gate). Returns messages to inject; the
+        loop stops via task-cancel, never a return value.
         """
         ...
 
@@ -82,11 +77,10 @@ def workbench_auditor(
 ) -> Agent:
     """An auditor ``Agent`` for ``run_audit(auditor=…)`` / ``audit_solver``.
 
-    ``hooks`` supplies the two lines that differ between the M0 desk
-    (``Branch``) and M1 batch (``_audit_task._NoHooks``); everything else
-    is petri's own machinery. ``compaction``/``realism_filter`` default
-    off for the desk and are set by ``_audit_task.audit`` for unattended
-    subprocess batches.
+    ``hooks`` supplies the desk's step-gate + spinner (``Branch``);
+    everything else is petri's own machinery. ``compaction``/
+    ``realism_filter`` default off — a watching operator would be
+    surprised by silent context rewrites.
     """
     tools = auditor_tools(prefill=True)
 
@@ -110,10 +104,7 @@ def workbench_auditor(
                 # I/O-free — burn through ungated. First live turn onward:
                 # hand control to the hooks (which may block on the desk gate).
                 if not tape.pending:
-                    injected, stop_now = await hooks.pre_turn()
-                    if stop_now:
-                        break
-                    state.messages.extend(injected)
+                    state.messages.extend(await hooks.pre_turn())
 
                 input_msgs, c_msg = await compact.compact_input(state.messages)
                 if c_msg is not None:

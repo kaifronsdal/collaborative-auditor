@@ -22,7 +22,7 @@ export type {
   PromptPayload,
   RunProposalPayload,
 } from "./GateCard";
-export type { ProgressPayload, RunPayload, ScanPayload } from "./ProgressCard";
+export type { ProgressPayload, ScanPayload } from "./ProgressCard";
 export type { ExcerptPayload, ReaderPayload, TranscriptPayload } from "./ReaderCard";
 
 import type { WbPayload } from "../types";
@@ -43,7 +43,6 @@ export const CARDS: Record<string, { C: AnyCard; variant?: string }> = {
   prompt: { C: GateCard, variant: "prompt" },
   run_proposal: { C: GateCard, variant: "run_proposal" },
   cite_proposal: { C: GateCard, variant: "cite_proposal" },
-  audit_run: { C: ProgressCard, variant: "run" },
   eval_run: { C: ProgressCard, variant: "run" },
   scan: { C: ProgressCard, variant: "scan" },
   excerpt: { C: ReaderCard, variant: "excerpt" },

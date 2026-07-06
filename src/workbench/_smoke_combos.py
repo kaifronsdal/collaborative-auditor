@@ -48,7 +48,7 @@ from workbench._smoke_fixtures import (
 )
 from workbench._smoke_util import FakeConn
 from workbench.run import Branch, find_auditor_step
-from workbench.server import _dispatch  # noqa: PLC2701
+from workbench.server import _dispatch
 from workbench.session import Session
 from workbench.sources import TARGET_GEN_SOURCE
 from workbench.timeline import build_auditor_timeline
@@ -322,7 +322,7 @@ async def c4_inject_during_paused_replay() -> None:
         child_id = session.current
         assert child_id is not None and child_id != "base"
         child = session.branches[child_id]
-        assert child._replayed.is_set(), "replay should be done before inject"  # noqa: SLF001
+        assert child._replayed.is_set(), "replay should be done before inject"
         assert child.queued["auditor"] == []
 
         await _dispatch(

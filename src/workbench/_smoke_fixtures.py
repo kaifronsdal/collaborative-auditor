@@ -50,7 +50,7 @@ from inspect_ai.model import (
 from inspect_ai.tool import ToolCall, ToolChoice, ToolInfo
 
 from workbench.run import Branch
-from workbench.server import _dispatch, app  # noqa: PLC2701
+from workbench.server import _dispatch, app
 from workbench.session import Session
 from workbench.sources import GEN_SOURCE, TARGET_GEN_SOURCE
 
@@ -128,7 +128,7 @@ async def _vite(ws_port: int, ui_port: int):
         # sidebar Recents fetch 500s (backend runs on a free port, not 8765).
         "VITE_BACKEND": f"http://127.0.0.1:{ws_port}",
     }
-    proc = subprocess.Popen(  # noqa: S603
+    proc = subprocess.Popen(
         [
             "npx", "--yes", "pnpm@10.29.3", "dev",
             "--host", "127.0.0.1", "--port", str(ui_port), "--strictPort",

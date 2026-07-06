@@ -40,10 +40,10 @@ import contextlib
 import json
 import os
 import time
-from typing import Any, AsyncIterator, Callable, Coroutine, Iterator
+from collections.abc import AsyncIterator, Callable, Coroutine, Iterator
+from typing import Any
 
 import anyio
-
 from inspect_ai._display.core.display import (
     TR,
     Display,
@@ -60,10 +60,10 @@ from inspect_ai._display.core.display import (
 from inspect_ai._util._async import configured_async_backend, run_coroutine
 from inspect_ai._util.platform import running_in_notebook
 from inspect_ai.hooks import Hooks, SampleEnd, TaskStart, hooks
-from inspect_ai.log._samples import active_samples  # noqa: PLC2701
+from inspect_ai.log._samples import active_samples
 from inspect_ai.util._throttle import throttle
 
-from workbench.m1.wire import _finite  # noqa: PLC2701
+from workbench.m1.wire import _finite
 
 
 def _wb(kind: str, **fields: Any) -> None:
@@ -87,7 +87,7 @@ class WorkbenchDisplay(Display):
     (the ``bash`` tool consumer keys everything on ``eval_id``).
     """
 
-    def print(self, message: str) -> None:  # noqa: A003
+    def print(self, message: str) -> None:
         # Suppress free-form prints — everything the frontend renders comes
         # from ``{"wb":...}`` lines, and stray text would land in
         # ``.out-stream`` noise.
@@ -136,9 +136,9 @@ class _NullProgress(Progress):
 
 #: Live task displays keyed by ``EvalSpec.task_id`` so the hook (which sees
 #: ``eval_id``, not ``task_id``) can find its display via ``on_task_start``.
-_by_task_id: dict[str, "_WBTaskDisplay"] = {}
+_by_task_id: dict[str, _WBTaskDisplay] = {}
 #: …and by ``eval_id`` once ``on_task_start`` has bridged the two.
-_by_eval_id: dict[str, "_WBTaskDisplay"] = {}
+_by_eval_id: dict[str, _WBTaskDisplay] = {}
 
 
 class _WBTaskDisplay(TaskDisplay):
@@ -297,12 +297,12 @@ def register() -> None:
     from inspect_ai._display.core import active
     from inspect_ai.util import _display as display_type_mod
 
-    if isinstance(active._active_display, WorkbenchDisplay):
+    if isinstance(active._active_display, WorkbenchDisplay):  # noqa: SLF001
         return
-    active._active_display = WorkbenchDisplay()
+    active._active_display = WorkbenchDisplay()  # noqa: SLF001
     # Pin a plain type so ``display_type_plain()`` is True and no code path
     # tries to re-``init_display_type("workbench")`` → warn → "full".
-    display_type_mod._display_type = "log"
+    display_type_mod._display_type = "log"  # noqa: SLF001
 
 
 # Entry-point import: install eagerly.

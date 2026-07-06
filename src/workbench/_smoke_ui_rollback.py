@@ -100,7 +100,7 @@ async def _amain() -> None:
         await task
 
         # Backend-side sanity: 2 trajectories, 5 target ModelEvents.
-        from workbench._smoke_util import resolve_role  # noqa: PLC0415
+        from workbench._smoke_util import resolve_role
 
         n_traj = sum(1 for _ in _walk(b.history.root))
         assert n_traj == 2, f"expected 2 target trajectories, got {n_traj}"

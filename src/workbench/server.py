@@ -112,7 +112,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
             data = await websocket.receive_json()
             try:
                 await _dispatch(session, data)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 # A malformed/unexpected command should surface to the client,
                 # not crash the connection (which would orphan a running branch).
                 logger.exception("dispatch failed for %r", data.get("t"))
@@ -298,7 +298,7 @@ def _auditor_anchor(parent: Branch, turn_index: int) -> str:
     return step.anchor_id
 
 
-def _locate_branch(parent: Branch, data: dict) -> tuple[str, bool, Step | None]:
+def _locate_branch(parent: Branch, data: dict) -> tuple[str, bool, Step | None]:  # noqa: ARG001
     return data["at"], True, None
 
 
@@ -468,7 +468,7 @@ async def _dispatch(session: Session, data: dict) -> None:
         await _dispatch_locked(session, data)
 
 
-async def _dispatch_locked(session: Session, data: dict) -> None:
+async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR0915
     match data.get("t"):
         case "start":
             raw_max_turns = data.get("max_turns")
@@ -719,13 +719,13 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             # exited) the flush poll may still succeed if the sample
             # finished on its own; otherwise the timeout surfaces as
             # ``{t:"error"}`` via the outer ``_dispatch`` guard.
-            from inspect_ai.log._file import (  # noqa: PLC0415, PLC2701
+            from inspect_ai.log._file import (
                 read_eval_log_sample_summaries_async,
             )
 
             sample_id = str(data["sample_id"])
             h = AttachedRun(log_dir=data["log_dir"], description=data["log_dir"])
-            await h._poll()  # noqa: SLF001 — discover .eval + ctl eval_id
+            await h._poll()  # noqa: SLF001
             await h.interrupt_sample(sample_id)
             if h.location is None:
                 raise ValueError(f"no .eval in {data['log_dir']!r}")
@@ -798,7 +798,7 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
             # tail). ``log_dir`` locates the subprocess's ACP socket.
             log_dir = data["log_dir"]
             h = AttachedRun(log_dir=log_dir, description=log_dir)
-            await h._poll()  # noqa: SLF001 — discover ctl/acp for this run
+            await h._poll()  # noqa: SLF001
             ok = await h.interrupt_sample(str(data["id"]))
             if not ok:
                 logger.warning(
@@ -820,7 +820,7 @@ async def _dispatch_locked(session: Session, data: dict) -> None:
 
 
 def main() -> None:
-    global STORE_DIR
+    global STORE_DIR  # noqa: PLW0603
     parser = argparse.ArgumentParser(prog="workbench")
     parser.add_argument(
         "--store-dir",
@@ -834,7 +834,7 @@ def main() -> None:
     args = parser.parse_args()
     STORE_DIR = args.store_dir.expanduser()
     STORE_DIR.mkdir(parents=True, exist_ok=True)
-    uvicorn.run(app, host="0.0.0.0", port=args.port)
+    uvicorn.run(app, host="0.0.0.0", port=args.port)  # noqa: S104
 
 
 if __name__ == "__main__":

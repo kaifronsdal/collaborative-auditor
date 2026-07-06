@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from workbench.session import Session
 
 
-def save_session(session: "Session", branch: "Branch | None" = None) -> None:
+def save_session(session: Session, branch: Branch | None = None) -> None:
     """Persist `session` under ``{store_dir}/{session_id}/``.
 
     Writes ``index.json`` (current/created_at/seed), ``history.json``, and
@@ -57,12 +57,12 @@ def save_session(session: "Session", branch: "Branch | None" = None) -> None:
     for b in [branch] if branch else session.branches.values():
         _write_branch(d, b)
     if session.orchestrator is not None:
-        from workbench.m1.persist import save_orchestrator  # noqa: PLC0415
+        from workbench.m1.persist import save_orchestrator
 
         save_orchestrator(session.orchestrator, session, d)
 
 
-def _write_branch(d: Path, branch: "Branch") -> None:
+def _write_branch(d: Path, branch: Branch) -> None:
     meta = {
         k: v
         for k, v in asdict(branch.meta).items()
@@ -73,7 +73,7 @@ def _write_branch(d: Path, branch: "Branch") -> None:
     )
 
 
-async def load_session(session_id: str, store_dir: Path) -> "Session":
+async def load_session(session_id: str, store_dir: Path) -> Session:
     """Reconstruct a `Session` from ``{store_dir}/{session_id}/``.
 
     Rebuilds `audit_history` via `History.load`, then for each persisted
@@ -83,8 +83,8 @@ async def load_session(session_id: str, store_dir: Path) -> "Session":
     terminated via ``end_conversation`` runs to completion and the spawned
     task exits.
     """
-    from workbench.run import Branch, BranchMeta  # noqa: PLC0415
-    from workbench.session import Session  # noqa: PLC0415
+    from workbench.run import Branch, BranchMeta
+    from workbench.session import Session
 
     d = store_dir / session_id
     index = json.loads((d / "index.json").read_text())
@@ -127,7 +127,7 @@ async def load_session(session_id: str, store_dir: Path) -> "Session":
     sess.current = index["current"]
 
     if (d / "orchestrator.eval").exists():
-        from workbench.m1.persist import load_orchestrator  # noqa: PLC0415
+        from workbench.m1.persist import load_orchestrator
 
         meta = load_orchestrator(sess, d)
         await sess.start_orchestrator(**meta)

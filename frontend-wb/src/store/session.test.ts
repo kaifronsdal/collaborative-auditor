@@ -88,8 +88,8 @@ describe("session reducer against real smoke fixture", () => {
 
   it("builds an inspect EventNode tree whose span structure matches spanParent", () => {
     const state = useSession.getState();
-    // eventTree is derived (useEventTree selector), not stored — build it the
-    // same way the selector does to verify it against the routing graph.
+    // eventTree is derived, not stored — build it directly to verify against
+    // the routing graph.
     const eventTree = buildEventTree(state.events.values());
     expect(eventTree.length).toBeGreaterThan(0);
 

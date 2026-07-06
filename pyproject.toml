@@ -11,11 +11,8 @@ dependencies = [
     "inspect-ai>=0.3.180",
     "inspect-petri",
     "ipython>=9.14.1",
-    "jsonpatch>=1.33",
-    "openai>=2.24.0",
     "plotly>=6.8.0",
     "pydantic>=2.12.5",
-    "python-dotenv>=1.2.1",
     "shortuuid>=1.0.13",
     "uvicorn>=0.41.0",
     "websockets>=16.0",
@@ -56,6 +53,35 @@ markers = [
     "slow: subprocess / multi-second (hybrid, coverage)",
     "real_model: hits the real Anthropic API (e2e)",
 ]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PL", "A", "BLE", "SLF",
+    "ARG", "ANN2", "S",
+]
+ignore = [
+    "PLC0415",  # lazy imports — structural
+    "PLC2701",  # private-dep imports — structural
+    "PLR2004",  # magic values
+    "PLR0911",  # too many returns
+    "PLR0912",  # too many branches
+    "PLR0913",  # too many args
+    "S101",     # assert
+    "E501",     # line-too-long — no formatter-enforced wrap
+    "ARG002",   # unused method arg — protocol signatures (_repr_mimebundle_, Display)
+    "RUF001", "RUF002", "RUF003",  # ambiguous unicode — ×/…/→ are intentional
+]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+
+[tool.ruff.lint.per-file-ignores]
+"src/workbench/_smoke*.py" = ["SLF001", "PLR0915", "BLE001", "ANN", "S", "ARG", "PLW0603"]
+"src/workbench/_screenshot*.py" = ["SLF001", "PLR0915", "BLE001", "ANN", "S", "ARG"]
+"src/workbench/_e2e_*.py" = ["SLF001", "PLR0915", "BLE001", "ANN", "S", "ARG"]
+"src/workbench/m1/_fixtures.py" = ["SLF001", "ANN", "ARG"]
+"src/workbench/m1/_audit_task.py" = ["ARG"]
+"tests/**" = ["SLF001"]
 
 [tool.uv]
 # exclude-newer-package overrides removed — orphaned without a global

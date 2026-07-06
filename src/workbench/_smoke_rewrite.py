@@ -24,7 +24,6 @@ from __future__ import annotations
 import anyio
 from inspect_ai.model import ModelOutput
 from inspect_ai.tool import ToolCall
-
 from inspect_petri.target import Step
 
 from workbench._smoke_util import FakeConn

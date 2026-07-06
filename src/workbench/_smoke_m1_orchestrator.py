@@ -48,7 +48,7 @@ TURNS = [("run", [("python", {"code": c})]) for c in CELLS]
 # ── the test ────────────────────────────────────────────────────────────────
 
 
-async def _amain() -> None:  # noqa: PLR0915
+async def _amain() -> None:
     tmpdir = Path(tempfile.mkdtemp(prefix="wb-orch-persist-"))
     async with mock_orch_session(TURNS, max_turns=5) as (session, orch, conn):
         # ---- turn 1: display/update/print/last-expr → InfoEvents ---------------

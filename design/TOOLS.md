@@ -119,7 +119,7 @@ step budget, and their report renders as an attributed analysis cell. This is th
 practice: the orchestrator is the only thing that starts audits; audits are the only things that
 talk to targets; subagents just read files and write analysis.
 
-### `ask_human(question, options?)` · `report(text)` · `cite(claim, quotes, grades_ref)`
+### `ask_human(question, options?)` · `report(text)` · `cite(claim, quotes)`
 Unchanged from DESIGN §5: ask_human renders as a decision cell; cite is hard-gated (a finding is
 a human signature) and any report/cite claim must carry quotes that check out against the
 transcripts or the UI styles it unverified.

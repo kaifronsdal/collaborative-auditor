@@ -36,7 +36,7 @@ from uuid import uuid4
 from IPython.core.interactiveshell import ExecutionResult, InteractiveShell
 from IPython.display import HTML, Markdown, display
 
-from workbench.m1.hooks import _CellStream, install_workbench_hooks  # noqa: PLC2701
+from workbench.m1.hooks import _CellStream, install_workbench_hooks
 from workbench.m1.inspect_repr import short_repr
 from workbench.m1.wire import (
     STREAM_MIME,
@@ -86,7 +86,7 @@ class OrchestratorKernel:
     one kernel may be entered at a time (guarded by ``_instance``).
     """
 
-    _instance: ClassVar["OrchestratorKernel | None"] = None
+    _instance: ClassVar[OrchestratorKernel | None] = None
 
     def __init__(
         self,
@@ -159,7 +159,7 @@ class OrchestratorKernel:
         # ``shell.excepthook`` as ``sys.excepthook`` when concurrent cells
         # finish out-of-order — unrefcounted swap), write plain text to the
         # real stderr so uncaught server-side exceptions still surface.
-        self.shell._showtraceback = self._showtraceback  # type: ignore[method-assign]
+        self.shell._showtraceback = self._showtraceback  # type: ignore[method-assign]  # noqa: SLF001
 
         # stdout/stderr tee — contextvar-gated per write.
         self._real_stdout = sys.stdout
@@ -304,7 +304,7 @@ class OrchestratorKernel:
         exc_tuple: Any = None
         try:
             transformed = self.shell.transform_cell(code)
-        except Exception:  # noqa: BLE001 — surfaces as error_before_exec
+        except Exception:  # noqa: BLE001
             transformed, exc_tuple = code, sys.exc_info()
         # ``store_history=False`` — the default ``HistoryManager`` writes to
         # ``~/.ipython/profile_default/history.sqlite``; agent-generated
@@ -342,7 +342,7 @@ class OrchestratorKernel:
         # ``_run_cell``'s ``finally`` never ran.
         for s in (sys.stdout, sys.stderr):
             if isinstance(s, _CellStream):
-                s._buf.pop(turn_id, None)
+                s._buf.pop(turn_id, None)  # noqa: SLF001
         if turn_id not in self._detached:
             return  # fg cell — the agent already has the settled TurnResult
         self._detached.discard(turn_id)
@@ -486,8 +486,8 @@ class OrchestratorKernel:
         """Model-facing text: outputs in emission order, updates collapsed.
 
         A ``stable`` id's text is whatever its *last* event carried, rendered
-        at its *first* event's position — so a ``RunHandle`` that ticks 20×
-        appears once, at the point ``run_audits`` was called, showing the
+        at its *first* event's position — so an ``AttachedRun`` that ticks
+        20× appears once, at the point ``wb.attach`` was called, showing the
         final counters. Anonymous outputs and stream lines render verbatim.
         """
         events = self.outputs.get(turn_id, [])

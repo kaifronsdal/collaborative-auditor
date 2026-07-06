@@ -18,7 +18,7 @@ import json
 from pathlib import Path
 
 import anyio
-from inspect_ai.event._pool import _expand_refs  # noqa: PLC2701
+from inspect_ai.event._pool import _expand_refs
 
 from workbench._smoke_util import FakeConn
 from workbench.run import Branch

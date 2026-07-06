@@ -16,9 +16,8 @@ import pytest
 
 from workbench.m1._fixtures import FakeConn, mock_orch_session
 from workbench.m1.kernel import OrchestratorKernel
-from workbench.m1.orchestrator import Orchestrator, _prewarm  # noqa: PLC2701
+from workbench.m1.orchestrator import Orchestrator, _prewarm
 from workbench.session import Session
-
 
 # ── anyio plugin ────────────────────────────────────────────────────────────
 # The smokes use ``asyncio`` directly (``asyncio.create_task``,

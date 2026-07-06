@@ -40,11 +40,11 @@ from workbench.m1._fixtures import (
     wait_for,
 )
 from workbench.m1.orchestrator import ORCH_SOURCE
-from workbench.server import _dispatch  # noqa: PLC2701
+from workbench.server import _dispatch
 from workbench.session import Session
 
 
-def _n_assistant(orch) -> int:  # noqa: ANN001
+def _n_assistant(orch) -> int:
     if orch.state is None:
         return 0
     return sum(1 for m in orch.state.messages if m.role == "assistant")
@@ -58,7 +58,7 @@ _REWIND_TURNS: list[TurnSpec] = [
 ]
 
 
-async def _test_rewind_and_persist() -> None:  # noqa: PLR0915
+async def _test_rewind_and_persist() -> None:
     tmpdir = Path(tempfile.mkdtemp(prefix="wb-rewind-persist-"))
     async with mock_orch_session(_REWIND_TURNS, max_turns=20) as (session, orch, conn):
         # ---- run freely until parked (4 tool turns + no-tool turn(s)) ----------
@@ -66,13 +66,13 @@ async def _test_rewind_and_persist() -> None:  # noqa: PLR0915
         await wait_for(lambda: orch.status == "paused")
         n_before = _n_assistant(orch)
         assert n_before >= 5, f"expected ≥5 assistant turns before rewind, got {n_before}"
-        assert set(orch._turn_msg) == {1, 2, 3, 4}, orch._turn_msg  # noqa: SLF001
+        assert set(orch._turn_msg) == {1, 2, 3, 4}, orch._turn_msg
 
         # ---- rewind(2) ---------------------------------------------------------
         await orch.rewind(2)
         await settle(20)  # let drain() flush the enqueued {"t":"rewound"}
         assert orch.status == "paused"
-        assert orch._rewind_to == 2  # noqa: SLF001
+        assert orch._rewind_to == 2
 
         # rewind_marker InfoEvent landed, not itself marked rewound
         markers = [
@@ -105,7 +105,7 @@ async def _test_rewind_and_persist() -> None:  # noqa: PLR0915
         # ``_by_role`` (emission order — mockllm timestamps collide at ms res).
         orch_models = [
             session.events[u]
-            for u in session._by_role.get(("orch", "orch"), [])  # noqa: SLF001
+            for u in session._by_role.get(("orch", "orch"), [])
             if session.events[u]["event"] == "model"
         ]
         assert not orch_models[0].get("rewound"), "turn-1 ModelEvent flagged"
@@ -133,8 +133,8 @@ async def _test_rewind_and_persist() -> None:  # noqa: PLR0915
         await wait_for(lambda: _n_assistant(orch) == 2 and not orch.kernel.bg)
         # truncation: only assistant #1 survived + one fresh re-run
         ids = [m.id for m in orch.state.messages if m.role == "assistant"]
-        assert ids[0] == orch._turn_msg[1], "turn-1 assistant lost"  # noqa: SLF001
-        assert set(orch._turn_msg) == {1, 5}, orch._turn_msg  # noqa: SLF001
+        assert ids[0] == orch._turn_msg[1], "turn-1 assistant lost"
+        assert set(orch._turn_msg) == {1, 5}, orch._turn_msg
         assert 2 not in orch.kernel.outputs and 5 in orch.kernel.outputs
         # the re-run executed CELLS[1] again
         assert orch.kernel.shell.user_ns["b"] == 2

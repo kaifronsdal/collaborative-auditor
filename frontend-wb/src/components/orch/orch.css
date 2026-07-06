@@ -17,7 +17,6 @@
 .g8  { gap: 8px; }
 .g10 { gap: 10px; }
 .g12 { gap: 12px; }
-.g14 { gap: 14px; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 
 /* ---- column shell ---- */
@@ -118,7 +117,6 @@
 }
 
 /* ---- one turn ---- */
-.orch-col .turn { margin: 0; }  /* dead — .turn-sep controls the rhythm */
 .turn-sep { height: 1px; background: var(--border); margin: 34px -8px; }
 /* prose mt can't collapse through .ba-host flow-root — zero it so the
    sep controls the rhythm symmetrically (SPACING-FIXES). */
@@ -327,15 +325,13 @@
   border: 1px solid hsl(215 50% 80%);
 }
 /* §15: `.out-wrap` — every stable output gets a corner `live` badge that
-   freezes to `updated N×` once the cell settles. RunCard already renders its
-   own inline `.out-live` in `.out-head`; hide the wrapper's when so. */
+   freezes to `updated N×` once the cell settles. */
 .out-wrap { position: relative; margin-top: 10px; }
 .out-wrap > .out { margin-top: 0; }
 .out-wrap + .out-wrap, .out + .out-wrap, .out-wrap + .out { margin-top: 8px; }
 .out-wrap > .out-live {
   position: absolute; top: 4px; right: 6px; z-index: 1; pointer-events: none;
 }
-.out-wrap:has(.out-head .out-live) > .out-live { display: none; }
 /* The corner badge sits over the head's right edge; on hover `.out-actions`
    fades in underneath it — reserve room so the two don't overlap. */
 .out-wrap:has(> .out-live) .out-head { padding-right: 46px; }
@@ -585,13 +581,10 @@ sup.ask-opt-key {
   flex-wrap: wrap; font: 11.5px var(--mono); color: var(--ink-dim);
   padding: 0 12px var(--sp-2);
 }
-.fx-out .arrow { color: var(--ink-faint); font-size: 11px; }
-.fx-out .path { color: var(--ink-mid); }
 .fx-out .sep { color: var(--border); }
 .fx-out .stat b { color: var(--ink); font-weight: 600; }
 .fx-out .stat.ok { color: var(--ok); }
 .fx-out .stat.ok b { color: var(--ok); }
-.fx-out .stat.run b { color: var(--accent-text); }
 .out .fx-out { padding: 9px 14px; }
 .out .fx-out .stat.err { display: inline; color: var(--danger); }
 .out-head .fx-dot { top: 0; }

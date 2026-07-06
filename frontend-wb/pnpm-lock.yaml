@@ -17,9 +17,6 @@ importers:
       '@tsmono/react':
         specifier: workspace:*
         version: link:../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/react
-      '@tsmono/tsconfig':
-        specifier: workspace:*
-        version: link:../../inspect_ai/src/inspect_ai/_view/ts-mono/tooling/tsconfig
       '@tsmono/util':
         specifier: workspace:*
         version: link:../../inspect_ai/src/inspect_ai/_view/ts-mono/packages/util

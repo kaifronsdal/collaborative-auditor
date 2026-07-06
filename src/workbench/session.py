@@ -29,13 +29,13 @@ import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from fastapi import WebSocketDisconnect
 from inspect_ai.event import BranchEvent, Event, ModelEvent, SpanBeginEvent
-from inspect_ai.event._pool_index import (  # noqa: PLC2701
+from inspect_ai.event._pool_index import (
     CallPoolIndex,
     MessagePoolIndex,
     condense_model_event_with_indices,
 )
 from inspect_ai.log import Transcript
-from inspect_ai.log._transcript import init_transcript  # noqa: PLC2701
+from inspect_ai.log._transcript import init_transcript
 from inspect_ai.model import ChatMessage
 from inspect_petri._auditor import build_history_timeline
 from inspect_petri.target import History
@@ -181,15 +181,15 @@ class Session:
             if not t.done():
                 t.cancel()
         for t in self.branch_tasks.values():
-            try:
+            try:  # noqa: SIM105
                 await t
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110
                 pass
         if self.orchestrator is not None and self.orchestrator.task is not None:
             self.orchestrator.task.cancel()
-            try:
+            try:  # noqa: SIM105
                 await self.orchestrator.task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110
                 pass
         self._closed.set()
         if self._run_task is not None:
@@ -311,7 +311,7 @@ class Session:
             cur = self.span_parent.get(cur)
         return None
 
-    def _target_timeline(self, branch: "Branch") -> dict[str, Any]:
+    def _target_timeline(self, branch: Branch) -> dict[str, Any]:
         return build_history_timeline(
             branch.history, f"{branch.branch_id}:target"
         ).model_dump(mode="json")
@@ -448,7 +448,7 @@ class Session:
         run_log_dirs: list[str] | None = None,
     ) -> None:
         """Construct the M1 `Orchestrator`, spawn its `run()`, broadcast state."""
-        from workbench.m1.orchestrator import Orchestrator  # noqa: PLC0415
+        from workbench.m1.orchestrator import Orchestrator
 
         orch = Orchestrator(
             self,
@@ -477,11 +477,11 @@ class Session:
         handler, thread) would otherwise land on a fresh unsubscribed
         ``Transcript`` and be silently lost.
 
-        A stable-id re-``display()`` (e.g. ``RunProposal`` → ``AuditRunHandle``
-        reusing ``prop.id``) arrives with ``update=False`` but a uuid the
-        transcript already holds; ``_event`` would raise ``Duplicate event
-        uuid``. The intent of a stable id *is* "same slot", so route those to
-        ``_event_updated`` regardless.
+        A stable-id re-``display()`` (e.g. a gate proposal followed by its
+        resolved ``Finding`` reusing the same ``display_id``) arrives with
+        ``update=False`` but a uuid the transcript already holds; ``_event``
+        would raise ``Duplicate event uuid``. The intent of a stable id *is*
+        "same slot", so route those to ``_event_updated`` regardless.
         """
         if update or (ev.uuid is not None and ev.uuid in self.events):
             self.transcript._event_updated(ev)  # noqa: SLF001
@@ -527,15 +527,15 @@ class Session:
                 return b.meta.seed
         return ""
 
-    def save(self, branch: "Branch | None" = None) -> None:
+    def save(self, branch: Branch | None = None) -> None:
         """Persist under ``{store_dir}/{session_id}/`` (see `workbench.persist`)."""
-        from workbench.persist import save_session  # noqa: PLC0415
+        from workbench.persist import save_session
 
         save_session(self, branch)
 
     @classmethod
-    async def load(cls, session_id: str, store_dir: Path) -> "Session":
+    async def load(cls, session_id: str, store_dir: Path) -> Session:
         """Reconstruct from ``{store_dir}/{session_id}/`` (see `workbench.persist`)."""
-        from workbench.persist import load_session  # noqa: PLC0415
+        from workbench.persist import load_session
 
         return await load_session(session_id, store_dir)

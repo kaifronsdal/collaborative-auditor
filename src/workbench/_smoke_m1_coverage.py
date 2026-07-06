@@ -30,13 +30,12 @@ from workbench.m1._fixtures import (
 )
 from workbench.m1.attach import AttachedRun
 from workbench.m1.kernel import OrchestratorKernel
-from workbench.m1.orchestrator import _prewarm  # noqa: PLC2701
+from workbench.m1.orchestrator import _prewarm
 from workbench.m1.proposals import Finding, Gate
 from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
 from workbench.m1.wire import STREAM_MIME, WB_MIME
-from workbench.server import _dispatch  # noqa: PLC2701
-
+from workbench.server import _dispatch
 
 # -- 1. bash(background=True) ------------------------------------------------
 
@@ -140,7 +139,7 @@ async def _check_attach_empty_dir() -> None:
     empty = tempfile.mkdtemp(prefix="wb-cov-empty-")
     try:
         h = AttachedRun(log_dir=empty, description="empty", _grace=0.5)
-        h._watcher = asyncio.create_task(h._watch())  # noqa: SLF001
+        h._watcher = asyncio.create_task(h._watch())
         await h.wait(timeout=5)
         assert h.finished
         assert h.error and "no eval log appeared" in h.error, h.error
@@ -152,9 +151,9 @@ async def _check_attach_empty_dir() -> None:
 async def _check_acp_errors(done_log_dir: str) -> None:
     # (a) no --acp-server (completed log_dir → no ctl → no ACP) → False
     h = AttachedRun(log_dir=done_log_dir, description="no-acp")
-    await h._poll()  # noqa: SLF001
+    await h._poll()
     assert await h.interrupt_sample("s0") is False
-    assert h._acp is False  # noqa: SLF001
+    assert h._acp is False
     print("✓ interrupt_sample: no ACP server → False")
 
     # (b)+(c): live subprocess with --acp-server
@@ -168,23 +167,23 @@ async def _check_acp_errors(done_log_dir: str) -> None:
     try:
         h2 = AttachedRun(log_dir=log_dir, description="acp")
         for _ in range(100):
-            await h2._poll()  # noqa: SLF001
-            if h2.running_ids and isinstance(h2._ctl, tuple):  # noqa: SLF001
+            await h2._poll()
+            if h2.running_ids and isinstance(h2._ctl, tuple):
                 break
             await asyncio.sleep(0.1)
-        assert h2.running_ids, f"no running samples (ctl={h2._ctl!r})"  # noqa: SLF001
+        assert h2.running_ids, f"no running samples (ctl={h2._ctl!r})"
 
         # (b) unknown sample id → False (but _acp discovered and kept)
         assert await h2.interrupt_sample("nonexistent") is False
-        from inspect_ai.agent._acp.discovery import DiscoveredEval  # noqa: PLC0415
-        assert isinstance(h2._acp, DiscoveredEval), h2._acp  # noqa: SLF001
+        from inspect_ai.agent._acp.discovery import DiscoveredEval
+        assert isinstance(h2._acp, DiscoveredEval), h2._acp
         print("✓ interrupt_sample: unknown sample_id → False (ACP kept)")
 
         # (c) process dead → OSError on connect → False, _acp reset
         proc.send_signal(signal.SIGKILL)
         await proc.wait()
         assert await h2.interrupt_sample(h2.running_ids[0]) is False
-        assert h2._acp is False  # noqa: SLF001
+        assert h2._acp is False
         print("✓ interrupt_sample: dead socket → False (_acp → False)")
     finally:
         if proc.returncode is None:
@@ -206,7 +205,7 @@ async def _check_server_handlers() -> None:
         orch.step()
         await wait_for(lambda: 1 in orch.kernel.bg)
         await _dispatch(session, {"t": "detach_cell"})
-        await wait_for(lambda: 1 in orch.kernel._detached)  # noqa: SLF001
+        await wait_for(lambda: 1 in orch.kernel._detached)
         assert 1 in orch.kernel.bg, "detach cancelled the cell"
         print("✓ _dispatch detach_cell → cell backgrounded, still running")
 
@@ -261,7 +260,7 @@ async def _check_wb_cite(k: OrchestratorKernel, gate: Gate) -> None:
 
 
 def _check_plots() -> None:
-    from workbench.m1 import plots  # noqa: PLC0415
+    from workbench.m1 import plots
 
     c = plots.model_color("anthropic/claude-opus-4-8")
     assert re.fullmatch(r"#[0-9a-f]{6}", c), c
@@ -278,7 +277,7 @@ def _check_plots() -> None:
     assert cmap["Claude Opus 4.8"] == c, "label-keyed color missing"
     assert "model" in kw["category_orders"]
 
-    import plotly.io as pio  # noqa: PLC0415
+    import plotly.io as pio
     plots.install_template()
     assert pio.templates.default == "plotly_white+workbench"
     plots.install_template()  # idempotent
@@ -300,14 +299,14 @@ async def _amain() -> None:
     )
     _, err = await proc.communicate()
     assert proc.returncode == 0, err.decode()
-    from inspect_ai.log import list_eval_logs  # noqa: PLC0415
+    from inspect_ai.log import list_eval_logs
     log_file = list_eval_logs(read_dir)[0].name
 
     await _check_bash_background()
 
     with OrchestratorKernel() as k:
         gate = Gate()
-        k.shell.user_ns["wb"] = Workbench(gate, session=None)
+        k.shell.user_ns["wb"] = Workbench(gate)
         await _check_read(k, log_file)
         await _check_wb_cite(k, gate)
 

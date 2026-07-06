@@ -52,10 +52,10 @@ __all__ = [
 ]
 
 #: One scripted assistant turn: prose + zero-or-more tool calls.
-TurnSpec: TypeAlias = tuple[str, list[tuple[str, dict[str, Any]]]]
+TurnSpec: TypeAlias = tuple[str, list[tuple[str, dict[str, Any]]]]  # noqa: UP040
 
 #: mockllm ``custom_outputs`` signature (kwargs form).
-CustomOutputs: TypeAlias = Callable[..., ModelOutput]
+CustomOutputs: TypeAlias = Callable[..., ModelOutput]  # noqa: UP040
 
 
 # ── scripted-model helpers ──────────────────────────────────────────────────
@@ -105,7 +105,7 @@ async def mock_orch_session(
     max_turns: int | None = None,
     model_args: dict[str, Any] | None = None,
     **orch_kw: Any,
-) -> AsyncIterator[tuple[Session, "Orchestrator", FakeConn]]:
+) -> AsyncIterator[tuple[Session, Orchestrator, FakeConn]]:
     """The ``Session → FakeConn → start_orchestrator(mockllm)`` bootstrap.
 
     ``turns`` is either a scripted turn list (fed through :func:`orch_by_turn`)
@@ -161,7 +161,7 @@ async def wait_for(
         await asyncio.sleep(tick)
 
 
-async def wait_gate(gate: "Gate", *, timeout: float = 2.0) -> str:
+async def wait_gate(gate: Gate, *, timeout: float = 2.0) -> str:
     """Poll until ``gate.pending`` is non-empty; return the one pending id.
 
     Collapses the six inline ``for _ in range(50): await sleep(0); if
@@ -225,7 +225,7 @@ def demo_eval_cmd(
     return " ".join(parts)
 
 
-def HYBRID_CORE_TURNS(  # noqa: N802
+def HYBRID_CORE_TURNS(
     n: int, log_dir: str, **eval_flags: Any
 ) -> list[TurnSpec]:
     """The ``write_file → bash(inspect eval @demo) → python(wb.attach)`` triple.

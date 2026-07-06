@@ -995,7 +995,3 @@ function _truncateByRole(
   }
   return result;
 }
-
-/** Selector hook: the rewrite draft for one tool_call, or undefined. */
-export const useRewriteDraft = (callId: string): RewriteDraft | undefined =>
-  useSession((s) => s.rewriteDrafts[callId]);

@@ -69,9 +69,8 @@ from workbench._smoke_fixtures import (
 )
 from workbench._smoke_util import FakeConn
 from workbench.run import find_auditor_step
-from workbench.server import _dispatch  # noqa: PLC2701
+from workbench.server import _dispatch
 from workbench.session import Session
-
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 

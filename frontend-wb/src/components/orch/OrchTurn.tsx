@@ -149,7 +149,6 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
           key={ev.uuid ?? ev.data.id}
           id={ev.data.id}
           bundle={ev.data.bundle}
-          meta={ev.data.meta}
           stable={ev.data.stable}
           settled={!anyRunning && !detached}
         />

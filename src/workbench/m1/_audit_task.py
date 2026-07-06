@@ -55,7 +55,7 @@ def audit(seeds_file: str, config: str | dict[str, Any] = "{}") -> Task:
             ``realism_filter`` / ``judge_dimensions`` (same as
             ``wb.run_audits`` accepted).
     """
-    import inspect_petri  # noqa: PLC0415
+    import inspect_petri
 
     cfg: dict[str, Any] = (
         json.loads(config) if isinstance(config, str) else dict(config)

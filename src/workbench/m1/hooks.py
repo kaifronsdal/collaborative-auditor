@@ -41,7 +41,7 @@ class WorkbenchDisplayPublisher(DisplayPublisher):
     emit: Callable[[DisplayEvent], None]
 
     @override
-    def clear_output(self, wait: bool = False) -> None:  # noqa: FBT001, FBT002
+    def clear_output(self, wait: bool = False) -> None:
         # Base writes ``\033[2K\r`` to stdout. Emit a marker instead so
         # ``<Output>`` can drop prior events for this turn; the model-facing
         # render honours it by truncating.
@@ -225,12 +225,12 @@ def install_workbench_hooks(
     plain.for_type_by_name(
         "plotly.graph_objs._figure",
         "Figure",
-        lambda fig, p, cyc: p.text(
+        lambda fig, p, cyc: p.text(  # noqa: ARG005
             f"<plotly.Figure · {len(fig.data)} trace(s) · rendered interactive>"
         ),
     )
     plain.for_type_by_name(
         "matplotlib.figure",
         "Figure",
-        lambda fig, p, cyc: p.text(f"<matplotlib.Figure · {len(fig.axes)} axes>"),
+        lambda fig, p, cyc: p.text(f"<matplotlib.Figure · {len(fig.axes)} axes>"),  # noqa: ARG005
     )

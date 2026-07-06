@@ -40,7 +40,7 @@ TIMEOUT_S = 600
 POLL_S = 2.0
 
 
-async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR0912, PLR0915
+async def _amain(*, model: str, target: str, keep: bool) -> None:
     t0 = time.monotonic()
     orig_cwd = os.getcwd()
     session = Session()
@@ -108,7 +108,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR09
                     interrupt_ok = await h.interrupt_sample(target_id)
                     print(
                         f"  interrupt_sample({target_id!r}) → {interrupt_ok} "
-                        f"(acp={h._acp!r})"  # noqa: SLF001
+                        f"(acp={h._acp!r})"
                     )
                     break
         turns = _n_assistant_turns(session)
@@ -194,7 +194,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR09
         n_done = max(h.n_done for h in handles)
         assert n_done > 0, (
             f"AttachedRun.n_done == 0 for all handles "
-            f"({[(h.log_dir, h.n_done, h.total, h._status) for h in handles]})"  # noqa: SLF001
+            f"({[(h.log_dir, h.n_done, h.total, h._status) for h in handles]})"
         )
         print(f"✓ wb.attach → AttachedRun, n_done={n_done}")
 
@@ -238,7 +238,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:  # noqa: PLR09
             if (
                 e["event"] == "model"
                 and not e.get("pending")
-                and session._resolve(e.get("span_id")) == ("orch", "orch")  # noqa: SLF001
+                and session._resolve(e.get("span_id")) == ("orch", "orch")
             ):
                 out = e.get("output") or {}
                 choices = out.get("choices") or []
@@ -280,7 +280,7 @@ def _n_assistant_turns(session: Session) -> int:
         if e["event"] == "model"
         and not e.get("pending")
         and not e.get("error")
-        and session._resolve(e.get("span_id")) == ("orch", "orch")  # noqa: SLF001
+        and session._resolve(e.get("span_id")) == ("orch", "orch")
     )
 
 

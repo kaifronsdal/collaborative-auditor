@@ -38,7 +38,7 @@ from workbench._smoke_fixtures import (
     target_counted,
 )
 from workbench.run import Branch
-from workbench.server import _dispatch  # noqa: PLC2701
+from workbench.server import _dispatch
 from workbench.session import Session
 from workbench.sources import GEN_SOURCE
 
@@ -49,7 +49,7 @@ async def _settle(branches: list[Branch]) -> None:
     test must — model latency × N is zero with mockllm."""
     for b in branches:
         with anyio.move_on_after(5.0):
-            await b._replayed.wait()  # noqa: SLF001
+            await b._replayed.wait()
     # one more tick for `_step_after_replay`'s `step()` → live generate
     await anyio.sleep(0.05)
 
@@ -139,7 +139,7 @@ async def n2_prefix_shared() -> None:
             assert len(tail) == 1 and tail[0][0] == "target", _diff(actual, prefix)
             assert tail[0][1] in {"r1-a", "r1-b", "r1-c"}, f"divergent={tail[0][1]!r}"
             seen.add(tail[0][1])
-            assert not c._free_running, "candidate should not autoplay"  # noqa: SLF001
+            assert not c._free_running, "candidate should not autoplay"
         assert seen == {"r1-a", "r1-b", "r1-c"}, f"candidates not distinct: {seen}"
     finally:
         await session.close()

@@ -41,7 +41,7 @@ from workbench._smoke_fixtures import (
     target_counted,
 )
 from workbench.run import Branch, find_auditor_step
-from workbench.server import _dispatch  # noqa: PLC2701
+from workbench.server import _dispatch
 from workbench.session import Session
 from workbench.sources import TARGET_GEN_SOURCE
 from workbench.timeline import build_auditor_timeline

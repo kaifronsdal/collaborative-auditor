@@ -2,20 +2,22 @@
 
 An `Orchestrator` is to the M1 orchestrator column what `Branch` is to the M0
 auditor column: it owns a span registered in `session.span_role`, a step gate,
-and a `run()` coroutine that drives an inspect `Agent` loop. The agent has one
-tool — ``python(code, background)`` — whose body is
-``kernel.run_turn(code).text``.
+and a `run()` coroutine that drives an inspect `Agent` loop. The agent has
+eight tools: ``python(code, background)`` (whose body is
+``kernel.run_turn(code).text``) plus the seven from ``make_tools`` — ``bash``
+(subprocess evals), ``read_file``/``write_file``/``edit_file``, and
+``ask_human``/``review_seeds``/``review_finding`` (gate cards).
 
 The kernel↔wire bridge is ``_on_display``: every ``DisplayEvent`` becomes an
 ``InfoEvent(source="orchestrator", data={bundle, …})`` emitted via
-``transcript()._event()`` (or ``_event_updated`` for ``dh.update()``). That
-puts kernel outputs on the *same* pipe as M0's ``ModelEvent``/``ToolEvent``
-stream — ``Session._on_event`` dumps them into ``session.events`` and ships
-``{"t":"event"|"update", "v":…}`` — so reconnect (``push_full_state``),
-persistence, and version-monotonicity all work with zero changes to the M0
-event plumbing. For stable displays we set ``InfoEvent.uuid = display_id`` so
-``dh.update()`` reuses M0's existing ``is_update = ev.uuid in self.events``
-path and lands as ``{"t":"update"}`` on the wire.
+``session.emit()``. That puts kernel outputs on the *same* pipe as M0's
+``ModelEvent``/``ToolEvent`` stream — ``Session._on_event`` dumps them into
+``session.events`` and ships ``{"t":"event"|"update", "v":…}`` — so reconnect
+(``push_full_state``), persistence, and version-monotonicity all work with
+zero changes to the M0 event plumbing. For stable displays we set
+``InfoEvent.uuid = display_id`` so ``dh.update()`` reuses ``session.emit``'s
+``ev.uuid in self.events`` update path and lands as ``{"t":"update"}`` on the
+wire.
 
 We use ``InfoEvent`` as the carrier rather than a bespoke ``DisplayEvent``
 subclass because inspect's ``Event`` union is closed and discriminated for
@@ -34,10 +36,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
-from inspect_ai._util.json import jsonable_python  # noqa: PLC2701
+from inspect_ai._util.json import jsonable_python
 from inspect_ai.agent import Agent, AgentState, agent
 from inspect_ai.event import InfoEvent
-from inspect_ai.log._transcript import init_transcript  # noqa: PLC2701
+from inspect_ai.log._transcript import init_transcript
 from inspect_ai.model import (
     ChatMessage,
     ChatMessageSystem,
@@ -47,18 +49,18 @@ from inspect_ai.model import (
     get_model,
 )
 from inspect_ai.tool import Tool, tool
-from inspect_ai.tool._tools._execute import code_viewer  # noqa: PLC2701
+from inspect_ai.tool._tools._execute import code_viewer
 from inspect_ai.util import span
-from inspect_ai.util._display import init_display_type  # noqa: PLC2701
+from inspect_ai.util._display import init_display_type
 from shortuuid import uuid
 
 from workbench.m1.kernel import OrchestratorKernel
-from workbench.m1.wire import DisplayEvent
 from workbench.m1.plots import install_template
 from workbench.m1.prompt import ORCHESTRATOR_SYSTEM_PROMPT
 from workbench.m1.proposals import Gate
 from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
+from workbench.m1.wire import DisplayEvent
 from workbench.step import StepGated
 from workbench.view import Status
 
@@ -107,7 +109,7 @@ class Orchestrator(StepGated):
 
     def __init__(
         self,
-        session: "Session",
+        session: Session,
         *,
         model: str,
         system_prompt: str | None = None,
@@ -125,7 +127,7 @@ class Orchestrator(StepGated):
         )
         self.max_turns = max_turns
         #: Persistence (M1.3): pre-save chat history to prepend on resume,
-        #: and any ``RunHandle.log_dir``s the pre-save cells produced.
+        #: and any ``eval_run`` log dirs the pre-save turns produced.
         self._resume_messages = resume_messages
         self.run_log_dirs: list[str] = list(run_log_dirs or [])
 
@@ -144,8 +146,8 @@ class Orchestrator(StepGated):
         os.chdir(self.session_dir)
 
         # Pay inspect's cold-start cost (display type, hooks banner) once,
-        # before the first cell runs — otherwise the first in-cell
-        # ``eval_async`` leaks ~8 stream events (M1-RUN-AUDITS.md §Required).
+        # before the first cell runs — the hooks banner is idempotent but
+        # would otherwise land in ``_CellStream`` on the first ``wb.scan``.
         _prewarm()
         install_template()
         self.gate = Gate(on_change=self._broadcast_status_soon)
@@ -153,7 +155,7 @@ class Orchestrator(StepGated):
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
         self.kernel.shell.user_ns["wb"] = Workbench(
-            self.gate, session, session_dir=str(self.session_dir)
+            self.gate, session_dir=str(self.session_dir)
         )
         self.kernel.shell.user_ns.update(_seed_analysis_ns())
         self._init_gate()
@@ -440,7 +442,7 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
                     state.output = await model.generate(
                         input=state.messages, tools=tools
                     )
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     logger.exception("orchestrator turn %d failed", turn)
                     orch.kernel.notify(
                         f"[orchestrator error at turn {turn}: {exc}]"
@@ -476,14 +478,14 @@ def _seed_analysis_ns() -> dict[str, Any]:
     on a lean install) degrades to "not seeded" rather than blocking
     orchestrator construction.
     """
-    import json  # noqa: PLC0415
+    import json
 
     ns: dict[str, Any] = {"json": json, "get_model": get_model}
     try:
-        import numpy as np  # noqa: PLC0415
-        import pandas as pd  # noqa: PLC0415
-        import plotly.express as px  # noqa: PLC0415
-        import plotly.graph_objects as go  # noqa: PLC0415
+        import numpy as np
+        import pandas as pd
+        import plotly.express as px
+        import plotly.graph_objects as go
 
         # Bound the model-facing text/plain (a 50-col DataFrame's default
         # repr is multi-KB) and the frontend's ``text/html`` width. The
@@ -497,13 +499,13 @@ def _seed_analysis_ns() -> dict[str, Any]:
     except ImportError:
         pass
     try:
-        from inspect_petri import audit_scanner  # noqa: PLC0415
+        from inspect_petri import audit_scanner
 
         ns["audit_scanner"] = audit_scanner
     except ImportError:
         pass
     try:
-        from inspect_scout import llm_scanner, scanner  # noqa: PLC0415
+        from inspect_scout import llm_scanner, scanner
 
         ns.update(llm_scanner=llm_scanner, scanner=scanner)
     except ImportError:
@@ -511,25 +513,25 @@ def _seed_analysis_ns() -> dict[str, Any]:
     return ns
 
 
-# -- pre-warm (call once at kernel init; M1-RUN-AUDITS.md §Required) ----------
+# -- pre-warm (call once at kernel init) --------------------------------------
 
 
 def _prewarm() -> None:
     """Suppress inspect's progress display and pay the hooks-banner once.
 
-    ``init_display_type("none")`` stops ``eval_async`` writing progress to
-    stdout (which ``_CellStream`` would capture as stream events).
+    ``init_display_type("none")`` stops any in-process inspect call writing
+    progress to stdout (which ``_CellStream`` would capture as stream events).
     ``platform_init()`` prints the aisitools hooks banner idempotently — do
-    it here so the first in-cell ``eval_async`` doesn't leak 8 stream lines.
+    it here so the first in-cell ``wb.scan`` doesn't leak it as stream lines.
     """
     init_display_type("none")
-    from inspect_ai._util.platform import platform_init  # noqa: PLC0415, PLC2701
+    from inspect_ai._util.platform import platform_init
 
     platform_init()
     # scout has its own display registry (SCOUT_DISPLAY); silence it too so
     # ``wb.scan`` doesn't leak a rich progress bar into ``_CellStream``.
     with suppress(ImportError):
-        from inspect_scout._display._display import (  # noqa: PLC0415, PLC2701
+        from inspect_scout._display._display import (
             init_display_type as scout_init_display,
         )
 
@@ -540,7 +542,7 @@ def _prewarm() -> None:
     # figures should emit only the ~9 KB div + data. ``_wire_bundle``'s
     # 128 KB cap is the safety net; this is the real fix.
     with suppress(ImportError):
-        import plotly.io as pio  # noqa: PLC0415
+        import plotly.io as pio
 
         r = pio.renderers["notebook_connected"]
         r.connected = True  # CDN <script src>, not inline bundle

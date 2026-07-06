@@ -10,7 +10,7 @@ that isn't a side-effect is just Python — the agent uses ``pd``/``px``/
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from workbench.m1 import proposals
 from workbench.m1.attach import AttachedRun
@@ -25,9 +25,6 @@ from workbench.m1.read import (
     transcript,
 )
 
-if TYPE_CHECKING:
-    from workbench.session import Session
-
 
 class Workbench:
     """The ``wb.*`` surface — read helpers + review gates.
@@ -37,18 +34,12 @@ class Workbench:
     rich repr.
     """
 
-    def __init__(
-        self,
-        gate: Gate,
-        session: "Session | None",  # noqa: ARG002
-        *,
-        session_dir: str | None = None,
-    ) -> None:
+    def __init__(self, gate: Gate, *, session_dir: str | None = None) -> None:
         # ``gate`` is the only kernel dependency (``ask_human``/``review_seeds``/
         # ``cite`` await it); holding just the ``Gate`` keeps ``wb`` decoupled
-        # from the turn-lifecycle machinery. ``session`` is unused until a
-        # helper needs it. ``session_dir`` is the ``bash`` tool's cwd —
-        # threaded to ``attach`` so relative ``log_dir``s resolve there.
+        # from the turn-lifecycle machinery. ``session_dir`` is the ``bash``
+        # tool's cwd — threaded to ``attach`` so relative ``log_dir``s resolve
+        # there.
         self._gate = gate
         self._session_dir = session_dir
 
@@ -89,14 +80,11 @@ class Workbench:
         claim: str,
         quotes: Sequence[Quote | dict[str, Any]],
         *,
-        grades_ref: str | None = None,
         description: str,
     ) -> Finding:
         """Propose a finding for the human to sign. Always blocks; deny
         returns an unsigned ``Finding`` (no exception)."""
-        return await proposals.cite(
-            self._gate, claim, quotes, grades_ref=grades_ref, description=description
-        )
+        return await proposals.cite(self._gate, claim, quotes, description=description)
 
     #: Plot helpers over ``px.*`` — ``link``/``annotate_top``/``paired_slope``/
     #: ``replicate_grid``/``survival`` (M1-PLOTTING.md). The ``workbench``
@@ -147,10 +135,10 @@ class Workbench:
         ``ScanHandle._poll`` can resolve the one scan location inside it via
         ``scan_list_async``.
         """
-        import tempfile  # noqa: PLC0415
+        import tempfile
 
-        from inspect_scout import ScanJob, transcripts_from  # noqa: PLC0415
-        from inspect_scout.aio import scan_async  # noqa: PLC0415
+        from inspect_scout import ScanJob, transcripts_from
+        from inspect_scout.aio import scan_async
 
         if isinstance(logs, AttachedRun):
             logs = logs.log_dir
@@ -182,4 +170,4 @@ class Workbench:
             scanner_names=names,
             description=description,
         )
-        return h._start(scan_async(job))
+        return h._start(scan_async(job))  # noqa: SLF001

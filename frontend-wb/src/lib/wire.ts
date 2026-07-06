@@ -182,7 +182,7 @@ export type Up =
   | { t: "cancel_cell"; turn: number }
   | { t: "rewind"; turn: number }
   | { t: "interrupt_and_send"; turn: number; text: string }
-  | { t: "stop_sample"; id: string; log_dir: string; hard?: boolean }
+  | { t: "stop_sample"; id: string; log_dir: string }
   | { t: "import_running"; sample_id: string; log_dir: string };
 
 /** One entry from `GET /sessions` — a persisted session on disk. */

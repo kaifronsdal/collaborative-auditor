@@ -40,7 +40,7 @@ _CHAT_TYPES = {
 }
 
 
-def short_repr(v: Any) -> str:  # noqa: PLR0911, PLR0912, C901
+def short_repr(v: Any) -> str:  # noqa: PLR0915
     """``"TypeName · detail"`` capped at 80 chars; never raises."""
     tn = type(v).__name__
     try:
@@ -158,7 +158,7 @@ def short_repr(v: Any) -> str:  # noqa: PLR0911, PLR0912, C901
             fields = _preview_seq(list(type(v).model_fields), 3)
             return _cap(f"{tn} · {{{fields}}}")
         # -- last resort: repr, capped --------------------------------------
-        return _cap(f"{tn} · {repr(v)}")
+        return _cap(f"{tn} · {v!r}")
     except Exception:  # noqa: BLE001
         return tn
 
@@ -252,11 +252,10 @@ def ns_size_estimate(ns: dict[str, str]) -> int:
     return sum(len(k) + len(v) + 8 for k, v in ns.items()) + 2
 
 
-# Re-export the handle-type set so ``kernel.py`` doesn't duplicate it.
-__all__ = ["short_repr", "ns_size_estimate", "_HANDLE_TYPES"]
+__all__ = ["ns_size_estimate", "short_repr"]
 
 
 if __name__ == "__main__":
     # Tiny inline sanity — the real coverage is in ``_smoke_m1_kernel.py``.
-    for v in [42, "hello", [1, 2, 3], {"a": 1}, None, os.getcwd, PurePath("/tmp/x")]:
+    for v in [42, "hello", [1, 2, 3], {"a": 1}, None, os.getcwd, PurePath("/tmp/x")]:  # noqa: S108
         print(f"{v!r:>30}  →  {short_repr(v)}")

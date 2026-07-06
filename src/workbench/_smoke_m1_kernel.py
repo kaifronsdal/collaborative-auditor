@@ -40,9 +40,9 @@ async def _amain() -> None:
     print("\n✓ all M1 kernel smoke checks passed")
 
 
-async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa: PLR0915
+async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
     gate = Gate()
-    k.shell.user_ns["wb"] = Workbench(gate, session=None)
+    k.shell.user_ns["wb"] = Workbench(gate)
 
     # ---- 1. last-expr auto-display via displayhook -------------------------
     r = await k.run_turn("x = 41\nx + 1")
@@ -202,7 +202,7 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
 
     # ---- 12. rich formatter dispatch (DataFrame _repr_html_) --------------
     try:
-        import pandas as pd  # noqa: PLC0415
+        import pandas as pd
 
         k.shell.user_ns["pd"] = pd
         r = await k.run_turn("pd.DataFrame({'a': [1, 2]})")
@@ -324,23 +324,23 @@ async def _run(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa
     print(f"✓ wire contract: emitted kinds {sorted(emitted)} ⊆ WB_KINDS")
 
 
-async def _check_short_repr() -> None:  # noqa: PLR0915
+async def _check_short_repr() -> None:
     """M1-FEATURES §7 deep review: one useful line per realistic binding type.
 
     Each case asserts (a) something *useful* is in the summary, (b) no
     ``<object at 0x…>`` leaks, (c) the 80-char cap holds. Optional deps
     (petri) are skipped if absent.
     """
-    import io  # noqa: PLC0415
-    from functools import partial  # noqa: PLC0415
-    from pathlib import Path  # noqa: PLC0415
+    import io
+    from functools import partial
+    from pathlib import Path
 
-    import numpy as np  # noqa: PLC0415
-    import pandas as pd  # noqa: PLC0415
-    import plotly.graph_objects as go  # noqa: PLC0415
-    from inspect_ai import Task  # noqa: PLC0415
-    from inspect_ai.dataset import Sample  # noqa: PLC0415
-    from inspect_ai.model import ChatMessageUser  # noqa: PLC0415
+    import numpy as np
+    import pandas as pd
+    import plotly.graph_objects as go
+    from inspect_ai import Task
+    from inspect_ai.dataset import Sample
+    from inspect_ai.model import ChatMessageUser
 
     checks: list[tuple[str, object, str]] = [
         # -- primitives -----------------------------------------------------
@@ -438,7 +438,7 @@ async def _check_short_repr() -> None:  # noqa: PLR0915
     print(f"✓ short_repr: {len(checks)} core types")
 
     # -- workbench handles (dataclass, so construct a minimal one) ----------
-    from workbench.m1.attach import AttachedRun  # noqa: PLC0415
+    from workbench.m1.attach import AttachedRun
 
     h = AttachedRun(task_name="audit-a5b59a", log_dir="/tmp", total=12)
     h.rows = {f"s{i}": _row("done") for i in range(3)}
@@ -450,7 +450,7 @@ async def _check_short_repr() -> None:  # noqa: PLR0915
 
     # -- petri (optional) ---------------------------------------------------
     try:
-        from inspect_petri.target import History  # noqa: PLC0415
+        from inspect_petri.target import History
 
         hist = History()
         hist.branch("")
@@ -497,7 +497,7 @@ def _make_task(tag: str, n: int = 4) -> None:
 
 
 def _row(status: str) -> object:
-    from workbench.m1.handles import SampleRow  # noqa: PLC0415
+    from workbench.m1.handles import SampleRow
 
     return SampleRow(id="s", status=status, epoch=1, input="", turns=0)
 
@@ -516,7 +516,7 @@ class _Thing:
     def __init__(self, n: int) -> None:
         self.n = n
 
-    def _repr_mimebundle_(self, include=None, exclude=None):  # noqa: ANN001, ANN202
+    def _repr_mimebundle_(self, include=None, exclude=None):
         return {
             "text/plain": f"<Thing {self.n}>",
             WB_MIME: {"kind": "thing", "n": self.n},

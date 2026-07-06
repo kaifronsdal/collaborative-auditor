@@ -25,7 +25,6 @@ import {
 export type OutputProps = {
   id: string;
   bundle: DisplayBundle;
-  meta: Record<string, unknown>;
   stable: boolean;
   /** The owning cell's `ToolEvent` is no longer `pending` — no more
    *  `dh.update()`s will land, so the `live` badge freezes to `updated N×`. */
@@ -50,9 +49,8 @@ function bundleCopyText(bundle: DisplayBundle): () => string {
   };
 }
 
-export function Output({ id, bundle, meta, stable, settled }: OutputProps): JSX.Element | null {
+export function Output({ id, bundle, stable, settled }: OutputProps): JSX.Element | null {
   const send = useSession((s) => s.send);
-  void meta;
 
   // §15: count `dh.update()`s. The store's `update` reducer replaces the
   // `InfoEvent` in place by uuid, so `outputs` only ever holds the latest

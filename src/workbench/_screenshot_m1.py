@@ -181,7 +181,7 @@ async def _scroll_tail(col) -> None:
     await asyncio.sleep(0.15)
 
 
-async def _amain() -> None:  # noqa: PLR0912, PLR0915
+async def _amain() -> None:
     ws_port = _free_port()
     ui_port = _free_port()
 
@@ -530,7 +530,7 @@ async def _amain() -> None:  # noqa: PLR0912, PLR0915
                     "(el) => { el.scrollTop = 0; }", timeout=5_000
                 )
                 await _shot(page, "11-rewind", clip=await orch_col.bounding_box())
-            except Exception as e:  # noqa: BLE001
+            except Exception as e:
                 # Before the `eventsToOrchTurns` bundle-guard, the
                 # `rewind_marker` InfoEvent (no `data.bundle`) crashed
                 # `<OrchTurn>` and unmounted the column — capture whatever

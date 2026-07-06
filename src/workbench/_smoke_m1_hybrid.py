@@ -48,7 +48,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import anyio
-from inspect_ai.log._file import (  # noqa: PLC2701
+from inspect_ai.log._file import (
     read_eval_log_sample_summaries_async,
 )
 from inspect_ai.model import ChatMessage, GenerateConfig, ModelOutput
@@ -65,7 +65,7 @@ from workbench.m1._fixtures import (
 )
 from workbench.m1.attach import AttachedRun
 from workbench.m1.kernel import OrchestratorKernel
-from workbench.m1.orchestrator import _prewarm  # noqa: PLC2701
+from workbench.m1.orchestrator import _prewarm
 from workbench.m1.proposals import Gate
 from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
@@ -122,7 +122,7 @@ async def _amain() -> None:
 # -- step 2: bash / file / review tools --------------------------------------
 
 
-async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  # noqa: PLR0915
+async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
     # Duck-typed orch: ``make_tools`` reads ``.kernel``/``.gate``/``.session_dir``,
     # and ``_turn`` calls ``.record_turn`` (rewind bookkeeping — no-op here).
     session_dir = Path.home() / ".workbench" / "sessions" / "smoke-hybrid"
@@ -253,8 +253,8 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:  
 # -- step 3: wb.attach -------------------------------------------------------
 
 
-async def _run_attach(k: OrchestratorKernel) -> bool:  # noqa: PLR0915
-    k.shell.user_ns["wb"] = Workbench(Gate(), session=None)
+async def _run_attach(k: OrchestratorKernel) -> bool:
+    k.shell.user_ns["wb"] = Workbench(Gate())
 
     task_file = os.path.join(tempfile.gettempdir(), "wb_smoke_hybrid_task.py")
     with open(task_file, "w") as f:
@@ -354,7 +354,7 @@ async def _run_attach(k: OrchestratorKernel) -> bool:  # noqa: PLR0915
 # -- M1-HYBRID §Import-to-auditor: per-sample ACP interrupt ------------------
 
 
-async def _run_interrupt() -> None:  # noqa: PLR0915
+async def _run_interrupt() -> None:
     """``AttachedRun.interrupt_sample`` over a subprocess eval's ACP socket.
 
     Launch ``demo(n=3, turns=5, turn_sleep=2.0)`` under ``--acp-server``;
@@ -376,12 +376,12 @@ async def _run_interrupt() -> None:  # noqa: PLR0915
         h = AttachedRun(log_dir=log_dir, description=log_dir)
         # Poll until ctl + samples surface (subprocess start ≈ 1-2s).
         for _ in range(100):
-            await h._poll()  # noqa: SLF001
+            await h._poll()
             if h.running_ids and h.location:
                 break
             await asyncio.sleep(0.1)
         assert h.running_ids, (
-            f"no running samples after 10s (ctl={h._ctl!r}, log={h.location})"  # noqa: SLF001
+            f"no running samples after 10s (ctl={h._ctl!r}, log={h.location})"
         )
         assert h.location and h.location.endswith(".eval")
         target = h.running_ids[0]
@@ -391,7 +391,7 @@ async def _run_interrupt() -> None:  # noqa: PLR0915
         ok = await h.interrupt_sample(target)
         assert ok, (
             f"interrupt_sample({target!r}) → False "
-            f"(acp={h._acp!r}, ctl={h._ctl!r})"  # noqa: SLF001
+            f"(acp={h._acp!r}, ctl={h._ctl!r})"
         )
 
         # Interrupted sample flushes to the ``.eval`` under --log-buffer 1.
@@ -409,7 +409,7 @@ async def _run_interrupt() -> None:  # noqa: PLR0915
             await asyncio.sleep(0.1)
 
         # Siblings still running — the interrupt was per-sample.
-        await h._poll()  # noqa: SLF001
+        await h._poll()
         assert f"{target}#1" in h.rows and target not in h.running_ids, (
             h.rows.keys(), h.running_ids,
         )
@@ -424,7 +424,7 @@ async def _run_interrupt() -> None:  # noqa: PLR0915
         proc.terminate()
         try:
             await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             proc.kill()
             await proc.wait()
         stderr = (await stderr_task).decode()
@@ -466,7 +466,7 @@ async def _wait_tool(session: Session, fn: str, *, timeout: float = 60) -> dict[
     raise AssertionError(f"tool {fn!r} did not settle within {timeout}s")
 
 
-async def _run_e2e() -> None:  # noqa: PLR0915
+async def _run_e2e() -> None:
     span_id = "smoke-hybrid-e2e"
     sdir = Path.home() / ".workbench" / "sessions" / span_id
     shutil.rmtree(sdir, ignore_errors=True)

@@ -7,7 +7,7 @@
  * streaming column re-renders per flush.
  */
 import { useMemo } from "react";
-import type { ChatMessage, Event, ModelEvent } from "@tsmono/inspect-common";
+import type { ChatMessage, Event } from "@tsmono/inspect-common";
 import {
   computeBranchMappings,
   computeFlatSwimlaneRows,
@@ -21,24 +21,12 @@ import {
   type TimelineSpan,
 } from "@tsmono/inspect-components/transcript/timeline";
 
-import { buildEventTree, isModelEvent, type EventNode } from "./events";
+import { isModelEvent } from "./events";
 import type { BranchId, Role } from "./wire";
 import { useSession } from "../store/session";
 
 export function useEvents(branch: BranchId, role: Role): Event[] {
   return useSession((s) => s.byRole[branch]?.[role] ?? EMPTY);
-}
-
-/** The single in-flight (streaming) ModelEvent for a column, if any. */
-export function usePending(branch: BranchId, role: Role): ModelEvent | null {
-  return useSession((s) => {
-    const events = s.byRole[branch]?.[role] ?? EMPTY;
-    for (let i = events.length - 1; i >= 0; i--) {
-      const ev = events[i];
-      if (isModelEvent(ev) && ev.pending === true) return ev;
-    }
-    return null;
-  });
 }
 
 export function useQueued(branch: BranchId, role: Role): ChatMessage[] {
@@ -78,19 +66,6 @@ export function useStagedForTarget(branch: BranchId): ChatMessage[] {
     }
     return out;
   }, [auditorEvs, targetEvs]);
-}
-
-/**
- * inspect's display tree (`treeifyEvents`) over the current event set.
- *
- * Derived (not stored) so it can never go stale relative to `events`. Memoized
- * on the `events` Map reference, which the reducer replaces on every mutation,
- * so the tree rebuilds exactly when the underlying events change. O(n) at
- * audit scale; profile before optimizing (INSPECT-REUSE.md §3).
- */
-export function useEventTree(): EventNode[] {
-  const events = useSession((s) => s.events);
-  return useMemo(() => buildEventTree(events.values()), [events]);
 }
 
 /**

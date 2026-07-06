@@ -34,16 +34,16 @@ from acp import PROTOCOL_VERSION
 from acp.connection import Connection
 from acp.exceptions import RequestError
 from acp.router import MessageRouter
-from inspect_ai._control.discovery import (  # noqa: PLC2701
+from inspect_ai._control.discovery import (
     DiscoveredControlServer,
     list_discovered_servers,
 )
-from inspect_ai.agent._acp.discovery import (  # noqa: PLC2701
+from inspect_ai.agent._acp.discovery import (
     DiscoveredEval,
     list_discovered_evals,
 )
 from inspect_ai.log import EvalSampleSummary, list_eval_logs
-from inspect_ai.log._file import (  # noqa: PLC2701
+from inspect_ai.log._file import (
     read_eval_log_async,
     read_eval_log_sample_summaries_async,
 )
@@ -51,13 +51,13 @@ from IPython.display import display
 
 from workbench.m1.handles import (
     SampleRow,
-    _first_numeric,  # noqa: PLC2701
-    _PollingHandle,  # noqa: PLC2701
+    _first_numeric,
+    _PollingHandle,
 )
 from workbench.m1.wire import (
     EvalRunPayload,
     SampleRowPayload,
-    _finite,  # noqa: PLC2701
+    _finite,
     wb_bundle,
 )
 
@@ -136,7 +136,7 @@ class AttachedRun(_PollingHandle):
                 f"`await handle.wait()` "
                 f"({self.n_done}/{self.total} done, {len(self._running)} running)"
             )
-        from inspect_petri import audits_df  # noqa: PLC0415
+        from inspect_petri import audits_df
 
         return audits_df(self.location or self.log_dir)
 

@@ -162,7 +162,6 @@ class CiteProposalPayload(TypedDict, total=False):
     verdict: dict[str, Any] | None
     claim: str
     quotes: list[QuotePayload]
-    grades_ref: str | None
     description: str
 
 

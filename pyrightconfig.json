@@ -3,5 +3,5 @@
   "venv": ".venv",
   "include": ["src"],
   "exclude": ["**/.venv", "**/node_modules", "frontend-wb"],
-  "reportMissingImports": "warning"
+  "extraPaths": ["src"]
 }

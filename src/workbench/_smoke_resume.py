@@ -34,7 +34,7 @@ SEED = "test seed"
 async def _amain() -> None:
     session = Session()
     await session.start()
-    drain_task = session._run_task  # noqa: SLF001 — assert it never changes (c)
+    drain_task = session._run_task
 
     # --- branch 1: run to completion, capture its recorded tape -------------
     b1 = Branch(
@@ -112,7 +112,7 @@ async def _amain() -> None:
     assert b1.store is not b2.store, "branches shared a Store object"
 
     # (c) drain did not double-start: still the same single task from start().
-    assert session._run_task is drain_task, "drain task was replaced/double-started"  # noqa: SLF001
+    assert session._run_task is drain_task, "drain task was replaced/double-started"
 
     print(
         f"resume: prefix_len={b2.audit_tape.prefix_len} "

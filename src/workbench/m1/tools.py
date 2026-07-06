@@ -33,10 +33,10 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from inspect_ai.tool import Tool, tool
-from inspect_ai.tool._tools._execute import code_viewer  # noqa: PLC2701
+from inspect_ai.tool._tools._execute import code_viewer
 
 from workbench.m1 import proposals
-from workbench.m1.handles import _first_numeric  # noqa: PLC2701
+from workbench.m1.handles import _first_numeric
 from workbench.m1.proposals import Prompt
 from workbench.m1.wire import (
     STREAM_MIME,
@@ -60,7 +60,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
 
 @contextmanager
-def _turn(orch: "Orchestrator") -> Iterator[int]:
+def _turn(orch: Orchestrator) -> Iterator[int]:
     """Allocate a kernel turn for a non-``python`` tool that emits displays.
 
     ``kernel.emit`` stamps ``DisplayEvent.turn_id`` from the ``_current_turn``
@@ -76,8 +76,11 @@ def _turn(orch: "Orchestrator") -> Iterator[int]:
         yield tid
 
 
-def make_tools(orch: "Orchestrator") -> list[Tool]:
-    """Return the 8 hybrid tools, each a closure over ``orch``."""
+def make_tools(orch: Orchestrator) -> list[Tool]:  # noqa: PLR0915
+    """The 7 non-``python`` hybrid tools, each a closure over ``orch``:
+    ``bash`` / ``read_file`` / ``write_file`` / ``edit_file`` /
+    ``ask_human`` / ``review_seeds`` / ``review_finding``. The 8th tool,
+    ``python``, lives in ``orchestrator.python_tool``."""
     kernel = orch.kernel
     session_dir = orch.session_dir
 
@@ -300,7 +303,7 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
 
                 try:
                     code = await asyncio.wait_for(_pump(proc, plain, seen), timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     proc.kill()
                     await proc.wait()
                     return _tail(plain, f"timeout after {timeout}s")

@@ -205,7 +205,10 @@ class ScanHandle(_PollingHandle):
     # -- hooks ------------------------------------------------------------
 
     async def _poll(self) -> None:
-        from inspect_scout.aio import scan_list_async, scan_status_async  # noqa: PLC0415
+        from inspect_scout.aio import (
+            scan_list_async,
+            scan_status_async,
+        )
 
         if self._location is None:
             listed = await scan_list_async(self.scans_dir)
@@ -222,7 +225,7 @@ class ScanHandle(_PollingHandle):
         return tuple(v for s in self.per_scanner.values() for v in sorted(s.items()))
 
     async def _settle(self, task: asyncio.Task[Any] | None) -> None:
-        from inspect_scout.aio import scan_results_df_async  # noqa: PLC0415
+        from inspect_scout.aio import scan_results_df_async
 
         self.total = self.total or self.n_done
         if self.error is None and self._location is None and task is not None:

@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import anyio
+from inspect_ai.log._transcript import init_transcript
 from inspect_ai.model import (
     ChatMessage,
     ChatMessageUser,
@@ -43,7 +44,6 @@ from inspect_ai.model import (
     ModelOutput,
     get_model,
 )
-from inspect_ai.log._transcript import init_transcript  # noqa: PLC2701
 from inspect_ai.util import Store
 from inspect_petri._auditor import audit_context, run_audit
 from inspect_petri.target import (
@@ -249,7 +249,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
 
 
 async def generate_rewrite(
-    branch: "Branch",
+    branch: Branch,
     turn_index: int,
     call_id: str,
     instruction: str,
@@ -442,7 +442,7 @@ class Branch(StepGated):
 
     # -- TurnHooks (auditor.py) ----------------------------------------------
 
-    async def pre_turn(self) -> tuple[list[ChatMessage], bool]:
+    async def pre_turn(self) -> list[ChatMessage]:
         """Desk pre-generate: mark replay done, await the step-gate, drain
         queued operator messages, flip the spinner."""
         self._replayed.set()
@@ -450,7 +450,7 @@ class Branch(StepGated):
         msgs = self.queued["auditor"]
         self.queued["auditor"] = []
         self.generating = "auditor"
-        return msgs, False  # M0 stops via task-cancel, never here
+        return msgs
 
     def post_generate(self) -> None:
         self.generating = None
@@ -533,14 +533,14 @@ class Branch(StepGated):
     def fork(
         cls,
         session: Session,
-        parent: "Branch",
+        parent: Branch,
         *,
         anchor: str,
         inclusive: bool = True,
         edited: Step | None = None,
         branch_id: str | None = None,
         batch: str | None = None,
-    ) -> "Branch":
+    ) -> Branch:
         """A child branch inheriting `parent`'s config, branched at `anchor`
         on the session's `audit_history`.
 

@@ -12,8 +12,8 @@ onlyBuiltDependencies:
 allowBuilds:
   esbuild: true
   unrs-resolver: true
-# We import only the pure ./transcript/transform subpath from
-# @tsmono/inspect-components; its UI peer deps are not needed.
+# We import ./transcript/transform, ./transcript/timeline and ./chat subpaths
+# from @tsmono/inspect-components; the remaining UI peer deps are not needed.
 peerDependencyRules:
   ignoreMissing:
     - react-virtuoso
