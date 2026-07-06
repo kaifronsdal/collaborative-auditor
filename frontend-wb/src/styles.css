@@ -859,29 +859,6 @@ body {
 .md th, .md td { border: 1px solid var(--border); padding: 3px var(--sp-2); text-align: left; }
 .md th { background: var(--bg-100); font-weight: 600; }
 
-/* ---- CollapsibleContent — inspect-view-style more/less clamp ---- */
-.cc-wrap { position: relative; }
-/* Mask the clipped region itself (not an overlay) so the fade works on any
-   bubble background. The inner measuring div is unclamped, so ResizeObserver
-   sees natural-height growth even while .cc-clip stays fixed. */
-.cc-wrap[data-collapsed] .cc-clip {
-  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 48px), transparent);
-  mask-image: linear-gradient(to bottom, black calc(100% - 48px), transparent);
-}
-/* Sticky-bottom toggle: rests after the content in normal flow, but sticks to
-   the column viewport's bottom edge while the panel extends past it — so the
-   toggle is reachable without scrolling through the whole clip, and stays in
-   view while reading expanded content. Borderless/faint so it doesn't compete
-   with the content it gates. */
-.cc-toggle {
-  position: sticky; bottom: var(--sp-1);
-  display: block; width: fit-content;
-  margin: var(--sp-1) 0 0 auto; padding: 1px var(--sp-1);
-  border: none; background: transparent; color: var(--ink-faint);
-  font: var(--fs-xs) var(--sans); cursor: pointer;
-}
-.cc-toggle:hover { color: var(--ink-mid); text-decoration: underline; }
-
 /* ── inspect-view CSS-var bridge ────────────────────────────────────────────
  * @tsmono/inspect-components (TimelineSwimLanes, ToolCallView, Modal, …) read
  * --bs-* / --vscode-* / --inspect-* tokens supplied by their host apps. Alias
@@ -890,9 +867,12 @@ body {
 :root {
   --bs-body-bg: var(--bg-000);
   --bs-secondary-bg: var(--bg-100);
+  --bs-tertiary-bg: var(--bg-100);
   --bs-border-color: var(--border);
+  --bs-light-border-subtle: var(--border);
   --bs-border-radius: var(--r-md);
   --bs-primary: var(--accent);
+  --bs-body-color: var(--ink);
   --vscode-editor-background: var(--bg-000);
   --vscode-foreground: var(--ink);
   --vscode-descriptionForeground: var(--ink-dim);
@@ -903,6 +883,7 @@ body {
   --vscode-widget-shadow: hsl(0 0% 0% / .28);
   --vscode-list-hoverBackground: var(--bg-100);
   --vscode-toolbar-hoverBackground: var(--bg-100);
+  --inspect-font-size-smaller: var(--fs-xs);
   --inspect-font-size-smallest: var(--fs-xs);
 }
 /* @tsmono/react Modal defaults to 450px; the workbench's checklist modals want

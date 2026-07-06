@@ -23,14 +23,23 @@ from pathlib import Path
 import anyio
 from playwright.async_api import Page, async_playwright
 
-from workbench._smoke_fixtures import _backend, _free_port, _vite
+from workbench._smoke_fixtures import (
+    _auditor_turn,
+    _backend,
+    _free_port,
+    _target,
+    _tc,
+    _vite,
+)
 from workbench.m1._fixtures import (
     HYBRID_CORE_TURNS,
     TurnSpec,
     mock_orch_session,
     wait_gate,
 )
+from workbench.run import Branch
 from workbench.server import sessions
+from workbench.session import Session
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "frontend-wb" / "screenshots" / "m1"
@@ -160,6 +169,26 @@ TURNS: list[TurnSpec] = [
     (PROSE[10], [("python", {"code": CELLS[10]})]),
     ("Acknowledged — waiting on you.", []),
 ]
+
+# ── M0 auditor/target column: `Bubble` collapse-toggle coverage ─────────────
+# `set_system_message` with a >280px body renders in the target column as a
+# `.bubble.system` whose `CollapsibleContent` (→ `ExpandablePanel`) mounts the
+# more/less toggle. Petri's own auditor system prompt does the same in the
+# auditor column.
+_M0_LONG_SYS = "You are a helpful assistant.\n\n" + "\n".join(
+    f"Rule {i}: this line exists to push the system bubble past the 280px "
+    "collapse threshold so the ExpandablePanel more/less toggle mounts."
+    for i in range(24)
+)
+M0_AUDITOR = [
+    _auditor_turn(
+        _tc("set_system_message", system_message=_M0_LONG_SYS),
+        _tc("send_message", message="hello"),
+        _tc("resume"),
+    ),
+    _auditor_turn(_tc("end_conversation")),
+]
+M0_TARGET = [_target("acknowledged.")]
 
 
 # ── screenshot driver ───────────────────────────────────────────────────────
@@ -534,6 +563,47 @@ async def _amain() -> None:
                     "  ! rewind emitted page errors — "
                     "check `rewind_marker` handling in eventsToOrchTurns."
                 )
+
+            # ── M0 columns: `Bubble` collapse toggle (ExpandablePanel) ──────
+            # Fresh non-orchestrator session so `DeskView` renders the plain
+            # auditor/target columns. The `[data-expandable-panel] button`
+            # selector is the stable (non-hashed) hook `ExpandablePanel` gives
+            # us — its `.moreToggle*` classes are CSS-module scoped.
+            m0 = Session()
+            await m0.start()
+            sessions["m0shots"] = m0
+            m0b = Branch(
+                m0,
+                "b0",
+                seed="m0 bubble collapse coverage",
+                auditor_model="mockllm/model",
+                target_model="mockllm/model",
+                max_turns=len(M0_AUDITOR),
+                auditor_model_args={"custom_outputs": list(M0_AUDITOR)},
+                target_model_args={"custom_outputs": list(M0_TARGET)},
+            )
+            m0.branches["b0"] = m0b
+            m0.current = "b0"
+            m0b.play()
+            await asyncio.create_task(m0b.run())
+
+            await page.goto(f"http://127.0.0.1:{ui_port}/?session=m0shots")
+            await page.wait_for_selector(".columns .column", timeout=15_000)
+            aud = page.locator(".columns .col-wrap").first
+            toggle = aud.locator(".bubble.system [data-expandable-panel] button").first
+            await toggle.wait_for(timeout=10_000)
+            await aud.locator(".column").evaluate("(el) => { el.scrollTop = 0; }")
+            await asyncio.sleep(0.15)
+            await _shot(page, "15-m0-bubble-collapsed", clip=await aud.bounding_box())
+            await toggle.click()
+            await asyncio.sleep(0.15)
+            await aud.locator(".column").evaluate("(el) => { el.scrollTop = 0; }")
+            await _shot(page, "15b-m0-bubble-expanded", clip=await aud.bounding_box())
+            # Full desk (both columns) — target column carries the long
+            # `set_system_message` bubble with its own toggle.
+            await page.mouse.move(0, 0)
+            await _shot(page, "15c-m0-desk", full=True)
+            await m0.close()
 
             if errors:
                 print("\npage errors:")
