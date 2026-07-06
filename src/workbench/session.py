@@ -121,7 +121,7 @@ class Session:
         # Per-(branch, role) ordered event-uuid lists, maintained incrementally
         # for `build_auditor_timeline` (cheaper than re-scanning `events` on
         # every rebuild).
-        self._by_role: dict[tuple[str, Role], list[str]] = {}
+        self.by_role: dict[tuple[str, Role], list[str]] = {}
 
         self.version: int = 0
         self.connections: list[Connection] = []
@@ -177,20 +177,10 @@ class Session:
         Branch tasks are cancelled first so they don't try to enqueue onto a
         closed `_send` stream (which would raise `ClosedResourceError`).
         """
-        for t in self.branch_tasks.values():
-            if not t.done():
-                t.cancel()
-        for t in self.branch_tasks.values():
-            try:  # noqa: SIM105
-                await t
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110
-                pass
+        tasks = list(self.branch_tasks.values())
         if self.orchestrator is not None and self.orchestrator.task is not None:
-            self.orchestrator.task.cancel()
-            try:  # noqa: SIM105
-                await self.orchestrator.task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110
-                pass
+            tasks.append(self.orchestrator.task)
+        await _cancel_all(tasks)
         self._closed.set()
         if self._run_task is not None:
             await self._run_task
@@ -246,14 +236,14 @@ class Session:
         # Gate: drop until the *first auditor `ModelEvent`* for this branch
         # lands — that's either `workbench_auditor`'s inline divergent emit
         # (the edited step) or the first live generate. Once it lands,
-        # `_by_role[(branch, "auditor")]` exists and every subsequent event
+        # `by_role[(branch, "auditor")]` exists and every subsequent event
         # passes.
         if (
             resolved is not None
             and resolved[1] == "auditor"
             and (b := self.branches.get(resolved[0])) is not None
             and b.shared_prefix_len > 0
-            and resolved not in self._by_role
+            and resolved not in self.by_role
             and not isinstance(ev, ModelEvent)
         ):
             return
@@ -264,7 +254,7 @@ class Session:
 
         self.events[ev.uuid] = dumped
         if not is_update and resolved is not None:
-            self._by_role.setdefault(resolved, []).append(ev.uuid)
+            self.by_role.setdefault(resolved, []).append(ev.uuid)
         self.version += 1
         self._enqueue(
             {
@@ -499,7 +489,7 @@ class Session:
         key = self.span_role.get(span_id)
         if key is None:
             return
-        ordered = self._by_role.get(key, [])
+        ordered = self.by_role.get(key, [])
         try:
             idx = ordered.index(from_uuid)
         except ValueError:
@@ -539,3 +529,20 @@ class Session:
         from workbench.persist import load_session
 
         return await load_session(session_id, store_dir)
+
+
+async def _cancel_all(tasks: list[asyncio.Task[Any]]) -> None:
+    """Cancel each task, then await it swallowing ``CancelledError`` / anything.
+
+    Shared by ``Session.close`` and ``server._stop_running_branches`` — cancel
+    first, await second (so a task's ``finally`` sees siblings already
+    cancelling), tolerate whatever the awaited task raises on the way out.
+    """
+    for t in tasks:
+        if not t.done():
+            t.cancel()
+    for t in tasks:
+        try:  # noqa: SIM105
+            await t
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001, S110
+            pass

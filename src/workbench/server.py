@@ -19,7 +19,6 @@ import argparse
 import asyncio
 import json
 import logging
-import zipfile
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
@@ -42,7 +41,7 @@ from workbench.run import (
     generate_rewrite,
     locate_staging_call,
 )
-from workbench.session import CandidateBatch, Session
+from workbench.session import CandidateBatch, Session, _cancel_all
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +183,7 @@ async def _stop_running_branches(
     `pick_candidate` / `dismiss_candidates` pass ``only=`` to cancel just
     the unpicked candidates (RESAMPLE-N.md — concurrent branches are safe
     since #5/#12: per-branch `Store`, session-owned drain, sync
-    `_on_event`, `(branch_id, role)`-keyed `_by_role`).
+    `_on_event`, `(branch_id, role)`-keyed `by_role`).
 
     The cancelled `Branch` (its `audit_tape`, settled events, store)
     stays in `session.branches` — only the live coroutine stops.
@@ -195,15 +194,7 @@ async def _stop_running_branches(
         for bid, t in session.branch_tasks.items()
         if not t.done() and (only is None or bid in only)
     }
-    for t in running.values():
-        t.cancel()
-    for t in running.values():
-        try:
-            await t
-        except asyncio.CancelledError as exc:
-            logger.debug("previous branch task ended on start: %r", exc)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("branch task raised on cancel: %r", exc, exc_info=True)
+    await _cancel_all(list(running.values()))
     for bid in running:
         del session.branch_tasks[bid]
         if (b := session.branches.get(bid)) is not None and b.status == "running":
@@ -468,108 +459,251 @@ async def _dispatch(session: Session, data: dict) -> None:
         await _dispatch_locked(session, data)
 
 
+# -- per-command handlers ------------------------------------------------------
+
+
+async def _h_start(session: Session, data: dict) -> None:
+    raw_max_turns = data.get("max_turns")
+    branch = Branch(
+        session,
+        uuid(),
+        seed=data["seed"],
+        auditor_model=data["auditor_model"],
+        target_model=data["target_model"],
+        max_turns=int(raw_max_turns) if raw_max_turns is not None else None,
+        auditor_config=data.get("auditor_config") or None,
+        target_config=data.get("target_config") or None,
+    )
+    # the branch registered its span ids in `session.span_role`;
+    # `_register_and_spawn` re-broadcasts `state` so clients learn
+    # the mapping. autoplay=True: a human is in the loop, so the
+    # audit starts immediately; `play()` before the gate is safe
+    # (the first wait finds the event already set).
+    await _register_and_spawn(session, branch, autoplay=True)
+
+
+async def _h_end(session: Session, data: dict) -> None:  # noqa: ARG001
+    if session.current is None:
+        logger.warning("end before start — dropping")
+        return
+    branch = session.branches[session.current]
+    if branch.status == "ended":
+        return
+    try:
+        await branch.channel.end_conversation()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("end_conversation raised: %r", exc)
+    await _stop_running_branches(session)
+
+
+async def _h_transport(session: Session, data: dict, cmd: str) -> None:
+    """``step``/``play``/``pause`` — explicit target: a branch id, ``"orch"``
+    for the orchestrator, or omitted for ``session.current`` (M0 back-compat).
+    Lets the human step a non-current branch without a ``switch`` round-trip."""
+    tgt = data.get("target")
+    obj = (
+        session.orchestrator
+        if tgt == "orch"
+        else session.branches.get(tgt or session.current or "")
+    )
+    if obj is None:
+        logger.warning("%r: no target %r — dropping", cmd, tgt)
+        return
+    getattr(obj, cmd)()
+    await session.broadcast_status()
+
+
+async def _h_inject(session: Session, data: dict) -> None:
+    branch_id = data["branch"]
+    role = data["role"]
+    if branch_id not in session.branches:
+        logger.warning("inject for unknown branch %r — dropping", branch_id)
+        return
+    if session.branches[branch_id].status == "ended":
+        logger.warning("inject into ended branch %r — dropping", branch_id)
+        await session.broadcast(
+            {"t": "error", "v": session.version, "message": "branch has ended"}
+        )
+        return
+    # preserve the client-generated id so the frontend reconciles the
+    # ghost bubble once the id appears in the next ModelEvent.input.
+    msg = ChatMessageUser.model_validate(data["message"])
+    session.branches[branch_id].queued[role].append(msg)
+    await session.broadcast(
+        {
+            "t": "queued",
+            "v": session.version,
+            "branch": branch_id,
+            "role": role,
+            "message": data["message"],
+        }
+    )
+
+
+async def _h_pick_candidate(session: Session, data: dict) -> None:
+    batch = session.candidate_batches[data["batch"]]
+    picked = data["branch"]
+    await _stop_running_branches(
+        session, only={c for c in batch.children if c != picked}
+    )
+    session.current = picked
+    batch.picked = picked
+    await session.broadcast({"t": "state", "v": session.version, **session.view()})
+    await session.broadcast_status()
+
+
+async def _h_rewrite_target_message(session: Session, data: dict) -> None:
+    """Target-column counterpart to ``rewrite_tool_call``: a target-side
+    user/system/tool message maps to an auditor staging call via
+    ``locate_staging_call``; rewrite that call's args with the auditor model,
+    then return the staging-arg content (the field that becomes the visible
+    message text) so the client can preview it and apply via
+    ``edit_target_message``. Stateless draft — no fork, no ``_dispatch_lock``."""
+    key = {"message_id": data["message_id"]}
+    branch = session.branches.get(data["branch"])
+    if branch is None:
+        await _draft_reply(
+            session, data, key, error=f"unknown branch {data['branch']!r}"
+        )
+        return
+    try:
+        turn_index, _orig, call_id, arg_key = locate_staging_call(
+            branch.audit_tape.log,
+            message_id=data["message_id"],
+            role=data["role"],
+            tool_call_id=data.get("tool_call_id"),
+        )
+    except ValueError as exc:
+        await _draft_reply(session, data, key, error=str(exc))
+        return
+    await _rewrite_draft(
+        session, data, key=key, turn_index=turn_index, call_id=call_id, arg_key=arg_key
+    )
+
+
+async def _h_export(session: Session, data: dict) -> None:
+    """Write one branch (and its descendants) as a one-sample ``.eval``.
+    Stateless — no fork, no lock; runs in the WS task."""
+    branch_id = data["branch"]
+    branch = session.branches.get(branch_id)
+    if branch is None:
+        await session.broadcast(
+            {
+                "t": "error",
+                "v": session.version,
+                "message": f"unknown branch {branch_id!r}",
+            }
+        )
+        return
+    export_branch(branch, data["path"])
+    logger.info("exported branch %s → %s", branch_id, data["path"])
+
+
+async def _h_start_orchestrator(session: Session, data: dict) -> None:
+    if session.orchestrator is not None:
+        await session.broadcast(
+            {
+                "t": "error",
+                "v": session.version,
+                "message": "orchestrator already running",
+            }
+        )
+        return
+    await session.start_orchestrator(
+        model=data["model"], system_prompt=data.get("system_prompt")
+    )
+
+
+async def _h_import_running(session: Session, data: dict) -> None:
+    """M1-HYBRID §Import-to-auditor: the eval is a *subprocess*, so there is no
+    in-process ``ActiveSample`` to snapshot. Attach to ``log_dir``, per-sample
+    ``inspect/cancel_sample`` over ACP, wait for the recorder to flush that
+    sample to the ``.eval``, then ``import_eval`` it — same tail as ``import``.
+    Siblings keep running.
+
+    If ``interrupt_sample`` returns ``False`` (no ACP server — eval wasn't
+    launched with ``--acp-server``, or already exited) the flush poll may
+    still succeed if the sample finished on its own; otherwise the timeout
+    surfaces as ``{t:"error"}`` via the outer ``_dispatch`` guard.
+    """
+    sample_id = str(data["sample_id"])
+    h = await AttachedRun.discover(data["log_dir"])
+    await h.interrupt_sample(sample_id)
+    location = await h.wait_for_sample(sample_id)
+    history, meta = import_eval(location, sample_id)
+    await _import(session, history, meta)
+
+
+async def _h_approve(session: Session, data: dict) -> None:
+    """Resolve a pending gate. ``verdict`` is opaque to the server — the
+    awaiting ``_gate`` coroutine interprets it (edits/denied/answer)."""
+    if session.orchestrator is None:
+        return
+    ok = session.orchestrator.gate.resolve(data["display_id"], data.get("verdict"))
+    if not ok:
+        logger.warning("approve for unknown display_id %r", data["display_id"])
+
+
+async def _h_interrupt_and_send(session: Session, data: dict) -> None:
+    """M1-FEATURES §11: kill the running cell (tool result becomes
+    ``[interrupted by user …]``), queue the human's text, release one turn so
+    both reach the *same* next generate. Not ``orch.send()`` — that would
+    ``detach()``, which can win the race against the cancel and background the
+    cell instead."""
+    orch = session.orchestrator
+    if orch is None:
+        return
+    orch.kernel.interrupt(int(data["turn"]))
+    orch.queued.append(ChatMessageUser(content=data["text"]))
+    orch.step()
+    await session.broadcast_status()
+
+
+async def _h_stop_sample(session: Session, data: dict) -> None:  # noqa: ARG001
+    """M1-FEATURES §9: per-sample stop from a ``ProgressCard`` row.
+    Post-M1-HYBRID the eval is a subprocess — same ACP per-sample cancel as
+    ``import_running`` (without the flush-wait/import tail)."""
+    h = await AttachedRun.discover(data["log_dir"])
+    ok = await h.interrupt_sample(str(data["id"]))
+    if not ok:
+        logger.warning(
+            "stop_sample %r: no ACP server for %r", data["id"], data["log_dir"]
+        )
+
+
+# -- dispatch ------------------------------------------------------------------
+
+
 async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR0915
     match data.get("t"):
         case "start":
-            raw_max_turns = data.get("max_turns")
-            branch = Branch(
-                session,
-                uuid(),
-                seed=data["seed"],
-                auditor_model=data["auditor_model"],
-                target_model=data["target_model"],
-                max_turns=int(raw_max_turns) if raw_max_turns is not None else None,
-                auditor_config=data.get("auditor_config") or None,
-                target_config=data.get("target_config") or None,
-            )
-            # the branch registered its span ids in `session.span_role`;
-            # `_register_and_spawn` re-broadcasts `state` so clients learn
-            # the mapping. autoplay=True: a human is in the loop, so the
-            # audit starts immediately; `play()` before the gate is safe
-            # (the first wait finds the event already set).
-            await _register_and_spawn(session, branch, autoplay=True)
-
+            await _h_start(session, data)
         case "end":
-            if session.current is None:
-                logger.warning("end before start — dropping")
-                return
-            branch = session.branches[session.current]
-            if branch.status == "ended":
-                return
-            try:
-                await branch.channel.end_conversation()
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("end_conversation raised: %r", exc)
-            await _stop_running_branches(session)
-
+            await _h_end(session, data)
         case "step" | "play" | "pause" as cmd:
-            # Explicit target (matching `inject`/`edit_*`/`switch`): a
-            # branch id, ``"orch"`` for the orchestrator, or omitted for
-            # ``session.current`` (M0 back-compat). Lets the human step a
-            # non-current branch (imported / candidate) without a
-            # `switch` round-trip.
-            tgt = data.get("target")
-            obj = (
-                session.orchestrator
-                if tgt == "orch"
-                else session.branches.get(tgt or session.current or "")
-            )
-            if obj is None:
-                logger.warning("%r: no target %r — dropping", cmd, tgt)
-                return
-            getattr(obj, cmd)()
-            await session.broadcast_status()
-
+            await _h_transport(session, data, cmd)
         case "inject":
-            branch_id = data["branch"]
-            role = data["role"]
-            if branch_id not in session.branches:
-                logger.warning("inject for unknown branch %r — dropping", branch_id)
-                return
-            if session.branches[branch_id].status == "ended":
-                logger.warning("inject into ended branch %r — dropping", branch_id)
-                await session.broadcast(
-                    {"t": "error", "v": session.version, "message": "branch has ended"}
-                )
-                return
-            # preserve the client-generated id so the frontend reconciles the
-            # ghost bubble once the id appears in the next ModelEvent.input.
-            msg = ChatMessageUser.model_validate(data["message"])
-            session.branches[branch_id].queued[role].append(msg)
-            await session.broadcast(
-                {
-                    "t": "queued",
-                    "v": session.version,
-                    "branch": branch_id,
-                    "role": role,
-                    "message": data["message"],
-                }
-            )
-
+            await _h_inject(session, data)
         case "branch":
             # Inclusive branch at a target assistant anchor: the clicked
             # target response is in the replayed prefix; the *next* auditor
             # turn goes live.
             await _fork(session, data, locate=_locate_branch, autoplay=False)
-
         case "resample":
             # WISHLIST 3b: regenerate the clicked *target* response. Branch
             # exclusive of that target step — the auditor turn that produced
             # it replays from `pending`, the target generate goes live.
             await _fork(session, data, locate=_locate_resample, autoplay=True)
-
         case "branch_auditor" | "resample_auditor":
             # Regenerate the auditor's `turn_index`-th response: branch
             # exclusive of that auditor step so the next live call is the
-            # auditor's generate at that turn. `branch_auditor` is the same
-            # backend op (matching target `branch`/`resample` parity).
+            # auditor's generate at that turn.
             await _fork(
                 session,
                 data,
                 locate=_locate_auditor,
                 autoplay=data["t"] == "resample_auditor",
             )
-
         case "candidates":
             # Resample-N target: N background forks at `at`, each
             # regenerates the clicked target response during ungated
@@ -577,7 +711,6 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
             await _candidates(
                 session, data, locate=_locate_resample, kind="target", step=False
             )
-
         case "candidates_auditor":
             # Resample-N auditor: N background forks exclusive of auditor
             # turn `turn_index`; one `step()` per child after replay
@@ -585,20 +718,8 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
             await _candidates(
                 session, data, locate=_locate_auditor, kind="auditor", step=True
             )
-
         case "pick_candidate":
-            batch = session.candidate_batches[data["batch"]]
-            picked = data["branch"]
-            await _stop_running_branches(
-                session, only={c for c in batch.children if c != picked}
-            )
-            session.current = picked
-            batch.picked = picked
-            await session.broadcast(
-                {"t": "state", "v": session.version, **session.view()}
-            )
-            await session.broadcast_status()
-
+            await _h_pick_candidate(session, data)
         case "dismiss_candidates":
             # Original = implicit candidate #0: pick the parent.
             batch = session.candidate_batches[data["batch"]]
@@ -607,21 +728,16 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
             await session.broadcast(
                 {"t": "state", "v": session.version, **session.view()}
             )
-
         case "edit_auditor_call":
             await _fork(session, data, locate=_locate_edit_auditor_call, autoplay=True)
-
         case "edit_target_message":
             await _fork(
                 session, data, locate=_locate_edit_target_message, autoplay=True
             )
-
         case "rewrite_tool_call":
             # Stateless draft: ask the auditor model to rewrite one tool_call's
             # args per a freeform instruction. NOT a fork — no tape mutation,
-            # no `_dispatch_lock` (the model call may take seconds and must not
-            # block transport/branch commands). The client applies the draft
-            # via `edit_auditor_call` if accepted.
+            # no `_dispatch_lock`. Client applies via `edit_auditor_call`.
             await _rewrite_draft(
                 session,
                 data,
@@ -629,182 +745,40 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
                 turn_index=int(data["turn_index"]),
                 call_id=data["call_id"],
             )
-
         case "rewrite_target_message":
-            # Target-column counterpart to `rewrite_tool_call`: a target-side
-            # user/system/tool message maps to an auditor staging call via
-            # `locate_staging_call`; rewrite that call's args with the auditor
-            # model, then return the staging-arg content (the field that
-            # becomes the visible message text) so the client can preview it
-            # and apply via `edit_target_message`. Stateless draft — no fork,
-            # no `_dispatch_lock`.
-            key = {"message_id": data["message_id"]}
-            branch = session.branches.get(data["branch"])
-            if branch is None:
-                await _draft_reply(
-                    session, data, key, error=f"unknown branch {data['branch']!r}"
-                )
-                return
-            try:
-                turn_index, _orig, call_id, arg_key = locate_staging_call(
-                    branch.audit_tape.log,
-                    message_id=data["message_id"],
-                    role=data["role"],
-                    tool_call_id=data.get("tool_call_id"),
-                )
-            except ValueError as exc:
-                await _draft_reply(session, data, key, error=str(exc))
-                return
-            await _rewrite_draft(
-                session,
-                data,
-                key=key,
-                turn_index=turn_index,
-                call_id=call_id,
-                arg_key=arg_key,
-            )
-
+            await _h_rewrite_target_message(session, data)
         case "export":
-            # Write one branch (and its descendants) as a one-sample
-            # `.eval`. Stateless — no fork, no lock; runs in the WS task.
-            branch_id = data["branch"]
-            path = data["path"]
-            branch = session.branches.get(branch_id)
-            if branch is None:
-                await session.broadcast(
-                    {
-                        "t": "error",
-                        "v": session.version,
-                        "message": f"unknown branch {branch_id!r}",
-                    }
-                )
-                return
-            export_branch(branch, path)
-            logger.info("exported branch %s → %s", branch_id, path)
-
+            await _h_export(session, data)
         case "import":
             # Load one sample's `AuditTape` from a `.eval`, install it as a
             # fresh root branch, and replay it.
             history, meta = import_eval(data["path"], data.get("sample_id"))
             await _import(session, history, meta)
-
-        # -- M1 orchestrator (M1-NOTEBOOK.md) ---------------------------------
-
         case "start_orchestrator":
-            if session.orchestrator is not None:
-                await session.broadcast(
-                    {
-                        "t": "error",
-                        "v": session.version,
-                        "message": "orchestrator already running",
-                    }
-                )
-                return
-            await session.start_orchestrator(
-                model=data["model"], system_prompt=data.get("system_prompt")
-            )
-
+            await _h_start_orchestrator(session, data)
         case "import_running":
-            # M1-HYBRID §Import-to-auditor: the eval is a *subprocess*
-            # (``bash("inspect eval …")``), so there is no in-process
-            # ``ActiveSample`` to snapshot. Instead: attach to
-            # ``log_dir``, per-sample ``inspect/cancel_sample`` over
-            # the eval's ACP socket, wait for the recorder to flush
-            # that sample to the ``.eval``, then ``import_eval`` it —
-            # same ``(History, BranchMeta)`` tail as the plain
-            # ``import`` case. Siblings keep running.
-            #
-            # If ``interrupt_sample`` returns ``False`` (no ACP server
-            # — eval wasn't launched with ``--acp-server``, or already
-            # exited) the flush poll may still succeed if the sample
-            # finished on its own; otherwise the timeout surfaces as
-            # ``{t:"error"}`` via the outer ``_dispatch`` guard.
-            from inspect_ai.log._file import (
-                read_eval_log_sample_summaries_async,
-            )
-
-            sample_id = str(data["sample_id"])
-            h = AttachedRun(log_dir=data["log_dir"], description=data["log_dir"])
-            await h._poll()  # noqa: SLF001
-            await h.interrupt_sample(sample_id)
-            if h.location is None:
-                raise ValueError(f"no .eval in {data['log_dir']!r}")
-            deadline = asyncio.get_running_loop().time() + 5.0
-            while True:
-                try:
-                    summaries = await read_eval_log_sample_summaries_async(h.location)
-                except (zipfile.BadZipFile, ValueError):
-                    summaries = []
-                if any(str(s.id) == sample_id for s in summaries):
-                    break
-                if asyncio.get_running_loop().time() >= deadline:
-                    raise TimeoutError(
-                        f"sample {sample_id!r} did not flush within 5s "
-                        f"(acp={h._acp!r})"  # noqa: SLF001
-                    )
-                await asyncio.sleep(0.1)
-            history, meta = import_eval(h.location, sample_id)
-            await _import(session, history, meta)
-
+            await _h_import_running(session, data)
         case "orch_send":
             if session.orchestrator is None:
                 logger.warning("orch_send before start_orchestrator — dropping")
                 return
             session.orchestrator.send(data["text"])
-
         case "approve":
-            # Resolve a pending gate (`run_proposal`/`cite`/`ask_human`).
-            # ``verdict`` is opaque to the server — the awaiting `_gate`
-            # coroutine interprets it (edits/denied/answer).
-            if session.orchestrator is None:
-                return
-            ok = session.orchestrator.gate.resolve(
-                data["display_id"], data.get("verdict")
-            )
-            if not ok:
-                logger.warning("approve for unknown display_id %r", data["display_id"])
-
+            await _h_approve(session, data)
         case "detach_cell":
             if session.orchestrator is not None:
                 session.orchestrator.kernel.detach()
-
         case "cancel_cell":
             if session.orchestrator is not None:
                 session.orchestrator.kernel.cancel(int(data["turn"]))
-
         case "interrupt_and_send":
-            # M1-FEATURES §11: kill the running cell (tool result becomes
-            # ``[interrupted by user …]``), queue the human's text, release
-            # one turn so both reach the *same* next generate. Not
-            # ``orch.send()`` — that would ``detach()``, which can win the
-            # race against the cancel and background the cell instead.
-            orch = session.orchestrator
-            if orch is None:
-                return
-            orch.kernel.interrupt(int(data["turn"]))
-            orch.queued.append(ChatMessageUser(content=data["text"]))
-            orch.step()
-            await session.broadcast_status()
-
+            await _h_interrupt_and_send(session, data)
         case "rewind":
             # M1-FEATURES §2: discard orchestrator turn N onward.
             if session.orchestrator is not None:
                 await session.orchestrator.rewind(int(data["turn"]))
-
         case "stop_sample":
-            # M1-FEATURES §9: per-sample stop from a ``ProgressCard`` row.
-            # Post-M1-HYBRID the eval is a subprocess — same ACP per-sample
-            # cancel as ``import_running`` (without the flush-wait/import
-            # tail). ``log_dir`` locates the subprocess's ACP socket.
-            log_dir = data["log_dir"]
-            h = AttachedRun(log_dir=log_dir, description=log_dir)
-            await h._poll()  # noqa: SLF001
-            ok = await h.interrupt_sample(str(data["id"]))
-            if not ok:
-                logger.warning(
-                    "stop_sample %r: no ACP server for %r", data["id"], log_dir
-                )
-
+            await _h_stop_sample(session, data)
         case "switch":
             branch_id = data["branch"]
             if branch_id not in session.branches:
@@ -814,7 +788,6 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
             await session.broadcast(
                 {"t": "state", "v": session.version, **session.view()}
             )
-
         case other:
             logger.warning("unknown command %r", other)
 

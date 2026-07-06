@@ -25,7 +25,7 @@ WB_MIME = "application/vnd.workbench.v1+json"
 STREAM_MIME = "application/vnd.jupyter.stream+json"
 
 
-def _finite(v: Any) -> Any:
+def finite(v: Any) -> Any:
     """Map non-finite floats (``nan`` / ``inf``) to ``None``, recursively.
 
     ``jsonable_python`` leaves them as-is and stdlib ``json.dumps`` then
@@ -36,9 +36,9 @@ def _finite(v: Any) -> Any:
     if isinstance(v, float) and not math.isfinite(v):
         return None
     if isinstance(v, dict):
-        return {k: _finite(x) for k, x in v.items()}
+        return {k: finite(x) for k, x in v.items()}
     if isinstance(v, list):
-        return [_finite(x) for x in v]
+        return [finite(x) for x in v]
     return v
 
 
@@ -77,7 +77,7 @@ class DisplayEvent:
             return str(s["text"])
         for mime in _MODEL_MIME_PREF:
             if t := self.bundle.get(mime):
-                return _truncate(str(t), _MODEL_TEXT_CAP)
+                return truncate(str(t), MODEL_TEXT_CAP)
         return ""
 
 
@@ -85,10 +85,10 @@ class DisplayEvent:
 #: ``display(Markdown(f"…"))`` (the ``wb.report`` replacement) shows the
 #: computed prose, not ``<IPython.core.display.Markdown object>``.
 _MODEL_MIME_PREF = ("text/markdown", "text/latex", "text/plain")
-_MODEL_TEXT_CAP = 4000
+MODEL_TEXT_CAP = 4000
 
 
-def _truncate(s: str, n: int) -> str:
+def truncate(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 

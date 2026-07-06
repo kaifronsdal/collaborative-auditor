@@ -39,7 +39,7 @@ from workbench.m1.wire import ScanPayload, wb_bundle
 SampleStatus = Literal["running", "done", "error", "stopped"]
 
 
-def _first_numeric(scores: dict[str, Any]) -> float | None:
+def first_numeric(scores: dict[str, Any]) -> float | None:
     """First numeric score value in ``scores`` (M1-FEATURES §8 histogram)."""
     for v in scores.values():
         if isinstance(v, (int, float)) and not isinstance(v, bool):

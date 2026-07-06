@@ -273,6 +273,22 @@ class Orchestrator(StepGated):
                 self.status = "ended"
                 await self.session.broadcast_status()
 
+    def messages_for_save(self) -> list[ChatMessage]:
+        """``state.messages`` with any pending ``rewind()`` truncation applied.
+
+        A ``rewind()`` that hasn't been ``_apply_rewind``-ed yet (save landed
+        between the WS-task ``rewind`` and the orch-task loop tick) still has
+        the discarded turns in ``state.messages`` — truncate here so the
+        resumed agent doesn't re-read them.
+        """
+        messages = list(self.state.messages) if self.state is not None else []
+        if self._rewind_to is not None:
+            msg_id = self._turn_msg.get(self._rewind_to)
+            idx = next((i for i, m in enumerate(messages) if m.id == msg_id), None)
+            if idx is not None:
+                messages = messages[:idx]
+        return messages
+
     def _initial_messages(self) -> list[ChatMessage]:
         if self._resume_messages is not None:
             dirs = ", ".join(self.run_log_dirs) or "(none)"
@@ -376,7 +392,7 @@ class Orchestrator(StepGated):
 
     def _find_model_event_uuid(self, msg_id: str) -> str | None:
         """The ``ModelEvent.uuid`` whose output message id is ``msg_id``."""
-        for ev_uuid in self.session._by_role.get(("orch", "orch"), []):  # noqa: SLF001
+        for ev_uuid in self.session.by_role.get(("orch", "orch"), []):
             e = self.session.events.get(ev_uuid)
             if e is None or e.get("event") != "model":
                 continue

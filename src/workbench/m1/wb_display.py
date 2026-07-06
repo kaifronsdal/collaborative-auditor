@@ -63,7 +63,7 @@ from inspect_ai.hooks import Hooks, SampleEnd, TaskStart, hooks
 from inspect_ai.log._samples import active_samples
 from inspect_ai.util._throttle import throttle
 
-from workbench.m1.wire import _finite
+from workbench.m1.wire import finite
 
 
 def _wb(kind: str, **fields: Any) -> None:
@@ -266,7 +266,7 @@ class _WorkbenchSampleHook(Hooks):
             td.errors += 1
         sample = data.sample
         scores = (
-            {name: _finite(s.value) for name, s in sample.scores.items()}
+            {name: finite(s.value) for name, s in sample.scores.items()}
             if sample.scores
             else None
         )

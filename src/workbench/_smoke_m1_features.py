@@ -102,10 +102,10 @@ async def _test_rewind_and_persist() -> None:
                 assert not e.get("rewound"), f"turn-1 InfoEvent wrongly flagged: {e}"
 
         # ModelEvents: turn-1's is unflagged; every other one is. Ordered by
-        # ``_by_role`` (emission order — mockllm timestamps collide at ms res).
+        # ``by_role`` (emission order — mockllm timestamps collide at ms res).
         orch_models = [
             session.events[u]
-            for u in session._by_role.get(("orch", "orch"), [])
+            for u in session.by_role.get(("orch", "orch"), [])
             if session.events[u]["event"] == "model"
         ]
         assert not orch_models[0].get("rewound"), "turn-1 ModelEvent flagged"

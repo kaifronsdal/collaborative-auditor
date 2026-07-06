@@ -2,7 +2,7 @@
 
 Split from `session.py` (M1-REFACTOR Batch I). `build_auditor_timeline` is a
 free function over a `Session` — its only private coupling is the incremental
-`_by_role` index, which exists precisely so this rebuild is O(events-in-role)
+`by_role` index, which exists precisely so this rebuild is O(events-in-role)
 rather than a full `session.events` scan.
 """
 
@@ -32,10 +32,10 @@ def build_auditor_timeline(session: Session) -> dict[str, Any]:
     wrapper's prefix).
 
     `content` is the branch's own (post-shared-prefix) auditor-role events
-    from `_by_role`, not `build_history_timeline(audit_history)` directly:
+    from `by_role`, not `build_history_timeline(audit_history)` directly:
     the L2 tape records *every* model call (auditor and target), so the
     anchor-keyed content would interleave target `ModelEvent`s into the
-    auditor column. Filtering to `_by_role[(bid, "auditor")]` keeps the
+    auditor column. Filtering to `by_role[(bid, "auditor")]` keeps the
     existing `eventsToTurns(hasToolEvents=true)` render path unchanged.
 
     Built directly as the dumped dict (rather than via `Timeline.model_dump`)
@@ -45,7 +45,7 @@ def build_auditor_timeline(session: Session) -> dict[str, Any]:
 
     def content_for(bid: str) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        for uuid in session._by_role.get((bid, "auditor"), []):  # noqa: SLF001
+        for uuid in session.by_role.get((bid, "auditor"), []):
             d = session.events.get(uuid)
             if d is None:
                 continue

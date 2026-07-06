@@ -26,7 +26,10 @@ import asyncio
 import os
 import time
 import zipfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, Self, cast
 
 import httpx
@@ -51,13 +54,13 @@ from IPython.display import display
 
 from workbench.m1.handles import (
     SampleRow,
-    _first_numeric,
     _PollingHandle,
+    first_numeric,
 )
 from workbench.m1.wire import (
     EvalRunPayload,
     SampleRowPayload,
-    _finite,
+    finite,
     wb_bundle,
 )
 
@@ -112,6 +115,43 @@ class AttachedRun(_PollingHandle):
         h._dh = display(h, display_id=h.id)
         h._watcher = asyncio.create_task(h._watch())
         return h
+
+    @classmethod
+    async def discover(cls, log_dir: str) -> Self:
+        """Attach + one poll, no display or watcher.
+
+        For server-side callers (``import_running`` / ``stop_sample``) that
+        need ``.location`` and the ctl/ACP discovery state populated but
+        don't want the ``dh.update`` tick loop.
+        """
+        h = cls(log_dir=log_dir, description=log_dir)
+        await h._poll()
+        return h
+
+    async def wait_for_sample(self, sample_id: str, timeout: float = 5.0) -> str:
+        """Poll ``.eval`` summaries until ``sample_id`` appears; return ``location``.
+
+        Used after ``interrupt_sample`` to wait for the recorder flush
+        (``--log-buffer 1``) before ``import_eval``. Raises ``ValueError``
+        if no ``.eval`` exists yet, ``TimeoutError`` if the sample doesn't
+        flush within ``timeout`` seconds.
+        """
+        if self._log_file is None:
+            raise ValueError(f"no .eval in {self.log_dir!r}")
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            try:
+                summaries = await read_eval_log_sample_summaries_async(self._log_file)
+            except (zipfile.BadZipFile, ValueError):
+                summaries = []
+            if any(str(s.id) == sample_id for s in summaries):
+                return self._log_file
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError(
+                    f"sample {sample_id!r} did not flush within {timeout}s "
+                    f"(acp={self._acp!r})"
+                )
+            await asyncio.sleep(0.1)
 
     # -- properties -------------------------------------------------------
 
@@ -287,52 +327,33 @@ class AttachedRun(_PollingHandle):
         if sock is None:
             return False
         try:
-            reader, writer = await asyncio.open_unix_connection(str(sock))
+            async with _acp_connection(sock) as conn:
+                listing: Any = await conn.send_request("inspect/list_samples", {})
+                session_id = next(
+                    (
+                        s["sessionId"]
+                        for s in (listing or {}).get("samples", [])
+                        if str(s.get("sampleId")) == str(sample_id)
+                        and s.get("sessionId")
+                    ),
+                    None,
+                )
+                if session_id is None:
+                    return False
+                await conn.send_request(
+                    "session/load",
+                    {"sessionId": session_id, "cwd": "/", "mcpServers": []},
+                )
+                await conn.send_request(
+                    "inspect/cancel_sample",
+                    {"sessionId": session_id, "action": action},
+                )
+                return True
         except OSError:
             self._acp = False
             return False
-        # Bare ``MessageRouter`` — unsolicited ``session/update`` replay
-        # notifications (post-``session/load``) route to nothing and are
-        # dropped; we only need the request/response half.
-        conn = Connection(handler=MessageRouter(), writer=writer, reader=reader)
-        try:
-            await conn.send_request(
-                "initialize",
-                {
-                    "protocolVersion": PROTOCOL_VERSION,
-                    "clientInfo": {"name": "workbench-attach", "version": "1"},
-                    "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}},
-                },
-            )
-            listing: Any = await conn.send_request("inspect/list_samples", {})
-            session_id = next(
-                (
-                    s["sessionId"]
-                    for s in (listing or {}).get("samples", [])
-                    if str(s.get("sampleId")) == str(sample_id) and s.get("sessionId")
-                ),
-                None,
-            )
-            if session_id is None:
-                return False
-            await conn.send_request(
-                "session/load",
-                {"sessionId": session_id, "cwd": "/", "mcpServers": []},
-            )
-            await conn.send_request(
-                "inspect/cancel_sample",
-                {"sessionId": session_id, "action": action},
-            )
-            return True
-        except (RequestError, ConnectionError, OSError):
+        except (RequestError, ConnectionError):
             return False
-        finally:
-            await conn.close()
-            writer.close()
-            try:  # noqa: SIM105
-                await writer.wait_closed()
-            except OSError:
-                pass
 
     def _signature(self) -> tuple[Any, ...]:
         return (
@@ -352,7 +373,7 @@ class AttachedRun(_PollingHandle):
             epoch=s.epoch,
             input=str(s.input)[:80],
             turns=turns,
-            scores={k: _finite(v.value) for k, v in (s.scores or {}).items()},
+            scores={k: finite(v.value) for k, v in (s.scores or {}).items()},
             error=s.error,
         )
 
@@ -382,7 +403,7 @@ class AttachedRun(_PollingHandle):
             },
         }
         if self.finished:
-            payload["scores"] = [_first_numeric(r.scores) for r in self.rows.values()]
+            payload["scores"] = [first_numeric(r.scores) for r in self.rows.values()]
         return wb_bundle(
             f"<AttachedRun {self.task_name or '?'} · "
             f"{self.n_done}/{self.total} · {state}>",
@@ -412,3 +433,33 @@ async def _ctl_get(server: DiscoveredControlServer, path: str) -> list[Any] | No
     except (httpx.HTTPError, OSError, ValueError):
         return None
     return body if isinstance(body, list) else None
+
+
+@asynccontextmanager
+async def _acp_connection(sock: Path) -> AsyncIterator[Connection]:
+    """Open + ``initialize`` an ACP connection over a UNIX socket; close on exit.
+
+    Bare ``MessageRouter`` — unsolicited ``session/update`` replay
+    notifications (post-``session/load``) route to nothing and are dropped;
+    callers only need the request/response half. ``OSError`` from
+    ``open_unix_connection`` propagates so the caller can mark the socket dead.
+    """
+    reader, writer = await asyncio.open_unix_connection(str(sock))
+    conn = Connection(handler=MessageRouter(), writer=writer, reader=reader)
+    try:
+        await conn.send_request(
+            "initialize",
+            {
+                "protocolVersion": PROTOCOL_VERSION,
+                "clientInfo": {"name": "workbench-attach", "version": "1"},
+                "clientCapabilities": {
+                    "fs": {"readTextFile": False, "writeTextFile": False}
+                },
+            },
+        )
+        yield conn
+    finally:
+        await conn.close()
+        writer.close()
+        with suppress(OSError):
+            await writer.wait_closed()

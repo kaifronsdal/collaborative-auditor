@@ -45,6 +45,7 @@ from workbench.m1.wire import (
     DisplayEvent,
     TracebackFrame,
     TracebackPayload,
+    truncate,
     wb_bundle,
 )
 
@@ -361,7 +362,7 @@ class OrchestratorKernel:
         # the last displayed value from the event stream instead.
         tail = next(
             (
-                _truncate(ev.text)
+                truncate(ev.text, 60)
                 for ev in reversed(self.outputs.get(turn_id, []))
                 if STREAM_MIME not in ev.bundle
             ),
@@ -402,29 +403,7 @@ class OrchestratorKernel:
                 duration=duration,
             )
         if err is not None:
-            # Emit the traceback as a display card so the frontend renders
-            # it under this turn (otherwise it only reaches the model via
-            # ``text`` and the human sees a code cell with zero output).
-            ename = type(err).__name__
-            evalue = str(err)
-            tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
-            frames: list[TracebackFrame] = [
-                {"file": f.filename, "lineno": f.lineno, "line": f.line}
-                for f in traceback.extract_tb(err.__traceback__)
-                if not _is_boring(f)
-            ]
-            plain = f"{ename}: {evalue}"
-            if frames:
-                last = frames[-1]
-                plain += f"\n  at {last['file']}:{last['lineno']}  {last['line'] or ''}"
-            payload: TracebackPayload = {
-                "kind": "traceback",
-                "ename": ename,
-                "evalue": evalue,
-                "frames": frames,
-                "text": tb,
-            }
-            self.emit(DisplayEvent(id=uuid4().hex, bundle=wb_bundle(plain, payload)))
+            self._emit_traceback(err)
         text = self._render_outputs(turn_id)
         if not text:
             text = f"<ok · bound: {', '.join(new)}>" if new else "<no output>"
@@ -439,6 +418,31 @@ class OrchestratorKernel:
             new_names=new,
             duration=duration,
         )
+
+    def _emit_traceback(self, err: BaseException) -> None:
+        """Emit the traceback as a display card so the frontend renders it
+        under this turn (otherwise it only reaches the model via ``text`` and
+        the human sees a code cell with zero output)."""
+        ename = type(err).__name__
+        evalue = str(err)
+        tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
+        frames: list[TracebackFrame] = [
+            {"file": f.filename, "lineno": f.lineno, "line": f.line}
+            for f in traceback.extract_tb(err.__traceback__)
+            if not _is_boring(f)
+        ]
+        plain = f"{ename}: {evalue}"
+        if frames:
+            last = frames[-1]
+            plain += f"\n  at {last['file']}:{last['lineno']}  {last['line'] or ''}"
+        payload: TracebackPayload = {
+            "kind": "traceback",
+            "ename": ename,
+            "evalue": evalue,
+            "frames": frames,
+            "text": tb,
+        }
+        self.emit(DisplayEvent(id=uuid4().hex, bundle=wb_bundle(plain, payload)))
 
     def _emit_cell_done(
         self,
@@ -581,10 +585,6 @@ def _bound_names(code: str, ns: dict[str, Any]) -> list[str]:
     assigns and immune to concurrent siblings.
     """
     return sorted(n for n in _assign_targets(code) if n in ns)
-
-
-def _truncate(s: str, n: int = 60) -> str:
-    return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def _assign_targets(code: str) -> set[str]:

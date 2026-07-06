@@ -73,24 +73,14 @@ def _collect_run_log_dirs(session: Session) -> list[str]:
 
 def save_orchestrator(orch: Orchestrator, session: Session, d: Path) -> None:
     """Write ``{d}/orchestrator.eval`` — messages + expanded events + metadata."""
-    messages = list(orch.state.messages) if orch.state is not None else []
-    # A ``rewind()`` that hasn't been ``_apply_rewind``-ed yet (save landed
-    # between the WS-task ``rewind`` and the orch-task loop tick) still has
-    # the discarded turns in ``state.messages`` — truncate here so the
-    # resumed agent doesn't re-read them.
-    if orch._rewind_to is not None:  # noqa: SLF001
-        msg_id = orch._turn_msg.get(orch._rewind_to)  # noqa: SLF001
-        if msg_id is not None:
-            idx = next((i for i, m in enumerate(messages) if m.id == msg_id), None)
-            if idx is not None:
-                messages = messages[:idx]
+    messages = orch.messages_for_save()
     run_log_dirs = _collect_run_log_dirs(session)
 
     # Expand condensed ModelEvent.input_refs against the CURRENT pool so the
     # events are self-contained; write_eval_log then re-pools them per-sample.
     dumped: list[dict[str, Any]] = []
     rewound_uuids: list[str] = []
-    for u in session._by_role.get(("orch", "orch"), []):  # noqa: SLF001
+    for u in session.by_role.get(("orch", "orch"), []):
         if u not in session.events:
             continue
         ev = dict(session.events[u])
@@ -156,7 +146,7 @@ def load_orchestrator(session: Session, d: Path) -> dict[str, Any]:
     role_key = ("orch", "orch")
     session.span_role[span_id] = role_key
     session.span_parent[span_id] = None
-    by_role = session._by_role.setdefault(role_key, [])  # noqa: SLF001
+    by_role = session.by_role.setdefault(role_key, [])
     rewound = set(md.get("rewound_uuids") or [])
     for ev in sample.events or []:
         assert ev.uuid is not None
