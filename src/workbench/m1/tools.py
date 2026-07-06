@@ -177,7 +177,7 @@ def make_tools(orch: Orchestrator) -> list[Tool]:  # noqa: PLR0915
     def _card(line: dict[str, Any], seen: set[str]) -> None:
         """One ``{"wb":…}`` line → a WB_MIME ``DisplayEvent``.
 
-        ``eval_*`` lines are folded into a per-``eval_id`` ``RunPayload``
+        ``eval_*`` lines are folded into a per-``eval_id`` ``EvalRunPayload``
         snapshot (``kind:"eval_run"``) so successive updates replace the
         same stable card. Non-eval lines (``file``/``ref``/``bg_done``)
         pass through under a fresh id with ``kind = wb``.

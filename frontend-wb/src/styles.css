@@ -103,28 +103,6 @@ body {
 .side-icon-btn:hover { background: var(--bg-200); color: var(--ink-mid); }
 .side-icon-btn i { line-height: 1; }
 
-/* Expand button sits at the top of the collapsed rail */
-.sidebar-expand-btn {
-  align-self: flex-end; margin-right: 4px;
-}
-
-/* New-audit icon button for collapsed rail */
-.side-new-icon {
-  width: 32px; height: 32px; border-radius: 9px;
-  border: 1px solid var(--border);
-  background: var(--bg-000); color: var(--accent);
-  font-size: 18px; cursor: pointer; line-height: 1;
-  display: flex; align-items: center; justify-content: center;
-  flex-shrink: 0;
-}
-.side-new-icon:hover { background: var(--bg-200); }
-
-/* Status dots in collapsed rail — larger for easier reading */
-.sidebar-dot {
-  width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%;
-  cursor: default;
-}
-
 .app-main {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column;
@@ -135,10 +113,6 @@ body {
 .wordmark {
   font-family: var(--sans); font-size: 16px; font-weight: 700;
   padding: 18px 16px 6px; letter-spacing: -0.02em;
-}
-/* When inside wordmark-row, the row owns the padding */
-.wordmark-row .wordmark {
-  padding: 0;
 }
 .wordmark-dot { color: var(--accent); }
 
@@ -196,34 +170,6 @@ body {
 .status-dot.dot-paused { background: transparent; border: 1.5px solid var(--ink-dim); box-sizing: border-box; }
 .status-dot.dot-ended { background: var(--ink-faint); opacity: 0.4; }
 .status-dot.dot-idle { background: var(--ink-faint); opacity: 0.25; }
-
-.cfg { padding: 0 var(--sp-3); }
-.cfg .c-row {
-  display: flex; gap: 8px; padding: 2px 0;
-  font-size: 12px; color: var(--ink-mid); line-height: 1.5;
-}
-.cfg .c-lab {
-  width: 52px; flex-shrink: 0; font-family: var(--mono); font-size: 10.5px;
-  color: var(--ink-faint); position: relative; top: 1px;
-}
-.cfg .c-val { min-width: 0; word-break: break-word; }
-
-/* inline editable config selects/inputs — chip style */
-.cfg-select {
-  border: none; background: none; outline: none; cursor: pointer;
-  font-family: var(--mono); font-size: 11px; color: var(--ink-mid);
-  -webkit-appearance: none; appearance: none;
-  max-width: 130px;
-}
-.cfg-select:hover { color: var(--ink); }
-.cfg-turns {
-  width: 36px; border: none; background: none; outline: none;
-  font-family: var(--sans); font-size: 12px; color: var(--ink-mid);
-  text-align: left;
-}
-.cfg-turns::-webkit-inner-spin-button,
-.cfg-turns::-webkit-outer-spin-button { -webkit-appearance: none; }
-.cfg-turns[type=number] { -moz-appearance: textfield; }
 
 /* ---- StartView ---- */
 .start-view {
@@ -392,11 +338,6 @@ body {
   font-size: 11px; color: var(--link); padding: 2px 0; margin-top: 2px;
 }
 .picker-more-toggle:hover { text-decoration: underline; }
-
-/* compact sidebar picker variant */
-.c-val--picker { display: flex; min-width: 0; }
-.c-val--picker .model-picker-wrap { min-width: 0; }
-.c-val--picker .picker-popover { left: -10px; min-width: 240px; }
 
 /* accent Start button — regular pill, not circle */
 .start-btn {
@@ -736,6 +677,21 @@ body {
   animation: pulse 1.2s ease-in-out infinite;
 }
 
+/* ---------- error banner (dismissable, above runline) ---------- */
+.error-banner {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: 8px 22px;
+  background: hsl(0 70% 96%); color: var(--danger);
+  border-bottom: 1px solid hsl(0 40% 82%);
+  font: var(--fs-sm) var(--sans);
+}
+.error-banner span { flex: 1; min-width: 0; word-break: break-word; }
+.error-banner button {
+  border: none; background: none; cursor: pointer; padding: 2px;
+  color: var(--danger); display: flex; line-height: 1;
+}
+.error-banner button:hover { color: var(--ink); }
+
 /* ---------- runline — single header bar (status-dot · seed) ---------- */
 .runline {
   flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-2);
@@ -776,18 +732,6 @@ body {
   text-transform: none; letter-spacing: 0; font-weight: 400;
 }
 
-/* level-1 rollback divider in the target column */
-.branch-divider {
-  display: flex; align-items: center; gap: 10px;
-  margin: 14px 0 10px; color: var(--ink-faint);
-  font-size: 11.5px; letter-spacing: .02em;
-}
-.branch-divider .bd-line { flex: 1; height: 1px; background: var(--border); }
-.branch-divider .bd-label {
-  padding: 1px 8px; border: 1px solid var(--border);
-  border-radius: 999px; background: var(--bg-100);
-}
-
 /* ---------- composer ---------- */
 .desk-body {
   display: flex; flex-direction: column;
@@ -810,13 +754,6 @@ body {
 .composer-lower {
   display: flex; align-items: center; gap: var(--sp-2); margin-top: var(--sp-1);
 }
-
-.dest-toggle { /* dead — composer is auditor-only; kept until next cleanup */
-  display: none;
-  background: none; cursor: pointer; font-family: var(--sans);
-  user-select: none;
-}
-.dest-toggle:hover { background: var(--bg-200); }
 
 /* Primary button: filled = "you have text to send"; outlined = play/pause. */
 .composer-lower .primary {
@@ -873,29 +810,13 @@ body {
   100% { background: transparent; }
 }
 
-/* ---------- RawModal — fixed overlay JSON inspector ---------- */
-.raw-modal-overlay {
-  position: fixed; inset: 0; z-index: 100;
-  background: hsl(0 0% 0% / .4);
-  display: flex; align-items: center; justify-content: center;
-}
+/* ---------- RawModal — @tsmono/react Modal body JSON inspector ---------- */
 .raw-modal {
   background: var(--bg-000); border: 1px solid var(--border);
   border-radius: var(--r-md); box-shadow: 0 8px 32px hsl(0 0% 0% / .2);
   max-width: 80vw; max-height: 80vh;
   display: flex; flex-direction: column;
 }
-.raw-modal-head {
-  display: flex; align-items: center; gap: var(--sp-2);
-  padding: var(--sp-2) var(--sp-3);
-  border-bottom: 1px solid var(--border);
-  font: var(--fs-sm) var(--mono); color: var(--ink-dim);
-}
-.raw-modal-head button {
-  margin-left: auto; border: none; background: none; cursor: pointer;
-  color: var(--ink-faint); display: flex; padding: 2px;
-}
-.raw-modal-head button:hover { color: var(--ink-mid); }
 .raw-modal-body {
   margin: 0; padding: var(--sp-3);
   overflow: auto; flex: 1; min-height: 0;

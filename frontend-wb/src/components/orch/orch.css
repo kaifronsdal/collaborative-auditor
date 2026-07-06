@@ -610,18 +610,8 @@ sup.ask-opt-key {
 .fx-more a { color: var(--accent-text); cursor: pointer; }
 .fx-more .fx-more-note { margin-left: auto; color: var(--ink-faint); }
 
-/* AuditRow inside run_audits */
+/* eval_run rows */
 .audit-rows { border-top: 1px solid var(--border); }
-.audit-row {
-  padding: 7px 14px; font-size: 12.5px; border-bottom: 1px solid var(--bg-200);
-}
-.audit-row:last-child { border-bottom: none; }
-.audit-row:hover { background: var(--bg-100); }
-.audit-row .ar-id {
-  font: 11.5px var(--mono); color: var(--ink-mid);
-  flex-shrink: 0; width: 64px;
-}
-.audit-row .ar-seed { flex: 1; color: var(--ink-mid); }
 .ar-status {
   font: 10.5px var(--sans); padding: 1px 8px; border-radius: var(--r-pill);
   flex-shrink: 0; min-width: 60px; text-align: center;
@@ -632,13 +622,6 @@ sup.ask-opt-key {
   background: var(--bg-200); color: var(--ink-faint);
   animation: pulse 1.4s ease-in-out infinite;
 }
-.audit-row .ar-grade {
-  font: 10.5px var(--mono); color: var(--ink-dim); flex-shrink: 0;
-  min-width: 30px; text-align: right;
-}
-.audit-row .ar-grade b { color: var(--ink); }
-
-/* run_eval rows */
 .eval-row {
   padding: 6px 14px; font-size: 12px; border-bottom: 1px solid var(--bg-200);
 }
@@ -651,15 +634,14 @@ sup.ask-opt-key {
   width: auto; min-width: 64px; max-width: 160px; flex-shrink: 0;
 }
 .eval-row .er-id:hover { text-decoration: underline; }
-.eval-row .er-id.qref,
-.audit-row .ar-id.qref { border: none; background: none; padding: 0; }
+.eval-row .er-id.qref { border: none; background: none; padding: 0; }
 .eval-row .er-score {
   font: 10.5px var(--mono); color: var(--ink-dim);
   flex: 0 1 auto; margin-left: auto; max-width: 55%; text-align: right;
 }
 .eval-row .ar-status { font: 10px var(--sans); padding: 1px 7px; border-radius: var(--r-pill); }
 .eval-row .ar-seed { flex: 1; color: var(--ink-mid); }
-.eval-row, .audit-row { cursor: pointer; }
+.eval-row { cursor: pointer; }
 .ar-turns {
   font: 10.5px var(--mono); color: var(--accent-text); flex-shrink: 0;
   min-width: 30px; text-align: right;
@@ -680,7 +662,7 @@ sup.ask-opt-key {
   color: var(--ink-faint); font-size: 12px;
   opacity: 0; transition: opacity .12s;
 }
-.audit-row:hover .ar-stop, .eval-row:hover .ar-stop { opacity: 1; }
+.eval-row:hover .ar-stop { opacity: 1; }
 .ar-stop:hover { background: var(--bg-200); color: var(--danger); }
 
 /* ---- pandas `.dataframe` HTML output (rendered `.out.bare`, UI-AUDIT §C) ---- */
@@ -814,7 +796,7 @@ sup.ask-opt-key {
 .pc-col:hover { color: var(--ink-mid); }
 .pc-col i { font-size: 9px; color: var(--accent-text); }
 /* Right-cluster header labels sized to their data-column counterparts
-   (`.ar-grade`/`.er-score`, `.ar-status`, `.ar-turns`). */
+   (`.er-score`, `.ar-status`, `.ar-turns`). */
 .pc-col-score  { min-width: 30px; justify-content: flex-end; }
 .pc-col-status { min-width: 60px; justify-content: center; }
 .pc-col-turns  { min-width: 30px; justify-content: flex-end; }
