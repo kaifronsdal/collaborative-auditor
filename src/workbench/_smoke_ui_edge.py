@@ -36,7 +36,8 @@ from workbench._smoke_fixtures import (
 )
 from workbench.run import Branch
 from workbench.server import sessions
-from workbench.session import Session, build_auditor_timeline
+from workbench.session import Session
+from workbench.timeline import build_auditor_timeline
 
 # ── scripted model callables (2-turn base) ─────────────────────────────────
 

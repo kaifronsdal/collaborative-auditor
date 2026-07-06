@@ -19,8 +19,6 @@ broadcast.
 from __future__ import annotations
 
 import asyncio
-import itertools
-import json
 import logging
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -40,9 +38,9 @@ from inspect_ai.log import Transcript
 from inspect_ai.log._transcript import init_transcript  # noqa: PLC2701
 from inspect_ai.model import ChatMessage
 from inspect_petri._auditor import build_history_timeline
-from inspect_petri.target import History, Trajectory
+from inspect_petri.target import History
 
-from workbench.sources import GEN_SOURCE
+from workbench.timeline import build_auditor_timeline
 from workbench.view import Role
 
 if TYPE_CHECKING:
@@ -530,186 +528,14 @@ class Session:
         return ""
 
     def save(self, branch: "Branch | None" = None) -> None:
-        """Persist the session under ``{store_dir}/{session_id}/``.
+        """Persist under ``{store_dir}/{session_id}/`` (see `workbench.persist`)."""
+        from workbench.persist import save_session  # noqa: PLC0415
 
-        Writes ``index.json`` (current/created_at/seed), ``history.json``
-        (`audit_history.dump()`), and ``{branch_id}.json`` — for every branch
-        when `branch` is ``None``, or just the given one (called from
-        `Branch.run()`'s ``finally`` so every settled branch lands on disk
-        without a full save from the dispatch path). No-op if `session_id`
-        or `store_dir` is unset (e.g. smoke tests).
-        """
-        if self.store_dir is None or self.session_id is None:
-            return
-        d = self.store_dir / self.session_id
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "index.json").write_text(
-            json.dumps(
-                {
-                    "current": self.current,
-                    "created_at": self.created_at,
-                    "seed": self.seed,
-                }
-            )
-        )
-        (d / "history.json").write_text(json.dumps(self.audit_history.dump()))
-        for b in [branch] if branch else self.branches.values():
-            self._write_branch(d, b)
-        if self.orchestrator is not None:
-            from workbench.m1.persist import save_orchestrator  # noqa: PLC0415
-
-            save_orchestrator(self.orchestrator, self, d)
-
-    @staticmethod
-    def _write_branch(d: Path, branch: "Branch") -> None:
-        meta = {
-            k: v
-            for k, v in asdict(branch.meta).items()
-            if k not in ("auditor_model_args", "target_model_args")
-        }
-        (d / f"{branch.branch_id}.json").write_text(
-            json.dumps({"meta": meta, "status": branch.status})
-        )
+        save_session(self, branch)
 
     @classmethod
     async def load(cls, session_id: str, store_dir: Path) -> "Session":
-        """Reconstruct a `Session` from ``{store_dir}/{session_id}/``.
+        """Reconstruct from ``{store_dir}/{session_id}/`` (see `workbench.persist`)."""
+        from workbench.persist import load_session  # noqa: PLC0415
 
-        Rebuilds `audit_history` via `History.load`, then for each persisted
-        branch resets its trajectory's tape for replay (``pending ← log``,
-        ``log ← []``; `prefix_len` preserved) and spawns `Branch.run()`.
-        Replay is ungated and I/O-free (`workbench_auditor` skips the gate
-        while `tape.pending` is non-empty), so the transcript's events,
-        pool, and per-role timelines are reconstructed deterministically
-        from the persisted L2 tape — no live model calls. Branches whose
-        persisted status was ``"ended"`` are `play()`-ed so a tape that
-        terminated via ``end_conversation`` runs to completion and the
-        spawned task exits.
-        """
-        from workbench.run import Branch, BranchMeta  # noqa: PLC0415
-
-        d = store_dir / session_id
-        index = json.loads((d / "index.json").read_text())
-        sess = cls(session_id, store_dir)
-        sess.created_at = index["created_at"]
-        sess.audit_history = History.load(json.loads((d / "history.json").read_text()))
-        await sess.start()
-
-        # Spawn in pre-order (parent before children) so a child's shared-
-        # prefix splice in `build_auditor_timeline` finds the parent's
-        # already-replayed events in `session.events`.
-        def preorder(t: Trajectory) -> list[Trajectory]:
-            out = [t]
-            for c in t.children:
-                out.extend(preorder(c))
-            return out
-
-        for traj in preorder(sess.audit_history.root):
-            bf = d / f"{traj.span_id}.json"
-            if not bf.exists():
-                continue  # the synthetic root, or a trajectory with no Branch
-            data = json.loads(bf.read_text())
-            meta = BranchMeta(**data["meta"])
-            # Reset the tape for replay: serve the full recorded log from
-            # `pending`. `prefix_len` is unchanged so `shared_prefix_len` /
-            # `branched_at_turn` / the `_on_event` splice gate behave as
-            # they did in the original run; steps past `prefix_len` are
-            # served on the divergent path (workbench_auditor emits their
-            # `ModelEvent`s inline).
-            traj.tape.rewind()
-            branch = Branch(sess, trajectory=traj, **asdict(meta))
-            branch.status = data["status"]
-            sess.branches[branch.branch_id] = branch
-            if data["status"] == "ended":
-                branch.play()
-            sess.branch_tasks[branch.branch_id] = asyncio.create_task(branch.run())
-            with anyio.move_on_after(5.0):
-                await branch._replayed.wait()  # noqa: SLF001
-
-        sess.current = index["current"]
-
-        if (d / "orchestrator.eval").exists():
-            from workbench.m1.persist import load_orchestrator  # noqa: PLC0415
-
-            meta = load_orchestrator(sess, d)
-            await sess.start_orchestrator(**meta)
-
-        return sess
-
-
-def build_auditor_timeline(session: Session) -> dict[str, Any]:
-    """The session-wide auditor `Timeline`, one `TimelineSpan` per `Branch`.
-
-    Tree shape comes from `session.audit_history` (PETRI-L2-HISTORY): each
-    `Branch` *is* one L2 `Trajectory`, so `TimelineSpan.id == branch_id` and
-    `branched_from == trajectory.branched_from` (already normalised by
-    `Branch.fork()` to the last anchored step in the shared prefix, which is
-    what `splice()` cuts on, inclusive). The synthetic `audit_history.root`
-    is the wrapper span — it never runs, so its `content` is empty and each
-    real root branch has `branched_from=None` (`splice()` discards the
-    wrapper's prefix).
-
-    `content` is the branch's own (post-shared-prefix) auditor-role events
-    from `_by_role`, not `build_history_timeline(audit_history)` directly:
-    the L2 tape records *every* model call (auditor and target), so the
-    anchor-keyed content would interleave target `ModelEvent`s into the
-    auditor column. Filtering to `_by_role[(bid, "auditor")]` keeps the
-    existing `eventsToTurns(hasToolEvents=true)` render path unchanged.
-
-    Built directly as the dumped dict (rather than via `Timeline.model_dump`)
-    because `session.events` already holds dumped events — reconstructing
-    `Event` objects just to re-serialise their uuids would be wasted work.
-    """
-
-    def content_for(bid: str) -> list[dict[str, Any]]:
-        out: list[dict[str, Any]] = []
-        for uuid in session._by_role.get((bid, "auditor"), []):  # noqa: SLF001
-            d = session.events.get(uuid)
-            if d is None:
-                continue
-            # Exclude petri's pre-`execute_tools` `AnchorEvent` so the
-            # `TURN_END_SOURCE` one (after the turn's `ToolEvent`s) is the
-            # only `findIndex` match for `splice()`.
-            if d["event"] == "anchor" and d.get("source") == GEN_SOURCE:
-                continue
-            out.append({"type": "event", "event": uuid})
-        return out
-
-    def auditor_branched_from(t: Trajectory) -> str | None:
-        # Last auditor generate in the shared prefix — the only anchors
-        # present in the parent's *auditor-role* content are the
-        # `TURN_END_SOURCE` `AnchorEvent`s keyed on auditor message ids, so
-        # `splice()` must cut there (`t.branched_from` may be a target or
-        # `Stage` anchor, which the auditor column never carries).
-        return next(
-            (s.anchor_id for s in reversed(t.tape.prefix()) if s.source == GEN_SOURCE),
-            None,
-        )
-
-    counter = itertools.count(1)
-
-    def to_span(t: Trajectory) -> dict[str, Any]:
-        return {
-            "type": "span",
-            "id": t.span_id,
-            "name": f"branch {next(counter)}",
-            "span_type": "branch",
-            "branched_from": auditor_branched_from(t),
-            "content": content_for(t.span_id),
-            "branches": [to_span(c) for c in t.children],
-        }
-
-    root = session.audit_history.root
-    return {
-        "name": "auditor",
-        "description": "Auditor branch tree",
-        "root": {
-            "type": "span",
-            "id": root.span_id,
-            "name": "auditor",
-            "span_type": "branch",
-            "branched_from": None,
-            "content": [],
-            "branches": [to_span(c) for c in root.children],
-        },
-    }
+        return await load_session(session_id, store_dir)

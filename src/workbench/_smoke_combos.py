@@ -49,8 +49,9 @@ from workbench._smoke_fixtures import (
 from workbench._smoke_util import FakeConn
 from workbench.run import Branch, find_auditor_step
 from workbench.server import _dispatch  # noqa: PLC2701
-from workbench.session import Session, build_auditor_timeline
+from workbench.session import Session
 from workbench.sources import TARGET_GEN_SOURCE
+from workbench.timeline import build_auditor_timeline
 
 # ── shared shapes ───────────────────────────────────────────────────────────
 

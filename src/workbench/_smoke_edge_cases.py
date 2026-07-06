@@ -42,8 +42,9 @@ from workbench._smoke_fixtures import (
 )
 from workbench.run import Branch, find_auditor_step
 from workbench.server import _dispatch  # noqa: PLC2701
-from workbench.session import Session, build_auditor_timeline
+from workbench.session import Session
 from workbench.sources import TARGET_GEN_SOURCE
+from workbench.timeline import build_auditor_timeline
 
 
 def _send_call_id(branch: Branch, turn_index: int) -> str:
