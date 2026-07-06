@@ -215,7 +215,9 @@ async def _amain() -> None:
 
     # Fresh session_dir so `runs/r1` from a prior invocation doesn't confuse
     # `wb.attach` (multiple `.eval` files) or the `.file-receipt` byte count.
-    shutil.rmtree(Path.home() / ".workbench" / "sessions" / SPAN_ID, ignore_errors=True)
+    from workbench import config
+
+    shutil.rmtree(config.sessions_dir() / SPAN_ID, ignore_errors=True)
 
     async with (
         _backend(ws_port),

@@ -97,11 +97,13 @@ async def _backend(port: int):
     # each `_backend` gets its own ephemeral store dir.
     import tempfile
 
+    import workbench.config as cfg_mod
     import workbench.server as srv_mod
 
     with tempfile.TemporaryDirectory(prefix="wb-smoke-") as tmp:
-        prev = srv_mod.STORE_DIR
-        srv_mod.STORE_DIR = Path(tmp)
+        prev_root, prev_sess = cfg_mod.STORE_DIR, srv_mod.STORE_DIR
+        cfg_mod.STORE_DIR = Path(tmp)
+        srv_mod.STORE_DIR = cfg_mod.sessions_dir()
         cfg = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
         srv = uvicorn.Server(cfg)
         task = asyncio.create_task(srv.serve())
@@ -115,7 +117,7 @@ async def _backend(port: int):
         finally:
             srv.should_exit = True
             await task
-            srv_mod.STORE_DIR = prev
+            cfg_mod.STORE_DIR, srv_mod.STORE_DIR = prev_root, prev_sess
 
 
 @asynccontextmanager

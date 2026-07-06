@@ -172,11 +172,14 @@ class Session:
             await self._send.aclose()
 
     async def close(self) -> None:
-        """Cancel running branches, then shut down the drain task.
+        """Persist, cancel running branches, then shut down the drain task.
 
-        Branch tasks are cancelled first so they don't try to enqueue onto a
-        closed `_send` stream (which would raise `ClosedResourceError`).
+        `save()` runs first (P0.2) so an in-flight orchestrator/branch is
+        captured before its task is cancelled. Branch tasks are cancelled
+        before the drain so they don't try to enqueue onto a closed `_send`
+        stream (which would raise `ClosedResourceError`).
         """
+        self.save()
         tasks = list(self.branch_tasks.values())
         if self.orchestrator is not None and self.orchestrator.task is not None:
             tasks.append(self.orchestrator.task)

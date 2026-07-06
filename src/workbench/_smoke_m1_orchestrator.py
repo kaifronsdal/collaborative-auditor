@@ -53,11 +53,25 @@ TURNS = [("run", [("python", {"code": c})]) for c in CELLS]
 async def _amain() -> None:
     tmpdir = Path(tempfile.mkdtemp(prefix="wb-orch-persist-"))
     async with mock_orch_session(TURNS, max_turns=5) as (session, orch, conn):
+        # Persistence identity set BEFORE any turn so the P0.1 per-turn
+        # ``record_turn`` → ``session.save()`` path fires (it no-ops when
+        # ``store_dir``/``session_id`` are unset).
+        session.store_dir = tmpdir
+        session.session_id = "t"
+        d = tmpdir / "t"
+
         # ---- turn 1: display/update/print/last-expr → InfoEvents ---------------
         orch.step()
         await settle()
         evs = orch_events(session)
         assert evs, "no orchestrator InfoEvents landed in session.events"
+
+        # P0.1 regression guard: ``orchestrator.eval`` on disk after one
+        # turn, with NO explicit ``session.save()`` and NO M0 branch running.
+        assert (d / "orchestrator.eval").exists(), (
+            "P0.1: record_turn did not persist orchestrator.eval"
+        )
+        print("✓ P0.1: orchestrator.eval on disk after turn 1 (per-turn save)")
 
         # stable display: uuid == display_id, and session.events holds the LATEST
         stable = session.events.get("job")
@@ -144,11 +158,10 @@ async def _amain() -> None:
         await settle()
         assert orch.status == "paused"
 
-        # ---- M1.3 persistence: save() writes pure .eval (no sidecar) -----------
-        session.store_dir = tmpdir
-        session.session_id = "t"
-        session.save()
-        d = tmpdir / "t"
+        # ---- M1.3 persistence: pure .eval (no sidecar) -------------------------
+        # No explicit ``session.save()`` — P0.1's per-turn save wrote turns
+        # 1+2, and P0.2's ``Session.close()`` (in ``mock_orch_session``'s
+        # finally) captures turn 3's no-tool assistant before ``load()``.
         assert (d / "orchestrator.eval").exists(), list(d.iterdir())
         assert not (d / "orchestrator_events.json").exists(), (
             "sidecar written — should be pure .eval"

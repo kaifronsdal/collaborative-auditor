@@ -128,6 +128,12 @@ async def _test_rewind_and_persist() -> None:
         session.session_id = "rw"
         session.save()
         assert (tmpdir / "rw" / "orchestrator.eval").exists()
+        # Freeze the on-disk snapshot at the pending-rewind state: P0.1's
+        # ``record_turn`` save (during the re-run below) and P0.2's
+        # ``close()`` save would otherwise overwrite it with the post-re-run
+        # 2-assistant history, defeating the ``resumed_assistants == 1``
+        # check that guards ``messages_for_save``'s pending-rewind truncate.
+        session.store_dir = None
 
         # ---- step() → _apply_rewind truncates → turn 2 re-runs -----------------
         orch.step()

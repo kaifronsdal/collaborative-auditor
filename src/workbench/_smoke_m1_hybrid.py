@@ -123,8 +123,10 @@ async def _amain() -> None:
 async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
     # Duck-typed orch: ``make_tools`` reads ``.kernel``/``.gate``/``.session_dir``,
     # and ``_turn`` calls ``.record_turn`` (rewind bookkeeping — no-op here).
+    from workbench import config
+
     span = f"smoke-hybrid-{os.getpid()}"
-    session_dir = Path.home() / ".workbench" / "sessions" / span
+    session_dir = config.sessions_dir() / span
     session_dir.mkdir(parents=True, exist_ok=True)
     orch = SimpleNamespace(
         kernel=k,
@@ -460,8 +462,10 @@ async def _wait_tool(session: Session, fn: str, *, timeout: float = 60) -> dict[
 
 
 async def _run_e2e() -> None:
+    from workbench import config
+
     span_id = f"smoke-hybrid-e2e-{os.getpid()}"
-    sdir = Path.home() / ".workbench" / "sessions" / span_id
+    sdir = config.sessions_dir() / span_id
     shutil.rmtree(sdir, ignore_errors=True)
 
     async with mock_orch_session(

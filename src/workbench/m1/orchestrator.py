@@ -32,7 +32,6 @@ import asyncio
 import logging
 import os
 from contextlib import suppress
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -54,6 +53,7 @@ from inspect_ai.util import span
 from inspect_ai.util._display import init_display_type
 from shortuuid import uuid
 
+from workbench import config
 from workbench.m1.kernel import OrchestratorKernel
 from workbench.m1.plots import install_template
 from workbench.m1.prompt import ORCHESTRATOR_SYSTEM_PROMPT
@@ -136,8 +136,11 @@ class Orchestrator(StepGated):
         #: cwd for the ``bash``/file tools (M1-HYBRID §bash) and the base
         #: for relative ``wb.attach("runs/…")`` paths — same dir both sides
         #: so ``bash("… --log-dir runs/r1")`` and ``wb.attach("runs/r1")``
-        #: agree without the agent thinking about paths.
-        self.session_dir = Path.home() / ".workbench" / "sessions" / self.span_id
+        #: agree without the agent thinking about paths. Rooted at
+        #: `config.sessions_dir()` (P0.3) so ``--store-dir`` / ``WORKBENCH_STORE``
+        #: governs eval logs and ``write_file`` artifacts, not just the M0
+        #: branch JSON.
+        self.session_dir = config.sessions_dir() / self.span_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
         # Align the ``python`` kernel's cwd with ``bash``/file tools —
         # otherwise a file the agent writes in a python cell lands in the
@@ -334,6 +337,11 @@ class Orchestrator(StepGated):
             and (mid := self.state.output.message.id) is not None
         ):
             self._turn_msg[tid] = mid
+        # P0.1: a pure-M1 session's only other save trigger is
+        # ``Branch.run()``'s finally, which never fires without an M0 branch.
+        # Persist per orchestrator turn so a server restart loses at most the
+        # in-flight tool result. No-op when ``store_dir``/``session_id`` unset.
+        self.session.save()
 
     # -- rewind (M1-FEATURES §2) ---------------------------------------------
 

@@ -19,7 +19,9 @@ import argparse
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+import signal
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
@@ -31,6 +33,7 @@ from inspect_ai.model import ChatMessageUser, ModelOutput
 from inspect_petri.target import Step
 from shortuuid import uuid
 
+from workbench import config
 from workbench.export import export_branch, import_eval
 from workbench.m1.attach import AttachedRun
 from workbench.run import (
@@ -45,14 +48,40 @@ from workbench.session import CandidateBatch, Session, _cancel_all
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Audit Workbench", version="0.1.0")
-
 sessions: dict[str, Session] = {}
 
-#: Persistence root — set from ``--store-dir`` in `main()`. Sessions are
-#: written under ``{STORE_DIR}/{session_id}/`` by `Branch.run()`'s finally
-#: (via `Session.save`) and reloaded on first connect.
-STORE_DIR: Path = Path("~/.workbench/sessions").expanduser()
+#: Sessions directory — sourced from `workbench.config` (P0.3) so it agrees
+#: with `Orchestrator.session_dir`. Kept as a module global (rather than
+#: calling ``config.sessions_dir()`` at each use-site) so smoke fixtures can
+#: patch it. `main()` mutates ``config.STORE_DIR`` from ``--store-dir`` and
+#: re-derives this before any session is created.
+STORE_DIR: Path = config.sessions_dir()
+
+
+def _save_all_sessions() -> None:
+    """P0.2 — flush every live session to disk on shutdown."""
+    for s in list(sessions.values()):
+        try:
+            s.save()
+        except Exception:
+            logger.exception("save on shutdown failed for %r", s.session_id)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Persist every live session on shutdown (P0.2).
+
+    Uvicorn's own SIGINT/SIGTERM handlers set ``should_exit`` and then run
+    lifespan shutdown, so this fires on Ctrl-C and ``kill`` alike. `main()`
+    additionally registers ``signal.signal`` fallbacks for non-uvicorn
+    embeddings; uvicorn overrides those via ``loop.add_signal_handler`` so
+    they're inert in the normal path.
+    """
+    yield
+    _save_all_sessions()
+
+
+app = FastAPI(title="Audit Workbench", version="0.1.0", lifespan=lifespan)
 
 
 async def _get_or_create(session_id: str) -> Session:
@@ -798,15 +827,30 @@ def main() -> None:
     parser.add_argument(
         "--store-dir",
         type=Path,
-        default=Path("~/.workbench/sessions").expanduser(),
-        help="session persistence root (default: ~/.workbench/sessions)",
+        default=config.STORE_DIR,
+        help=(
+            "workbench persistence root (WORKBENCH_STORE; default: "
+            "~/.workbench). Sessions land under {store-dir}/sessions/."
+        ),
     )
     parser.add_argument(
         "--port", type=int, default=int(os.environ.get("WB_PORT", "8765"))
     )
     args = parser.parse_args()
-    STORE_DIR = args.store_dir.expanduser()
+    # P0.3: mutate the shared config so `Orchestrator.session_dir` (and any
+    # other `sessions_dir()` reader) honours the flag. Setting the env var
+    # after import doesn't re-read into `config.STORE_DIR`, but propagates to
+    # any subprocess the orchestrator spawns.
+    config.STORE_DIR = args.store_dir.expanduser()
+    os.environ["WORKBENCH_STORE"] = str(config.STORE_DIR)
+    STORE_DIR = config.sessions_dir()
     STORE_DIR.mkdir(parents=True, exist_ok=True)
+    # P0.2: belt-and-suspenders — uvicorn installs its own loop-level signal
+    # handlers (which run `lifespan` shutdown → `_save_all_sessions`), so
+    # these are overridden in the normal path; they cover embeddings that
+    # bypass uvicorn's signal setup.
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: _save_all_sessions())
     uvicorn.run(app, host="0.0.0.0", port=args.port)  # noqa: S104
 
 
