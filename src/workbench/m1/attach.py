@@ -87,6 +87,13 @@ class AttachedRun(_PollingHandle):
     #: ACP discovery entry for this eval (``--acp-server``); ``False`` once
     #: we've decided none exists. Same tri-state as ``_ctl``.
     _acp: DiscoveredEval | None | bool = field(default=None, repr=False)
+    #: First-poll timestamp, for the "nothing ever appeared" early-bail.
+    _t0: float = field(default_factory=time.monotonic, repr=False)
+    #: Seconds to wait for *any* sign of life (a ``.eval`` file or a ctl
+    #: server) before declaring the subprocess dead. e2e-v3: a crashed
+    #: ``inspect eval`` left an empty ``log_dir`` and ``.wait()`` sat the
+    #: full timeout.
+    _grace: float = field(default=15.0, repr=False)
 
     # -- construction -----------------------------------------------------
 
@@ -140,13 +147,28 @@ class AttachedRun(_PollingHandle):
 
     async def _settle(self, task: asyncio.Task[Any] | None) -> None:
         if self._status in ("cancelled", "error"):
-            self.error = self._status
+            self.error = self.error or self._status
         self._running = []
 
     async def _poll(self) -> None:
         # done rows + status/total from the .eval on disk
         if self._log_file is None:
             self._log_file = next((i.name for i in list_eval_logs(self.log_dir)), None)
+        if (
+            self._log_file is None
+            and not isinstance(self._ctl, tuple)
+            and time.monotonic() - self._t0 > self._grace
+        ):
+            # No ``.eval`` on disk and no ctl server ever advertised this
+            # ``log_dir`` — the subprocess almost certainly crashed before
+            # writing its header. Bail now rather than sit the full timeout.
+            self._status = "error"
+            self.error = (
+                f"no eval log appeared in {self.log_dir} after "
+                f"{self._grace:g}s — subprocess may have crashed before "
+                f"writing its header (check the bash output)"
+            )
+            return
         if self._log_file is not None:
             try:
                 summaries = await read_eval_log_sample_summaries_async(self._log_file)

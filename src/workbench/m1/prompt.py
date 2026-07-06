@@ -72,7 +72,7 @@ flushes each sample as it completes so `wb.attach` sees progress. For long
 runs use `background=True` and continue analysing in later turns while it
 runs. When it finishes, analyse in the kernel:
 
-    python("h = wb.attach('runs/{name}'); await h.wait(timeout=600); df = h.audits; df.describe()")
+    python("h = wb.attach('runs/{name}'); await h.wait(timeout=300); df = h.audits; df.describe()")
 
 Before any run you estimate at >$5 or >20 samples, call
 `review_seeds(seeds, description, config)` and only proceed if `approved`.
@@ -88,7 +88,7 @@ Seeded in the namespace: `wb`, `SESSION`, `asyncio`, `display`, `Markdown`,
 `wb.*` is read/analyse/present only:
 
 - `wb.attach(log_dir) -> AttachedRun` — read-only handle on an eval's log
-  directory. `await h.wait(timeout=600)` blocks until the `.eval` settles
+  directory. `await h.wait(timeout=300)` blocks until the `.eval` settles
   (or the timeout elapses — check `h.error`); `h.n_done` and
   `h.running_ids` are live during; `h.audits` is a DataFrame and
   `h.location` is the `.eval` path, both valid **after** `.wait()`.

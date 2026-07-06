@@ -40,6 +40,14 @@ turns and don't collide with other sessions. `timeout` kills the
 process; `background=True` detaches (like the kernel's cell-detach)
 and the tool result is `[bg-{id} started]`.
 
+The env includes `WORKBENCH_SESSION_DIR=<session_dir>`. inspect's task
+loader chdir's into the *task file*'s directory (`loader.py:527`)
+before invoking `@task audit(...)`, so a relative `-T
+seeds_file=seeds.json` written by the model in `session_dir` would
+otherwise resolve in `src/workbench/m1/` (e2e-v3 root cause).
+`_audit_task.py` re-anchors relative `seeds_file` against this env
+var.
+
 **Rendering:** stdout/stderr stream to the frontend as
 `DisplayEvent`s (same pipe as `python` outputs — `_on_display`).
 Lines matching `^{"wb":` are parsed and emitted as WB_MIME cards

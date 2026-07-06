@@ -23,6 +23,7 @@ sample completes).
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -59,8 +60,16 @@ def audit(seeds_file: str, config: str | dict[str, Any] = "{}") -> Task:
     cfg: dict[str, Any] = (
         json.loads(config) if isinstance(config, str) else dict(config)
     )
+    # inspect's task loader chdir's into *this file's* directory before
+    # calling us (``loader.py:527 chdir_python(file.parent)``), so a relative
+    # ``seeds_file`` from the model's ``bash`` cwd would resolve in
+    # ``src/workbench/m1/``. Re-anchor against the session dir the ``bash``
+    # tool ran in (``tools.py`` sets this in the subprocess env).
+    seeds_path = Path(seeds_file)
+    if not seeds_path.is_absolute():
+        seeds_path = Path(os.environ.get("WORKBENCH_SESSION_DIR", ".")) / seeds_path
     return inspect_petri.audit(
-        seed_instructions=json.loads(Path(seeds_file).read_text()),
+        seed_instructions=json.loads(seeds_path.read_text()),
         max_turns=int(cfg.get("max_turns", 30)),
         compaction=cfg.get("compaction", True),
         realism_filter=cfg.get("realism_filter", False),

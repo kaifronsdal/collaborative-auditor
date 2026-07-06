@@ -243,6 +243,12 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
             env = {
                 **os.environ,
                 "WORKBENCH_DISPLAY": "1",
+                # inspect's ``resolve_tasks`` chdir's into the *task file*'s
+                # parent (loader.py:527) before calling ``@task audit(...)``,
+                # so a relative ``-T seeds_file=seeds.json`` resolves in
+                # ``src/workbench/m1/`` — not here where the model wrote it.
+                # ``_audit_task.py`` reads this to re-anchor relative paths.
+                "WORKBENCH_SESSION_DIR": str(session_dir),
                 "NO_COLOR": "1",
                 "INSPECT_HOOKS_QUIET": "1",
             }
