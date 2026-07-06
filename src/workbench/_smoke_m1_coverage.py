@@ -1,8 +1,8 @@
 """M1-REFACTOR Batch H — coverage smokes for the 7 HIGH-risk zero-coverage paths.
 
 Each check is small and self-contained; a subprocess ``inspect eval …@demo``
-is spawned once (``_spawn_demo``) and the resulting ``.eval`` reused for
-``read.py`` and the no-ACP ``interrupt_sample`` case.
+is spawned once (via ``demo_eval_cmd``) and the resulting ``.eval`` reused
+for ``read.py`` and the no-ACP ``interrupt_sample`` case.
 
 Run:  ``uv run python -m workbench._smoke_m1_coverage``
 """
@@ -17,105 +17,66 @@ import shutil
 import signal
 import sys
 import tempfile
-from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
 
 import anyio
 import pandas as pd
-from inspect_ai.model import ChatMessage, GenerateConfig, ModelOutput
-from inspect_ai.tool import ToolCall, ToolChoice, ToolInfo
 
-from workbench._smoke_util import FakeConn
+from workbench.m1._fixtures import (
+    AUDIT_TASK,
+    TurnSpec,
+    demo_eval_cmd,
+    mock_orch_session,
+    wait_for,
+)
 from workbench.m1.attach import AttachedRun
 from workbench.m1.kernel import OrchestratorKernel
 from workbench.m1.orchestrator import _prewarm  # noqa: PLC2701
 from workbench.m1.proposals import Finding, Gate
 from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
-from workbench.m1.wire import STREAM_MIME, WB_MIME, DisplayEvent
+from workbench.m1.wire import STREAM_MIME, WB_MIME
 from workbench.server import _dispatch  # noqa: PLC2701
-from workbench.session import Session
-
-AUDIT_TASK = str(Path(__file__).parent / "m1" / "_audit_task.py")
-
-
-# -- minimal fixtures (Batch H may consolidate to m1/_fixtures.py) -----------
-
-
-async def _wait_for(pred, *, timeout: float = 5.0) -> bool:  # noqa: ANN001
-    deadline = asyncio.get_running_loop().time() + timeout
-    while asyncio.get_running_loop().time() < deadline:
-        if pred():
-            return True
-        await asyncio.sleep(0.01)
-    return False
-
-
-def _stub_orch(k: OrchestratorKernel, session_dir: Path) -> Any:
-    """Duck-typed ``Orchestrator`` for ``make_tools`` (kernel/gate/session_dir)."""
-    session_dir.mkdir(parents=True, exist_ok=True)
-    return SimpleNamespace(
-        kernel=k,
-        gate=Gate(),
-        span_id="cov",
-        session_dir=session_dir,
-        record_turn=lambda tid: None,
-    )
-
-
-async def _spawn_demo(log_dir: str, *extra: str, wait: bool = True) -> Any:
-    """Launch ``_audit_task.py@demo`` under mockllm; optionally wait."""
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable, "-m", "inspect_ai", "eval", f"{AUDIT_TASK}@demo",
-        "--model", "mockllm/model", "--log-dir", log_dir,
-        "--log-buffer", "1", "--display", "none", *extra,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-    )
-    if wait:
-        _, err = await proc.communicate()
-        assert proc.returncode == 0, err.decode()
-    return proc
 
 
 # -- 1. bash(background=True) ------------------------------------------------
 
 
-async def _check_bash_background(
-    k: OrchestratorKernel, wire: list[DisplayEvent], sdir: Path
-) -> None:
-    orch = _stub_orch(k, sdir)
-    (bash, *_) = make_tools(orch)
-    wire.clear()
-    k.drain_notifications()
+async def _check_bash_background() -> None:
+    async with mock_orch_session([]) as (_session, orch, _conn):
+        k = orch.kernel
+        (bash, *_) = make_tools(orch)
+        k.outputs.clear()
+        k.drain_notifications()
 
-    out = await bash(cmd="sleep 0.4 && echo bg-out", background=True)
-    m = re.fullmatch(r"\[bg-([0-9a-f]{6}) started · pid (\d+)\]", out)
-    assert m, f"bad immediate return: {out!r}"
-    bg_id, pid = m.group(1), int(m.group(2))
-    # nothing landed yet — the pump is detached
-    assert not any(WB_MIME in ev.bundle for ev in wire)
+        out = await bash(cmd="sleep 0.4 && echo bg-out", background=True)
+        m = re.fullmatch(r"\[bg-([0-9a-f]{6}) started · pid (\d+)\]", out)
+        assert m, f"bad immediate return: {out!r}"
+        bg_id, pid = m.group(1), int(m.group(2))
+        # nothing landed yet — the pump is detached
+        evs = [ev for turn in k.outputs.values() for ev in turn]
+        assert not any(WB_MIME in ev.bundle for ev in evs)
 
-    assert await _wait_for(lambda: k.notifications, timeout=3.0), "no notify"
-    notes = k.drain_notifications()
-    assert any(f"bg-{bg_id} done · exit 0" in n for n in notes), notes
-    done_evs = [
-        ev for ev in wire if ev.bundle.get(WB_MIME, {}).get("kind") == "bg_done"
-    ]
-    assert len(done_evs) == 1 and done_evs[0].bundle[WB_MIME]["exit"] == 0, done_evs
-    assert done_evs[0].bundle[WB_MIME]["id"] == bg_id
-    # stdout streamed under the bash turn (contextvar copied into _bg task)
-    streams = [ev for ev in wire if STREAM_MIME in ev.bundle]
-    assert any("bg-out" in ev.bundle[STREAM_MIME]["text"] for ev in streams), streams
-    assert done_evs[0].turn_id == streams[0].turn_id != -1, (
-        f"bg outputs not attributed to a real turn: {done_evs[0].turn_id}"
-    )
-    # no orphan
-    try:
-        os.kill(pid, 0)
-        raise AssertionError(f"pid {pid} still alive")
-    except ProcessLookupError:
-        pass
+        await wait_for(lambda: k.notifications, timeout=3.0)
+        notes = k.drain_notifications()
+        assert any(f"bg-{bg_id} done · exit 0" in n for n in notes), notes
+        evs = [ev for turn in k.outputs.values() for ev in turn]
+        done_evs = [
+            ev for ev in evs if ev.bundle.get(WB_MIME, {}).get("kind") == "bg_done"
+        ]
+        assert len(done_evs) == 1 and done_evs[0].bundle[WB_MIME]["exit"] == 0, done_evs
+        assert done_evs[0].bundle[WB_MIME]["id"] == bg_id
+        # stdout streamed under the bash turn (contextvar copied into _bg task)
+        streams = [ev for ev in evs if STREAM_MIME in ev.bundle]
+        assert any("bg-out" in ev.bundle[STREAM_MIME]["text"] for ev in streams), streams
+        assert done_evs[0].turn_id == streams[0].turn_id != -1, (
+            f"bg outputs not attributed to a real turn: {done_evs[0].turn_id}"
+        )
+        # no orphan
+        try:
+            os.kill(pid, 0)
+            raise AssertionError(f"pid {pid} still alive")
+        except ProcessLookupError:
+            pass
     print(f"✓ bash(background=True): bg-{bg_id} → bg_done card + notify, no orphan")
 
 
@@ -182,9 +143,11 @@ async def _check_acp_errors(done_log_dir: str) -> None:
 
     # (b)+(c): live subprocess with --acp-server
     log_dir = tempfile.mkdtemp(prefix="wb-cov-acp-")
-    proc = await _spawn_demo(
-        log_dir, "-T", "n=2", "-T", "turns=5", "-T", "turn_sleep=1.5",
-        "--acp-server", wait=False,
+    proc = await asyncio.create_subprocess_shell(
+        demo_eval_cmd(
+            n=2, turns=5, turn_sleep=1.5, log_dir=log_dir, acp=True, display="none"
+        ),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
     )
     try:
         h2 = AttachedRun(log_dir=log_dir, description="acp")
@@ -217,65 +180,36 @@ async def _check_acp_errors(done_log_dir: str) -> None:
 # -- 5. server.py M1 handlers via _dispatch ----------------------------------
 
 
-def _python_turn(code: str) -> ModelOutput:
-    out = ModelOutput.from_content(model="mockllm", content="…")
-    out.choices[0].message.tool_calls = [
-        ToolCall(id="c", function="python", type="function", arguments={"code": code})
-    ]
-    return out
-
-
 async def _check_server_handlers() -> None:
-    turns = [
-        _python_turn("await asyncio.sleep(30)"),
-        _python_turn("ans = await wb.ask_human('ok?')"),
-        ModelOutput.from_content(model="mockllm", content="done."),
+    turns: list[TurnSpec] = [
+        ("…", [("python", {"code": "await asyncio.sleep(30)"})]),
+        ("…", [("python", {"code": "ans = await wb.ask_human('ok?')"})]),
     ]
+    async with mock_orch_session(turns, max_turns=6) as (session, orch, _conn):
+        # ---- detach_cell → cell backgrounded, agent unblocks ---------------
+        orch.step()
+        await wait_for(lambda: 1 in orch.kernel.bg)
+        await _dispatch(session, {"t": "detach_cell"})
+        await wait_for(lambda: 1 in orch.kernel._detached)  # noqa: SLF001
+        assert 1 in orch.kernel.bg, "detach cancelled the cell"
+        print("✓ _dispatch detach_cell → cell backgrounded, still running")
 
-    def outputs(
-        input: list[ChatMessage],  # noqa: A002
-        tools: list[ToolInfo],
-        tool_choice: ToolChoice,
-        config: GenerateConfig,
-    ) -> ModelOutput:
-        n = sum(1 for m in input if m.role == "assistant")
-        return turns[min(n, len(turns) - 1)]
+        # ---- cancel_cell → bg task cancelled -------------------------------
+        await _dispatch(session, {"t": "cancel_cell", "turn": 1})
+        await wait_for(lambda: 1 not in orch.kernel.bg)
+        assert any("cell-1 cancelled" in n for n in orch.kernel.notifications)
+        print("✓ _dispatch cancel_cell → bg task cancelled")
 
-    session = Session()
-    await session.start()
-    session.connections.append(FakeConn())
-    await session.start_orchestrator(
-        model="mockllm/model", model_args={"custom_outputs": outputs}, max_turns=6
-    )
-    orch = session.orchestrator
-    assert orch is not None
-
-    # ---- detach_cell → cell backgrounded, agent unblocks -------------------
-    orch.step()
-    assert await _wait_for(lambda: 1 in orch.kernel.bg)
-    await _dispatch(session, {"t": "detach_cell"})
-    assert await _wait_for(lambda: 1 in orch.kernel._detached)  # noqa: SLF001
-    assert 1 in orch.kernel.bg, "detach cancelled the cell"
-    print("✓ _dispatch detach_cell → cell backgrounded, still running")
-
-    # ---- cancel_cell → bg task cancelled ----------------------------------
-    await _dispatch(session, {"t": "cancel_cell", "turn": 1})
-    assert await _wait_for(lambda: 1 not in orch.kernel.bg)
-    assert any("cell-1 cancelled" in n for n in orch.kernel.notifications)
-    print("✓ _dispatch cancel_cell → bg task cancelled")
-
-    # ---- approve → gate.resolve --------------------------------------------
-    orch.step()
-    assert await _wait_for(lambda: orch.gate.pending)
-    (gid,) = orch.gate.pending
-    await _dispatch(session, {"t": "approve", "display_id": gid, "verdict": "yes"})
-    assert await _wait_for(lambda: not orch.gate.pending)
-    assert orch.kernel.shell.user_ns.get("ans") == "yes"
-    # unknown id → no-op (logged, no raise)
-    await _dispatch(session, {"t": "approve", "display_id": "nope", "verdict": "x"})
-    print("✓ _dispatch approve → gate.resolve; unknown id → no-op")
-
-    await session.close()
+        # ---- approve → gate.resolve ----------------------------------------
+        orch.step()
+        await wait_for(lambda: orch.gate.pending)
+        (gid,) = orch.gate.pending
+        await _dispatch(session, {"t": "approve", "display_id": gid, "verdict": "yes"})
+        await wait_for(lambda: not orch.gate.pending)
+        assert orch.kernel.shell.user_ns.get("ans") == "yes"
+        # unknown id → no-op (logged, no raise)
+        await _dispatch(session, {"t": "approve", "display_id": "nope", "verdict": "x"})
+        print("✓ _dispatch approve → gate.resolve; unknown id → no-op")
 
 
 # -- 6. wb.cite (in-cell) ----------------------------------------------------
@@ -289,7 +223,7 @@ async def _check_wb_cite(k: OrchestratorKernel, gate: Gate) -> None:
             "description='see t3')\nf"
         )
     )
-    assert await _wait_for(lambda: gate.pending)
+    await wait_for(lambda: gate.pending)
     (pid,) = gate.pending
     # pending card is a cite_proposal
     pending_ev = next(ev for ev in k.outputs[k._turn_counter] if ev.id == pid)
@@ -344,16 +278,20 @@ async def _amain() -> None:
 
     # One completed .eval reused by read.py + no-ACP checks.
     read_dir = tempfile.mkdtemp(prefix="wb-cov-read-")
-    await _spawn_demo(read_dir, "-T", "n=2")
+    proc = await asyncio.create_subprocess_shell(
+        demo_eval_cmd(n=2, turns=1, turn_sleep=0, log_dir=read_dir, display="none"),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate()
+    assert proc.returncode == 0, err.decode()
     from inspect_ai.log import list_eval_logs  # noqa: PLC0415
     log_file = list_eval_logs(read_dir)[0].name
 
-    wire: list[DisplayEvent] = []
-    sdir = Path(tempfile.mkdtemp(prefix="wb-cov-sess-"))
-    with OrchestratorKernel(on_display=wire.append) as k:
+    await _check_bash_background()
+
+    with OrchestratorKernel() as k:
         gate = Gate()
         k.shell.user_ns["wb"] = Workbench(gate, session=None)
-        await _check_bash_background(k, wire, sdir)
         await _check_read(k, log_file)
         await _check_wb_cite(k, gate)
 
@@ -362,7 +300,6 @@ async def _amain() -> None:
     await _check_server_handlers()
 
     shutil.rmtree(read_dir, ignore_errors=True)
-    shutil.rmtree(sdir, ignore_errors=True)
     print("\n✓ all M1 coverage smokes passed (7 HIGH-risk paths)")
 
 

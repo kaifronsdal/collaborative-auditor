@@ -85,17 +85,27 @@ class _PollingHandle:
     _poll_interval: float = field(default=0.25, repr=False)
     _started: float = field(default_factory=time.monotonic, repr=False)
 
-    async def wait(self) -> Self:
+    async def wait(self, timeout: float | None = None) -> Self:
         """Await the job *and* the watcher's final poll/update.
 
         ``_task`` alone isn't enough — ``_watch`` sets ``finished`` and fires
         the last ``dh.update`` after ``_task.done()``, so returning before it
         settles would hand back a stale card.
+
+        ``timeout`` bounds the wait: on expiry the watcher is cancelled and
+        the handle marked ``finished`` with ``error = "wait timeout after
+        {timeout}s"`` — the agent's cell gets a settled handle it can inspect
+        (``.error`` / ``.n_done``), not a traceback.
         """
         if self._task is not None:
             await asyncio.gather(self._task, return_exceptions=True)
         if self._watcher is not None:
-            await self._watcher
+            try:
+                await asyncio.wait_for(self._watcher, timeout)
+            except TimeoutError:
+                self.error = f"wait timeout after {timeout}s"
+                self.finished = True
+                self._update()
         return self
 
     def cancel(self) -> None:
