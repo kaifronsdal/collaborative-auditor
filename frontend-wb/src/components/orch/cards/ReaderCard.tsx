@@ -23,8 +23,7 @@ import { renderContent } from "../../Bubble";
 import type { Up } from "../../../lib/wire";
 import type { ExcerptPayload, TranscriptPayload } from "../types";
 
-export type { ExcerptPayload, TranscriptPayload };
-export type ReaderPayload = ExcerptPayload | TranscriptPayload;
+type ReaderPayload = ExcerptPayload | TranscriptPayload;
 
 type Props = {
   payload: ReaderPayload;

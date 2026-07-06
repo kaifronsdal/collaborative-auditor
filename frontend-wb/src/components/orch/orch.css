@@ -276,6 +276,7 @@
   display: inline-block; vertical-align: middle; position: relative; top: -1px;
 }
 .fx-dot.pending { color: var(--ink-faint); animation: pulse 1.4s ease-in-out infinite; }
+.fx-dot.err { color: var(--danger); }
 
 /* ---- generic output container ---- */
 .out {
@@ -586,7 +587,7 @@ sup.ask-opt-key {
 .fx-out .stat.ok { color: var(--ok); }
 .fx-out .stat.ok b { color: var(--ok); }
 .out .fx-out { padding: 9px 14px; }
-.out .fx-out .stat.err { display: inline; color: var(--danger); }
+.out .stat.err { display: inline; color: var(--danger); }
 .out-head .fx-dot { top: 0; }
 .fx-bar {
   flex: 1; min-width: 60px; height: 4px;

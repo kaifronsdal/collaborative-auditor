@@ -132,7 +132,6 @@ export type ScanPayload = {
   total: number;
   finished: boolean;
   error: string | null;
-  elapsed?: string;
   per_scanner: Record<string, { scans: number; results: number; errors: number }>;
   df_head?: Record<string, string>;
 };

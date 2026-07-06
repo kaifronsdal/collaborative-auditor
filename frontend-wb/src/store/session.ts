@@ -214,6 +214,10 @@ export type SessionState = {
    */
   newAudit: () => void;
 
+  /** Switch the desk to `id`: optimistically flip `current` (so highlight
+   *  responds instantly), clear `pendingNewAudit`, send `{t:"switch"}`. */
+  switchBranch: (id: BranchId) => void;
+
   /** Fetch `GET /sessions` and populate `savedSessions`. */
   fetchSessions: () => Promise<void>;
 
@@ -783,6 +787,11 @@ export const useSession = create<SessionState>((set, get) => ({
     // `pendingNewAudit` prevents the next backend `state` broadcast from
     // overwriting `current` back to the old branch.
     set({ current: null, pendingNewAudit: true });
+  },
+
+  switchBranch: (id) => {
+    set({ current: id, pendingNewAudit: false });
+    get().send({ t: "switch", branch: id });
   },
 
   dismissError: () => set({ error: null }),

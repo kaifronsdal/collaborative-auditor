@@ -13,16 +13,7 @@
  * Falls back to the linear `Column` when no server timeline is available yet
  * (first turns of a fresh branch, before the first `{t:"timeline"}` op lands).
  */
-import {
-  type JSX,
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type JSX, forwardRef, useEffect, useMemo, useState } from "react";
 import {
   getAgents,
   type SwimlaneRow,
@@ -30,7 +21,7 @@ import {
 } from "@tsmono/inspect-components/transcript/timeline";
 import { TimelineSwimLanes } from "@tsmono/inspect-components/transcript/timeline/swimlanes";
 
-import { bisectTurns, eventsToTurns, isModelEvent } from "../lib/events";
+import { eventsToTurns, isModelEvent } from "../lib/events";
 import {
   computeForks,
   useQueued,
@@ -43,6 +34,7 @@ import { Bubble } from "./Bubble";
 import { LinearColumn, type ColumnHandle } from "./Column";
 import { ModelEventRow } from "./ModelEventRow";
 import { ShimmerBubble } from "./ShimmerBubble";
+import { useColumnScroll } from "./useColumnScroll";
 
 type Props = {
   branch: BranchId;
@@ -64,7 +56,7 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   const queued = useQueued(branch, role);
   const staged = useStagedForTarget(branch);
   const status = useSession((s) => s.status);
-  const send = useSession((s) => s.send);
+  const switchBranch = useSession((s) => s.switchBranch);
   const isAuditor = role === "auditor";
 
   // Selected lane key. For the target column, default to the deepest (latest)
@@ -94,14 +86,6 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
     }
   }, [defaultKey, rows, selectedKey, isAuditor]);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
-  const onScroll = (): void => {
-    const el = scrollRef.current;
-    if (!el) return;
-    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  };
-
   // Resolve the selected row's TimelineSpan and its full event lineage.
   const selected = rows.find((r) => r.key === selectedKey) ?? rows[0];
   const span: TimelineSpan | undefined = selected ? rowSpan(selected) : undefined;
@@ -113,12 +97,9 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
     () => eventsToTurns(laneEvents, isAuditor),
     [laneEvents, isAuditor]
   );
-  const rowEls = useRef(new Map<string, HTMLElement>());
-
-  // Transient highlight: pulse the row a sync-jump landed on, then clear.
-  const [highlightedUuid, setHighlightedUuid] = useState<string | null>(null);
-  const hlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (hlTimer.current) clearTimeout(hlTimer.current); }, []);
+  const { scrollRef, onScroll, rowRef, highlighted } = useColumnScroll(
+    laneTurns, { linked, onSync }, ref
+  );
 
   // Fork points keyed by assistant message id → sibling row keys + our idx.
   const forks = useMemo(
@@ -133,10 +114,7 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
       // and `defaultKey` follows.
       const r = key != null ? rows.find((r) => r.key === key) : undefined;
       const id = r ? rowSpan(r).id : null;
-      if (id != null && id !== branch) {
-        send({ t: "switch", branch: id });
-        useSession.setState({ current: id, pendingNewAudit: false });
-      }
+      if (id != null && id !== branch) switchBranch(id);
     } else {
       setSelectedKey(key ?? defaultKey);
     }
@@ -148,58 +126,6 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
     if (next < 0 || next >= g.siblings.length) return;
     selectLane(g.siblings[next]);
   };
-
-  const centeredTimestamp = (): string | null => {
-    const sc = scrollRef.current;
-    if (!sc) return null;
-    const mid = sc.getBoundingClientRect().top + sc.clientHeight / 2;
-    let best: { d: number; ts: string } | null = null;
-    for (const turn of laneTurns) {
-      const el = rowEls.current.get(turn.ev.uuid!);
-      if (!el) continue;
-      const r = el.getBoundingClientRect();
-      const d = Math.abs((r.top + r.bottom) / 2 - mid);
-      if (best == null || d < best.d) best = { d, ts: turn.ev.timestamp };
-    }
-    return best?.ts ?? null;
-  };
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      scrollToTimestamp(ts) {
-        let i = bisectTurns(laneTurns, ts);
-        while (i >= 0 && !rowEls.current.has(laneTurns[i].ev.uuid!)) i--;
-        const el = i >= 0 ? rowEls.current.get(laneTurns[i].ev.uuid!) : undefined;
-        if (!el) return;
-        stick.current = false;
-        el.scrollIntoView({ block: "center", behavior: "auto" });
-        setHighlightedUuid(laneTurns[i].ev.uuid!);
-        if (hlTimer.current) clearTimeout(hlTimer.current);
-        hlTimer.current = setTimeout(() => setHighlightedUuid(null), 1500);
-      },
-      centeredTimestamp,
-    }),
-    [laneTurns]
-  );
-
-  const syncRaf = useRef<number | null>(null);
-  useEffect(() => () => { if (syncRaf.current) cancelAnimationFrame(syncRaf.current); }, []);
-  const onScrollLinked = (): void => {
-    onScroll();
-    if (!linked || !onSync || syncRaf.current != null) return;
-    syncRaf.current = requestAnimationFrame(() => {
-      syncRaf.current = null;
-      const ts = centeredTimestamp();
-      if (ts) onSync(ts);
-    });
-  };
-
-  // Tail-follow on every render (catches streaming partials, not just new events).
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  });
 
   // No timeline yet → linear column (first turn hasn't completed).
   if (!timeline || rows.length === 0) {
@@ -214,7 +140,7 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   const showShimmer = status === "running" && !lastIsPending;
 
   return (
-    <div className="column swimlane-column" ref={scrollRef} onScroll={onScrollLinked}>
+    <div className="column swimlane-column" ref={scrollRef} onScroll={onScroll}>
       <div className="column-head">
         {role}
         {rows.length > 1 && (
@@ -247,15 +173,12 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
             turn={turn}
             turnIndex={i}
             auditor={isAuditor}
-            highlighted={highlightedUuid === turn.ev.uuid}
+            highlighted={highlighted === turn.ev.uuid}
             siblingPos={fork && { idx: fork.idx, total: fork.siblings.length }}
             onSwitchSibling={
               fork && anchor != null ? (d) => switchSibling(anchor, d) : undefined
             }
-            rowRef={(el) => {
-              if (el) rowEls.current.set(turn.ev.uuid!, el);
-              else rowEls.current.delete(turn.ev.uuid!);
-            }}
+            rowRef={rowRef(turn.ev.uuid!)}
           />
         );
       })}

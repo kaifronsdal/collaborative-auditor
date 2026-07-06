@@ -108,7 +108,7 @@ export function Sidebar(): JSX.Element {
   const current = useSession((s) => s.current);
   const status = useSession((s) => s.status);
   const branches = useSession((s) => s.branches);
-  const send = useSession((s) => s.send);
+  const switchBranch = useSession((s) => s.switchBranch);
   const mode = useSession((s) => s.mode);
   const setMode = useSession((s) => s.setMode);
 
@@ -150,14 +150,6 @@ export function Sidebar(): JSX.Element {
 
   // Roots: branches with no parent.
   const roots = Object.entries(branches).filter(([, m]) => m.parent === null);
-
-  function handleSwitch(id: BranchId) {
-    send({ t: "switch", branch: id });
-    // Clear pendingNewAudit so the backend state broadcast is allowed to set
-    // current again. Also update local current immediately so the highlight
-    // responds fast; the server's state broadcast will confirm it.
-    useSession.setState({ current: id, pendingNewAudit: false });
-  }
 
   if (collapsed) {
     return (
@@ -250,16 +242,10 @@ export function Sidebar(): JSX.Element {
                 className={`side-row${isActive ? " active" : ""}`}
                 title={s.title}
                 onClick={() => {
-                  if (s.id === "__pending__") {
-                    // Pending entry has no backend branch id yet — clicking it
-                    // while we're waiting for the first `state` broadcast is a
-                    // no-op (the audit is about to become current on its own).
-                    return;
-                  }
-                  send({ t: "switch", branch: s.id });
-                  // Clear pendingNewAudit so the state broadcast can update
-                  // current, and update optimistically for instant highlight.
-                  useSession.setState({ current: s.id, pendingNewAudit: false });
+                  // Pending entry has no backend branch id yet — clicking it
+                  // while we're waiting for the first `state` broadcast is a
+                  // no-op (the audit is about to become current on its own).
+                  if (s.id !== "__pending__") switchBranch(s.id);
                 }}
               >
                 {isActive && <span className={`status-dot dot-${status ?? "ended"}`} />}
@@ -295,7 +281,7 @@ export function Sidebar(): JSX.Element {
                     current={current}
                     allBranches={branches}
                     depth={0}
-                    onSwitch={handleSwitch}
+                    onSwitch={switchBranch}
                     onExport={handleExport}
                     visited={new Set()}
                   />

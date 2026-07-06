@@ -1,15 +1,16 @@
 import type { ChatMessage } from "@tsmono/inspect-common";
 
-import { useEffect, useRef, useState, type JSX } from "react";
+import { useRef, useState, type JSX } from "react";
 
 import { pairToolCalls, type Turn } from "../lib/events";
 import { useSession } from "../store/session";
 import { BranchNav } from "./BranchNav";
 import { Bubble, renderContent } from "./Bubble";
 import { CandidateCell, useOpenBatchId } from "./CandidateCell";
-import { StatusDot } from "./icons";
 import { RawModal } from "./RawModal";
-import { ToolPair, fromCall, fromToolEvent, getSelectionWithin } from "./ToolPair";
+import { RewritePanel, SelectionPill, useSelectionPill } from "./RewritePanel";
+import { contentText } from "./tool-renderers/util";
+import { ToolPair, fromCall, fromToolEvent } from "./ToolPair";
 
 type Props = {
   turn: Turn;
@@ -29,13 +30,6 @@ type Props = {
   rowRef?: (el: HTMLDivElement | null) => void;
 };
 
-/** Flatten a ChatMessage's content to plain text for the edit textarea. */
-function contentText(content: ChatMessage["content"]): string {
-  return typeof content === "string"
-    ? content
-    : content.map((c) => ("text" in c ? c.text : "")).join("");
-}
-
 type EditableRole = "user" | "system" | "tool";
 
 /** A non-assistant lead bubble in the *target* column with hover `edit` /
@@ -52,24 +46,13 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
   const [rewriteOpen, setRewriteOpen] = useState(false);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [rewriteSel, setRewriteSel] = useState<string | undefined>(undefined);
-  const [selPill, setSelPill] = useState<{ text: string; x: number; y: number } | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
+  const selection = useSelectionPill(wrapRef);
 
   const role = msg.role as EditableRole;
   const tcid = msg.role === "tool" ? (msg.tool_call_id ?? undefined) : undefined;
   const editable =
     msg.id != null && (role === "user" || role === "system" || role === "tool");
-
-  useEffect(() => {
-    if (!selPill) return;
-    const clear = () => setSelPill(null);
-    window.addEventListener("mousedown", clear, true);
-    window.addEventListener("scroll", clear, true);
-    return () => {
-      window.removeEventListener("mousedown", clear, true);
-      window.removeEventListener("scroll", clear, true);
-    };
-  }, [selPill]);
 
   function open() {
     setText(contentText(msg.content));
@@ -83,7 +66,7 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
   function openRewrite(selected?: string) {
     setRewriteSel(selected);
     setRewriteOpen(true);
-    setSelPill(null);
+    selection.clear();
   }
   function sendRewrite() {
     if (msg.id == null || !rewritePrompt.trim()) return;
@@ -99,13 +82,6 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
     if (msg.id == null || draft?.content == null) return;
     editTargetMessage(msg.id, role, draft.content, tcid);
     discardRewrite();
-  }
-  function handleMouseUp(e: React.MouseEvent) {
-    if (!editable || editing || rewriteOpen) return;
-    if (e.target instanceof HTMLElement && e.target.closest("button, textarea, input")) {
-      return;
-    }
-    setSelPill(getSelectionWithin(wrapRef.current));
   }
 
   if (editing) {
@@ -129,69 +105,14 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
     );
   }
 
-  const rewritePanel = (rewriteOpen || draft) && (
-    <div className="lead-rewrite">
-      <div className="tp-lbl">
-        <i className="bi bi-stars" /> rewrite with auditor model
-      </div>
-      {draft?.status === "pending" ? (
-        <div className="tp-rewrite-spinner">
-          <StatusDot state="pending" /> rewriting…
-        </div>
-      ) : draft?.status === "ready" ? (
-        <>
-          <pre className="tp-rewrite-preview">{draft.content ?? draft.raw}</pre>
-          <div className="tp-edit-actions">
-            <button type="button" onClick={applyRewrite} disabled={draft.content == null}>
-              apply & replay
-            </button>
-            <button type="button" onClick={sendRewrite} disabled={!rewritePrompt.trim()}>
-              regenerate
-            </button>
-            <button type="button" onClick={discardRewrite}>discard</button>
-          </div>
-        </>
-      ) : (
-        <>
-          <textarea
-            className="tp-rewrite-input"
-            value={rewritePrompt}
-            onChange={(e) => setRewritePrompt(e.target.value)}
-            placeholder="Tell me how to rewrite this…"
-            rows={2}
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                sendRewrite();
-              }
-            }}
-          />
-          {rewriteSel && (
-            <div className="tp-rewrite-sel">
-              selection: <code>{rewriteSel.slice(0, 120)}{rewriteSel.length > 120 ? "…" : ""}</code>
-            </div>
-          )}
-          {draft?.status === "error" && (
-            <div className="tp-edit-err">{draft.error}</div>
-          )}
-          <div className="tp-edit-actions">
-            <button type="button" onClick={sendRewrite} disabled={!rewritePrompt.trim()}>
-              rewrite
-            </button>
-            <button type="button" onClick={discardRewrite}>cancel</button>
-          </div>
-        </>
-      )}
-    </div>
-  );
-
   return (
     <div
       className="lead-wrap"
       ref={wrapRef}
       onDoubleClick={editable ? open : undefined}
-      onMouseUp={handleMouseUp}
+      onMouseUp={(e) => {
+        if (editable && !editing && !rewriteOpen) selection.onMouseUp(e);
+      }}
     >
       <Bubble msg={msg} byline={role} />
       {editable && (
@@ -204,18 +125,20 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
           </button>
         </div>
       )}
-      {rewritePanel}
-      {selPill && editable && (
-        <button
-          type="button"
-          className="tp-sel-pill"
-          style={{ left: selPill.x, top: selPill.y }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => openRewrite(selPill.text)}
-          title="rewrite this selection"
-        >
-          <i className="bi bi-stars" />
-        </button>
+      {(rewriteOpen || draft) && (
+        <RewritePanel
+          className="lead-rewrite"
+          draft={draft}
+          prompt={rewritePrompt}
+          setPrompt={setRewritePrompt}
+          sel={rewriteSel}
+          onSend={sendRewrite}
+          onApply={applyRewrite}
+          onDiscard={discardRewrite}
+        />
+      )}
+      {selection.pill && editable && (
+        <SelectionPill pill={selection.pill} onPick={openRewrite} />
       )}
     </div>
   );

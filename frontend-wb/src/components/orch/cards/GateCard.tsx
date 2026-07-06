@@ -30,8 +30,7 @@ import type {
   RunProposalPayload,
 } from "../types";
 
-export type { CiteProposalPayload, PromptPayload, RunProposalPayload };
-export type GatePayload = PromptPayload | RunProposalPayload | CiteProposalPayload;
+type GatePayload = PromptPayload | RunProposalPayload | CiteProposalPayload;
 
 type Props = {
   payload: GatePayload;

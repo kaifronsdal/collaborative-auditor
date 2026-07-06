@@ -178,6 +178,43 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
     ? modelLabel(value)
     : `${role}: ${modelLabel(value)}${configSuffix(config)}`;
 
+  /** One `.picker-row` — Models and Recent lists render the same row. */
+  const row = (m: string, keyPrefix = ""): JSX.Element => (
+    <button
+      key={`${keyPrefix}${m}`}
+      className={`picker-row${value === m ? " selected" : ""}`}
+      onClick={() => select(m)}
+      type="button"
+    >
+      <span className="picker-bullet">{value === m ? "●" : ""}</span>
+      {modelLabel(m)}
+      <span className="picker-model-id">{m}</span>
+    </button>
+  );
+
+  type NumField = "max_tokens" | "top_p" | "seed";
+  /** Label + `<input type="number">` bound to one numeric config field. */
+  const NumRow = ({
+    field, label, parse, ...attrs
+  }: {
+    field: NumField; label: string; parse: (s: string) => number;
+  } & Pick<JSX.IntrinsicElements["input"], "min" | "max" | "step">): JSX.Element => (
+    <div className="picker-cfg-row">
+      <span className="picker-cfg-label">{label}</span>
+      <input
+        type="number"
+        className="picker-cfg-number"
+        placeholder="unset"
+        value={config[field] ?? ""}
+        onChange={(e) => {
+          const v = e.target.value;
+          updateConfig({ [field]: v === "" ? undefined : parse(v) });
+        }}
+        {...attrs}
+      />
+    </div>
+  );
+
   return (
     <div ref={containerRef} className="model-picker-wrap">
       <button
@@ -224,19 +261,7 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
           {matchingPresets.length > 0 && (
             <>
               <div className="picker-section-label">Models</div>
-              {matchingPresets.map((m) => (
-                <button
-                  key={m}
-                  className={`picker-row${value === m ? " selected" : ""}`}
-                  onClick={() => select(m)}
-                  type="button"
-                >
-                  {value === m && <span className="picker-bullet">●</span>}
-                  {value !== m && <span className="picker-bullet" />}
-                  {modelLabel(m)}
-                  <span className="picker-model-id">{m}</span>
-                </button>
-              ))}
+              {matchingPresets.map((m) => row(m))}
             </>
           )}
 
@@ -244,19 +269,7 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
           {recentToShow.length > 0 && (
             <>
               <div className="picker-section-label">Recent</div>
-              {recentToShow.map((m) => (
-                <button
-                  key={`recent-${m}`}
-                  className={`picker-row${value === m ? " selected" : ""}`}
-                  onClick={() => select(m)}
-                  type="button"
-                >
-                  {value === m && <span className="picker-bullet">●</span>}
-                  {value !== m && <span className="picker-bullet" />}
-                  {modelLabel(m)}
-                  <span className="picker-model-id">{m}</span>
-                </button>
-              ))}
+              {recentToShow.map((m) => row(m, "recent-"))}
             </>
           )}
 
@@ -292,11 +305,7 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
                     {config.reasoning_effort != null && (
                       <button
                         className="picker-cfg-clear"
-                        onClick={() => {
-                          const { reasoning_effort: _re, ...rest } = config;
-                          writeStoredConfig(role, rest);
-                          onChange(value, rest);
-                        }}
+                        onClick={() => updateConfig({ reasoning_effort: undefined })}
                         type="button"
                       >
                         <IconClose size={10} />
@@ -322,11 +331,7 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
                     {config.temperature != null && (
                       <button
                         className="picker-cfg-clear"
-                        onClick={() => {
-                          const { temperature: _t, ...rest } = config;
-                          writeStoredConfig(role, rest);
-                          onChange(value, rest);
-                        }}
+                        onClick={() => updateConfig({ temperature: undefined })}
                         type="button"
                       >
                         <IconClose size={10} />
@@ -335,21 +340,7 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
                   </div>
                 </div>
 
-                {/* max_tokens */}
-                <div className="picker-cfg-row">
-                  <span className="picker-cfg-label">max_tokens</span>
-                  <input
-                    type="number"
-                    className="picker-cfg-number"
-                    min={1}
-                    placeholder="unset"
-                    value={config.max_tokens ?? ""}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      updateConfig({ max_tokens: v === "" ? undefined : parseInt(v, 10) });
-                    }}
-                  />
-                </div>
+                <NumRow field="max_tokens" label="max_tokens" min={1} parse={(v) => parseInt(v, 10)} />
 
                 {/* more… */}
                 <button
@@ -362,38 +353,8 @@ export function ModelPicker({ role, value, config, onChange, compact = false }: 
 
                 {moreOpen && (
                   <>
-                    {/* top_p */}
-                    <div className="picker-cfg-row">
-                      <span className="picker-cfg-label">top_p</span>
-                      <input
-                        type="number"
-                        className="picker-cfg-number"
-                        min={0}
-                        max={1}
-                        step={0.01}
-                        placeholder="unset"
-                        value={config.top_p ?? ""}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          updateConfig({ top_p: v === "" ? undefined : parseFloat(v) });
-                        }}
-                      />
-                    </div>
-
-                    {/* seed */}
-                    <div className="picker-cfg-row">
-                      <span className="picker-cfg-label">seed</span>
-                      <input
-                        type="number"
-                        className="picker-cfg-number"
-                        placeholder="unset"
-                        value={config.seed ?? ""}
-                        onChange={(e) => {
-                          const v = e.target.value;
-                          updateConfig({ seed: v === "" ? undefined : parseInt(v, 10) });
-                        }}
-                      />
-                    </div>
+                    <NumRow field="top_p" label="top_p" min={0} max={1} step={0.01} parse={parseFloat} />
+                    <NumRow field="seed" label="seed" parse={(v) => parseInt(v, 10)} />
 
                     {/* stop_sequences */}
                     <div className="picker-cfg-row picker-cfg-row--col">

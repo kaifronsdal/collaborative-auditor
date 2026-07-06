@@ -10,8 +10,6 @@ import type { JSX } from "react";
 import type { Up } from "../../../lib/wire";
 import type { FindingPayload } from "../types";
 
-export type { FindingPayload };
-
 type Props = {
   payload: FindingPayload;
   displayId: string;
@@ -32,7 +30,7 @@ export default function FindingCard({ payload, send }: Props): JSX.Element {
           className="bi bi-bookmark-check-fill"
           style={{ color: payload.signed_by ? "var(--ok)" : "var(--ink-faint)" }}
         />
-        <span className="gate-resolved">
+        <span className="truncate">
           {payload.claim} · <b>{payload.quotes.length}</b> quotes
           {payload.signed_by && ` · ${payload.signed_by}`}
         </span>

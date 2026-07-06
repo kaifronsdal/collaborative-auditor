@@ -12,20 +12,14 @@
  */
 import type { ChatMessageTool, ToolCall, ToolEvent } from "@tsmono/inspect-common";
 import { resolveToolInput } from "@tsmono/inspect-components/chat/tools";
-import { type JSX, useEffect, useRef, useState } from "react";
+import { type JSX, useRef, useState } from "react";
 
 import { Chevron, StatusDot } from "./icons";
+import { RewritePanel, SelectionPill, useSelectionPill, type RewriteDraft } from "./RewritePanel";
 import { renderTool } from "./tool-renderers";
-import { resultText } from "./tool-renderers/util";
+import { resultText, shortId } from "./tool-renderers/util";
 
-export type RewriteDraft = {
-  status: "pending" | "ready" | "error";
-  args?: Record<string, unknown>;
-  /** Target-side: the rewritten message text (staging-call content arg). */
-  content?: string;
-  raw?: string;
-  error?: string;
-};
+export type { RewriteDraft };
 
 export type ToolPairProps = {
   fn: string;
@@ -79,9 +73,6 @@ export function fromCall(call: ToolCall, result?: ChatMessageTool): ToolPairProp
   };
 }
 
-/** Short id for display: last 7 chars, prefixed with `…`. */
-const shortId = (s: string): string => (s.length > 9 ? `…${s.slice(-7)}` : s);
-
 /** One-line signature from top-level scalar args. */
 function signature(args: Record<string, unknown>): string {
   const parts: string[] = [];
@@ -99,22 +90,6 @@ function signature(args: Record<string, unknown>): string {
   return parts.join(" · ");
 }
 
-/** Capture the current `window.getSelection()` if it lives inside `root`. */
-export function getSelectionWithin(
-  root: HTMLElement | null
-): { text: string; x: number; y: number } | null {
-  if (!root) return null;
-  const sel = window.getSelection();
-  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
-  const text = sel.toString().trim();
-  if (!text) return null;
-  const anchor = sel.anchorNode;
-  if (!anchor || !root.contains(anchor)) return null;
-  const rect = sel.getRangeAt(0).getBoundingClientRect();
-  if (!rect.width && !rect.height) return null;
-  return { text, x: rect.right + 6, y: rect.top - 4 };
-}
-
 export function ToolPair({
   fn, args, result, error, pending, onEdit, onEditResult,
   onRewrite, rewriteDraft, onApplyRewrite, onDiscardRewrite,
@@ -126,8 +101,8 @@ export function ToolPair({
   const [rewriteOpen, setRewriteOpen] = useState(false);
   const [rewritePrompt, setRewritePrompt] = useState("");
   const [rewriteSel, setRewriteSel] = useState<string | undefined>(undefined);
-  const [selPill, setSelPill] = useState<{ text: string; x: number; y: number } | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  const selection = useSelectionPill(bodyRef);
 
   const status = error ? "err" : pending ? "pending" : "ok";
   const hasArgs = Object.keys(args).length > 0;
@@ -136,18 +111,6 @@ export function ToolPair({
   // content-type for highlighting; falls back to a generic call signature.
   const { input, contentType } = resolveToolInput(fn, args);
   const inputStr = typeof input === "string" ? input : undefined;
-
-  // Hide the selection pill on outside mousedown / scroll.
-  useEffect(() => {
-    if (!selPill) return;
-    const clear = () => setSelPill(null);
-    window.addEventListener("mousedown", clear, true);
-    window.addEventListener("scroll", clear, true);
-    return () => {
-      window.removeEventListener("mousedown", clear, true);
-      window.removeEventListener("scroll", clear, true);
-    };
-  }, [selPill]);
 
   function openEdit(mode: "args" | "result") {
     setEditText(
@@ -180,7 +143,7 @@ export function ToolPair({
     setRewriteSel(selected);
     setRewriteOpen(true);
     setOpen(true);
-    setSelPill(null);
+    selection.clear();
   }
 
   function sendRewrite() {
@@ -195,77 +158,19 @@ export function ToolPair({
     setRewriteSel(undefined);
   }
 
-  function handleBodyMouseUp(e: React.MouseEvent) {
-    if (!onRewrite || editing != null || rewriteOpen) return;
-    if (e.target instanceof HTMLElement && e.target.closest("button, textarea, input")) {
-      return;
-    }
-    setSelPill(getSelectionWithin(bodyRef.current));
-  }
-
   const rewritePanel = (rewriteOpen || rewriteDraft) && onRewrite && (
-    <div className="tp-slot tp-rewrite">
-      <div className="tp-lbl">
-        <i className="bi bi-stars" /> rewrite with auditor model
-      </div>
-      {rewriteDraft?.status === "pending" ? (
-        <div className="tp-rewrite-spinner">
-          <StatusDot state="pending" /> rewriting…
-        </div>
-      ) : rewriteDraft?.status === "ready" ? (
-        <>
-          <pre className="tp-rewrite-preview">
-            {rewriteDraft.content ?? JSON.stringify(rewriteDraft.args, null, 2)}
-          </pre>
-          <div className="tp-edit-actions">
-            <button
-              type="button"
-              onClick={() => {
-                onApplyRewrite?.(rewriteDraft);
-                discardRewrite();
-              }}
-            >
-              apply & replay
-            </button>
-            <button type="button" onClick={sendRewrite} disabled={!rewritePrompt.trim()}>
-              regenerate
-            </button>
-            <button type="button" onClick={discardRewrite}>discard</button>
-          </div>
-        </>
-      ) : (
-        <>
-          <textarea
-            className="tp-rewrite-input"
-            value={rewritePrompt}
-            onChange={(e) => setRewritePrompt(e.target.value)}
-            placeholder="Tell me how to rewrite this…"
-            rows={2}
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                e.preventDefault();
-                sendRewrite();
-              }
-            }}
-          />
-          {rewriteSel && (
-            <div className="tp-rewrite-sel">
-              selection: <code>{rewriteSel.slice(0, 120)}{rewriteSel.length > 120 ? "…" : ""}</code>
-            </div>
-          )}
-          {rewriteDraft?.status === "error" && (
-            <div className="tp-edit-err">{rewriteDraft.error}</div>
-          )}
-          <div className="tp-edit-actions">
-            <button type="button" onClick={sendRewrite} disabled={!rewritePrompt.trim()}>
-              rewrite
-            </button>
-            <button type="button" onClick={discardRewrite}>cancel</button>
-          </div>
-        </>
-      )}
-    </div>
+    <RewritePanel
+      draft={rewriteDraft}
+      prompt={rewritePrompt}
+      setPrompt={setRewritePrompt}
+      sel={rewriteSel}
+      onSend={sendRewrite}
+      onApply={() => {
+        if (rewriteDraft) onApplyRewrite?.(rewriteDraft);
+        discardRewrite();
+      }}
+      onDiscard={discardRewrite}
+    />
   );
 
   // Head edit shortcut: pencil opens whichever editor is wired (args on the
@@ -321,7 +226,13 @@ export function ToolPair({
         <StatusDot state={status} />
       </div>
       {open && (
-        <div className="tp-body" ref={bodyRef} onMouseUp={handleBodyMouseUp}>
+        <div
+          className="tp-body"
+          ref={bodyRef}
+          onMouseUp={(e) => {
+            if (onRewrite && editing == null && !rewriteOpen) selection.onMouseUp(e);
+          }}
+        >
           {editing != null ? (
             <div className="tp-slot tp-edit">
               <div className="tp-lbl">
@@ -381,17 +292,8 @@ export function ToolPair({
           )}
         </div>
       )}
-      {selPill && onRewrite && (
-        <button
-          type="button"
-          className="tp-sel-pill"
-          style={{ left: selPill.x, top: selPill.y }}
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => openRewrite(selPill.text)}
-          title="rewrite this selection"
-        >
-          <i className="bi bi-stars" />
-        </button>
+      {selection.pill && onRewrite && (
+        <SelectionPill pill={selection.pill} onPick={openRewrite} />
       )}
     </div>
   );

@@ -1,15 +1,6 @@
-import {
-  type JSX,
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { type JSX, forwardRef, useMemo } from "react";
 
-import { bisectTurns, eventsToTurns, isModelEvent } from "../lib/events";
+import { eventsToTurns, isModelEvent } from "../lib/events";
 import {
   useEvents,
   useQueued,
@@ -22,6 +13,7 @@ import { Bubble } from "./Bubble";
 import { ModelEventRow } from "./ModelEventRow";
 import { ShimmerBubble } from "./ShimmerBubble";
 import { SwimlaneColumn } from "./SwimlaneColumn";
+import { useColumnScroll } from "./useColumnScroll";
 
 type Props = {
   branch: BranchId;
@@ -67,94 +59,15 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
   const staged = useStagedForTarget(branch);
   const status = useSession((s) => s.status);
 
-  const scrollRef = useRef<HTMLDivElement>(null);
-  // Follow the live edge: stick to the bottom as new content streams in, but
-  // only while the user is already near the bottom — if they've scrolled up to
-  // read history, don't yank them back down.
-  const stick = useRef(true);
-
-  const onScroll = (): void => {
-    const el = scrollRef.current;
-    if (!el) return;
-    stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-  };
-
-  // Follow the live tail on every render where content could have grown —
-  // including streaming `update`s that mutate the last event in place (so
-  // `events.length` is unchanged). `events` itself is replaced on every
-  // reducer update (assignByRole clones the array), so depending on the
-  // reference catches both new events and partial-output flushes.
-  useLayoutEffect(() => {
-    const el = scrollRef.current;
-    if (el && stick.current) el.scrollTop = el.scrollHeight;
-  });
-
-  // On first mount, pin to bottom regardless.
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, []);
-
   // One Turn per ModelEvent. Auditor has real ToolEvents (`hasToolEvents`),
   // target relies on resolveMessages pairing instead.
   const turns = useMemo(
     () => eventsToTurns(events, role === "auditor"),
     [events, role]
   );
-  const rowEls = useRef(new Map<string, HTMLElement>());
-
-  // Transient highlight: pulse the row a sync-jump landed on, then clear.
-  const [highlightedUuid, setHighlightedUuid] = useState<string | null>(null);
-  const hlTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (hlTimer.current) clearTimeout(hlTimer.current); }, []);
-
-  const centeredTimestamp = (): string | null => {
-    const sc = scrollRef.current;
-    if (!sc) return null;
-    const mid = sc.getBoundingClientRect().top + sc.clientHeight / 2;
-    let best: { d: number; ts: string } | null = null;
-    for (const turn of turns) {
-      const el = rowEls.current.get(turn.ev.uuid!);
-      if (!el) continue;
-      const r = el.getBoundingClientRect();
-      const d = Math.abs((r.top + r.bottom) / 2 - mid);
-      if (best == null || d < best.d) best = { d, ts: turn.ev.timestamp };
-    }
-    return best?.ts ?? null;
-  };
-
-  useImperativeHandle(
-    ref,
-    () => ({
-      scrollToTimestamp(ts) {
-        let i = bisectTurns(turns, ts);
-        while (i >= 0 && !rowEls.current.has(turns[i].ev.uuid!)) i--;
-        const el = i >= 0 ? rowEls.current.get(turns[i].ev.uuid!) : undefined;
-        if (!el) return;
-        stick.current = false;
-        el.scrollIntoView({ block: "center", behavior: "auto" });
-        setHighlightedUuid(turns[i].ev.uuid!);
-        if (hlTimer.current) clearTimeout(hlTimer.current);
-        hlTimer.current = setTimeout(() => setHighlightedUuid(null), 1500);
-      },
-      centeredTimestamp,
-    }),
-    [turns]
+  const { scrollRef, onScroll, rowRef, highlighted } = useColumnScroll(
+    turns, { linked, onSync }, ref
   );
-
-  // Linked-scroll: lockstep — emit on every scroll frame (rAF-coalesced so we
-  // don't thrash on high-frequency wheel events, but no perceptible delay).
-  const syncRaf = useRef<number | null>(null);
-  useEffect(() => () => { if (syncRaf.current) cancelAnimationFrame(syncRaf.current); }, []);
-  const onScrollLinked = (): void => {
-    onScroll();
-    if (!linked || !onSync || syncRaf.current != null) return;
-    syncRaf.current = requestAnimationFrame(() => {
-      syncRaf.current = null;
-      const ts = centeredTimestamp();
-      if (ts) onSync(ts);
-    });
-  };
 
   // Show a shimmer at the column tail in two cases:
   //  1. Running but no pending (streaming) event yet — a generate is expected.
@@ -166,7 +79,7 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
     (status === "paused" && events.length === 0);
 
   return (
-    <div className="column" ref={scrollRef} onScroll={onScrollLinked}>
+    <div className="column" ref={scrollRef} onScroll={onScroll}>
       <div className="column-head">{role}</div>
       {turns.map((turn, i) => (
         <ModelEventRow
@@ -174,11 +87,8 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
           turn={turn}
           turnIndex={i}
           auditor={role === "auditor"}
-          highlighted={highlightedUuid === turn.ev.uuid}
-          rowRef={(el) => {
-            if (el) rowEls.current.set(turn.ev.uuid!, el);
-            else rowEls.current.delete(turn.ev.uuid!);
-          }}
+          highlighted={highlighted === turn.ev.uuid}
+          rowRef={rowRef(turn.ev.uuid!)}
         />
       ))}
       {role === "target" && staged.map((m, i) => (

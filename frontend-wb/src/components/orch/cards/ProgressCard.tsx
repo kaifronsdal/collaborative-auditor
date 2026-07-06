@@ -25,11 +25,9 @@ import type {
   ScanPayload,
 } from "../types";
 
-export type { ScanPayload };
 type SampleRow = SampleRowPayload;
 type ScannerStat = ScanPayload["per_scanner"][string];
-
-export type ProgressPayload = EvalRunPayload | ScanPayload;
+type ProgressPayload = EvalRunPayload | ScanPayload;
 
 type Props = {
   payload: ProgressPayload;
@@ -263,8 +261,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
     <div className="out" data-display-id={displayId}>
       <div className="out-head hstack g8">
         <i
-          className={`bi bi-record-fill fx-dot${payload.finished ? "" : " pending"}`}
-          style={payload.error ? { color: "var(--danger)" } : undefined}
+          className={`bi bi-record-fill fx-dot${payload.error ? " err" : payload.finished ? "" : " pending"}`}
         />
         <span className="out-task">{title}</span>
         <span className="out-meta out-id">{payload.id.slice(0, 8)}</span>
@@ -284,22 +281,14 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
         <span className="stat">
           <b>{payload.done}</b>/{payload.total || "?"}
         </span>
-        {errored > 0 && (
-          <span className="stat err" style={{ color: "var(--danger)" }}>
-            +{errored}
-          </span>
-        )}
-        {payload.elapsed && (
+        {errored > 0 && <span className="stat err">+{errored}</span>}
+        {payload.kind === "eval_run" && payload.elapsed && (
           <>
             <span className="sep">·</span>
             <span className="stat">{payload.elapsed}</span>
           </>
         )}
-        {payload.error && (
-          <span className="stat" style={{ color: "var(--danger)" }}>
-            {errClass(payload.error)}
-          </span>
-        )}
+        {payload.error && <span className="stat err">{errClass(payload.error)}</span>}
       </div>
 
       {hist}
@@ -495,11 +484,7 @@ function ScanRow({
       <span className="fx-bar">
         <i style={{ width: `${pct}%` }} />
       </span>
-      {row.errors > 0 && (
-        <span className="stat err" style={{ color: "var(--danger)" }}>
-          +{row.errors}
-        </span>
-      )}
+      {row.errors > 0 && <span className="stat err">+{row.errors}</span>}
     </div>
   );
 }
