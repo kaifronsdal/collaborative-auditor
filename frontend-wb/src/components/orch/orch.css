@@ -471,8 +471,13 @@ sup.ask-opt-key {
 .gate-receipt > i.bi { color: var(--ok); font-size: 13px; flex-shrink: 0; }
 .gate-receipt.denied > i.bi { color: var(--danger); }
 .gate-receipt-value {
-  margin-left: auto; color: var(--ink); font-weight: 600; flex-shrink: 0;
+  color: var(--ink); font-weight: 600; flex-shrink: 0;
 }
+/* Push the value right only when it's the last thing on the row —
+   ask_human receipts have a trailing .gate-receipt-time whose own
+   margin-left:auto handles the push; two auto-margins split the space
+   and float the value to the middle (0706 review #8 regression). */
+.gate-receipt-value:last-child { margin-left: auto; }
 .gate-receipt-time {
   margin-left: auto; color: var(--ink-faint); font: 10.5px var(--mono);
   flex-shrink: 0;
