@@ -12,6 +12,7 @@
  */
 import type { ChatMessageTool, ToolCall, ToolEvent } from "@tsmono/inspect-common";
 import { resolveToolInput } from "@tsmono/inspect-components/chat/tools";
+import { JSONPanel } from "@tsmono/react/components";
 import { type JSX, useRef, useState } from "react";
 
 import { Chevron, StatusDot } from "./icons";
@@ -259,9 +260,11 @@ export function ToolPair({
                   {hasArgs && (
                     <div className="tp-slot">
                       <div className="tp-lbl">args</div>
-                      <pre data-ct={contentType}>
-                        {inputStr ?? JSON.stringify(args, null, 2)}
-                      </pre>
+                      {inputStr != null ? (
+                        <pre data-ct={contentType}>{inputStr}</pre>
+                      ) : (
+                        <JSONPanel data={args} simple />
+                      )}
                     </div>
                   )}
                   <div className="tp-slot">

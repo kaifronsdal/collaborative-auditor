@@ -1,4 +1,5 @@
 import type { JSX } from "react";
+import { JSONPanel } from "@tsmono/react/components";
 import { Modal } from "@tsmono/react/components/Modal";
 
 type Props = {
@@ -17,7 +18,7 @@ export function RawModal({ value, onClose, title }: Props): JSX.Element {
       bodyClassName="raw-modal"
       padded={false}
     >
-      <pre className="raw-modal-body">{JSON.stringify(value, null, 2)}</pre>
+      <JSONPanel data={value} className="raw-modal-body" />
     </Modal>
   );
 }

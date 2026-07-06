@@ -103,7 +103,7 @@ def short_repr(v: Any) -> str:  # noqa: PLR0915
         if tn == "Model" and mod.startswith("inspect_ai"):
             return _cap(f"Model · {v.name}")
         if tn in _CHAT_TYPES:
-            return _cap(f"{tn} · {_flatten_content(v.content)!r}")
+            return _cap(f"{tn} · {v.text!r}")
         # -- petri -----------------------------------------------------------
         if tn == "History" and hasattr(v, "root"):
             n, d = _tree_shape(v.root)
@@ -233,16 +233,6 @@ def _tree_shape(root: Any) -> tuple[int, int]:
         n += len(frontier)
         frontier = [c for node in frontier for c in getattr(node, "children", ())]
     return n, depth
-
-
-def _flatten_content(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(
-            getattr(c, "text", "") for c in content if getattr(c, "type", "") == "text"
-        )
-    return str(content)
 
 
 def ns_size_estimate(ns: dict[str, str]) -> int:
