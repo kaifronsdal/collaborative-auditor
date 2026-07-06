@@ -29,6 +29,7 @@ from typing import Any, Literal
 import anyio
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 from inspect_ai.model import ChatMessageUser, ModelOutput
 from inspect_petri.target import Step
 from shortuuid import uuid
@@ -126,6 +127,38 @@ def list_sessions() -> list[dict[str, Any]]:
         )
     out.sort(key=lambda e: e["created_at"], reverse=True)
     return out
+
+
+@app.get("/sessions/{session_id}/findings")
+async def list_findings(session_id: str) -> list[dict[str, Any]]:
+    """P0.6: the durable ``findings.jsonl`` for one session, as JSON.
+
+    Reads via the live ``Orchestrator.session_dir`` (findings land under the
+    orchestrator's ``span_id`` dir, not the session-persist dir), so the
+    session is loaded on demand if not already in memory.
+    """
+    session = await _get_or_create(session_id)
+    orch = session.orchestrator
+    if orch is None:
+        return []
+    from workbench.m1.proposals import load_findings
+
+    return [asdict(f) for f in load_findings(orch.session_dir)]
+
+
+@app.get("/sessions/{session_id}/export.md")
+async def export_findings(session_id: str) -> Response:
+    """P1.6: markdown write-up of every signed finding (``text/markdown``)."""
+    session = await _get_or_create(session_id)
+    from workbench.m1.export import export_findings_md
+
+    return Response(
+        content=export_findings_md(session),
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="findings-{session_id}.md"'
+        },
+    )
 
 
 @app.websocket("/ws/{session_id}")

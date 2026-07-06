@@ -211,7 +211,24 @@ export function Sidebar(): JSX.Element {
         ))}
       </div>
 
-      <div className="side-section">Recents</div>
+      <div className="side-section">
+        Recents
+        {sessionId && (
+          // P1.6: markdown write-up of every signed finding for the current
+          // session. Plain <a download> — the endpoint sets Content-Disposition
+          // so the browser saves `findings-{id}.md` without JS.
+          <a
+            className="side-icon-btn"
+            style={{ float: "right" }}
+            href={`/sessions/${sessionId}/export.md`}
+            download
+            title="Export findings as markdown"
+            aria-label="Export findings"
+          >
+            <i className="bi bi-file-earmark-arrow-down" style={{ fontSize: 11 }} />
+          </a>
+        )}
+      </div>
       <div className="side-recents">
         {savedSessions.length === 0 && sessionsList.length === 0 ? (
           <div className="side-empty">No audits yet</div>

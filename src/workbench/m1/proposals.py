@@ -11,9 +11,11 @@ proposal.
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Protocol, cast
 from uuid import uuid4
 
@@ -287,15 +289,23 @@ class CiteProposal(BaseProposal):
 
 @dataclass
 class Finding:
-    """A resolved cite — what the agent holds and the bundle exports.
+    """A resolved cite — what the agent holds, the bundle exports, and one
+    line of ``findings.jsonl`` (P0.6).
 
     ``signed_by=None`` marks a refused cite (deny-as-return); callers test
-    ``if finding.signed_by:`` rather than catching.
+    ``if finding.signed_by:`` rather than catching. ``description`` /
+    ``signed_at`` / ``session_id`` are the report-facing metadata for
+    :func:`~workbench.m1.export.export_findings_md`; ``quotes`` carry
+    ``log`` / ``sample_id`` / ``at`` so each quote resolves to an
+    inspect-view URL.
     """
 
     claim: str
     quotes: list[Quote]
     signed_by: str | None
+    description: str = ""
+    signed_at: str | None = None
+    session_id: str = ""
     id: str = field(default_factory=lambda: uuid4().hex)
 
     def _repr_mimebundle_(
@@ -308,8 +318,56 @@ class Finding:
             "claim": self.claim,
             "quotes": [cast("QuotePayload", vars(q)) for q in self.quotes],
             "signed_by": self.signed_by,
+            "description": self.description,
+            "signed_at": self.signed_at,
+            "session_id": self.session_id,
         }
         return wb_bundle(f"<Finding {self.id[:6]} · {self.claim!r} · {state}>", payload)
+
+
+#: Per-orchestrator durable findings store (P0.6) — one JSON line per signed
+#: ``Finding`` under ``orch.session_dir``. This is the product's primary
+#: output: everything else (event stream, tool results) is derivable, but
+#: parsing findings back out of ``InfoEvent`` bundles is fragile.
+FINDINGS_JSONL = "findings.jsonl"
+
+
+def load_findings(session_dir: str | Path) -> list[Finding]:
+    """Read ``{session_dir}/findings.jsonl`` back as ``Finding`` objects."""
+    p = Path(session_dir) / FINDINGS_JSONL
+    if not p.exists():
+        return []
+    out: list[Finding] = []
+    for line in p.read_text().splitlines():
+        if not line.strip():
+            continue
+        d = json.loads(line)
+        out.append(
+            Finding(
+                claim=d["claim"],
+                quotes=[_as_quote(q) for q in d.get("quotes") or []],
+                signed_by=d.get("signed_by"),
+                description=d.get("description", ""),
+                signed_at=d.get("signed_at"),
+                session_id=d.get("session_id", ""),
+                id=d.get("id") or uuid4().hex,
+            )
+        )
+    return out
+
+
+def _persist_finding(finding: Finding, session_dir: str | Path) -> None:
+    """Append ``finding`` to ``findings.jsonl``, idempotent by ``finding.id``.
+
+    Re-approve (same proposal signed twice, or a save-time replay) must not
+    duplicate the line — the export renders one section per line.
+    """
+    p = Path(session_dir) / FINDINGS_JSONL
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists() and any(f.id == finding.id for f in load_findings(session_dir)):
+        return
+    with p.open("a") as fh:
+        fh.write(json.dumps(asdict(finding)) + "\n")
 
 
 # -- shared cores (called by ``wb.*`` and ``tools.review_*``) -----------------
@@ -349,6 +407,8 @@ async def cite(
     quotes: Sequence[Quote | dict[str, Any]],
     *,
     description: str,
+    session_dir: str | Path | None = None,
+    session_id: str = "",
 ) -> Finding:
     """Propose a finding, block on the human's signature, return it.
 
@@ -357,6 +417,12 @@ async def cite(
     the proposal's ``id`` is its ``display_id`` (stable slot, updates in
     place on resolve); reusing it here would make ``OrchTurn``'s payload-id
     dedup drop the last-expr ``FindingCard``.
+
+    P0.6: on ``signed=True`` the finding is appended to
+    ``{session_dir}/findings.jsonl`` (idempotent by ``finding.id``) so the
+    audit's primary output survives a server restart without parsing the
+    event stream. ``session_dir=None`` (bare ``Workbench(gate)`` in tests)
+    skips the write.
     """
     prop = CiteProposal(
         claim=claim,
@@ -367,4 +433,14 @@ async def cite(
     # ``gate()`` has already called ``prop.resolve(verdict)`` — claim/quotes
     # now reflect any human edits; read the normalized ``prop.verdict``.
     signed_by = (prop.verdict.get("by") or None) if prop.signed else None
-    return Finding(claim=prop.claim, quotes=prop.quotes, signed_by=signed_by)
+    finding = Finding(
+        claim=prop.claim,
+        quotes=prop.quotes,
+        signed_by=signed_by,
+        description=prop.description,
+        signed_at=datetime.now(UTC).isoformat() if signed_by else None,
+        session_id=session_id,
+    )
+    if signed_by and session_dir is not None:
+        _persist_finding(finding, session_dir)
+    return finding

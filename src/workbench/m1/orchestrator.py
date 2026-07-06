@@ -158,7 +158,9 @@ class Orchestrator(StepGated):
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
         self.kernel.shell.user_ns["wb"] = Workbench(
-            self.gate, session_dir=str(self.session_dir)
+            self.gate,
+            session_dir=str(self.session_dir),
+            session_id=session.session_id or "",
         )
         self.kernel.shell.user_ns.update(_seed_analysis_ns())
         self._init_gate()

@@ -101,6 +101,9 @@ export type FindingPayload = {
   claim: string;
   quotes: QuotePayload[];
   signed_by: string | null;
+  description?: string;
+  signed_at?: string | null;
+  session_id?: string;
 };
 
 // -- progress cards -----------------------------------------------------------

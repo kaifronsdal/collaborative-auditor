@@ -16,7 +16,7 @@ from workbench.m1 import proposals
 from workbench.m1.attach import AttachedRun
 from workbench.m1.handles import ScanHandle
 from workbench.m1.plots import Plots
-from workbench.m1.proposals import Finding, Gate, Prompt, Quote
+from workbench.m1.proposals import Finding, Gate, Prompt, Quote, load_findings
 from workbench.m1.read import (
     Excerpt,
     TranscriptRef,
@@ -34,18 +34,26 @@ class Workbench:
     rich repr.
     """
 
-    def __init__(self, gate: Gate, *, session_dir: str | None = None) -> None:
+    def __init__(
+        self,
+        gate: Gate,
+        *,
+        session_dir: str | None = None,
+        session_id: str = "",
+    ) -> None:
         # ``gate`` is the only kernel dependency (``ask_human``/``review_seeds``/
         # ``cite`` await it); holding just the ``Gate`` keeps ``wb`` decoupled
         # from the turn-lifecycle machinery. ``session_dir`` is the ``bash``
         # tool's cwd — threaded to ``attach`` so relative ``log_dir``s resolve
-        # there.
+        # there, and to ``cite``/``findings`` for the durable ``findings.jsonl``
+        # store (P0.6). ``session_id`` is stamped onto each persisted ``Finding``.
         self._gate = gate
         self._session_dir = session_dir
+        self._session_id = session_id
 
     def __repr__(self) -> str:
         return (
-            "<wb · attach ask_human review_seeds cite scan "
+            "<wb · attach ask_human review_seeds cite findings scan "
             "excerpt transcript read_transcript plots>"
         )
 
@@ -83,8 +91,22 @@ class Workbench:
         description: str,
     ) -> Finding:
         """Propose a finding for the human to sign. Always blocks; deny
-        returns an unsigned ``Finding`` (no exception)."""
-        return await proposals.cite(self._gate, claim, quotes, description=description)
+        returns an unsigned ``Finding`` (no exception). Signed findings are
+        appended to ``{session_dir}/findings.jsonl`` (P0.6)."""
+        return await proposals.cite(
+            self._gate,
+            claim,
+            quotes,
+            description=description,
+            session_dir=self._session_dir,
+            session_id=self._session_id,
+        )
+
+    def findings(self) -> list[Finding]:
+        """Every signed ``Finding`` persisted so far (reads ``findings.jsonl``)."""
+        if self._session_dir is None:
+            return []
+        return load_findings(self._session_dir)
 
     #: Plot helpers over ``px.*`` — ``link``/``annotate_top``/``paired_slope``/
     #: ``replicate_grid``/``survival`` (M1-PLOTTING.md). The ``workbench``

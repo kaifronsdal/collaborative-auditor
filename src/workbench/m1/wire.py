@@ -171,6 +171,9 @@ class FindingPayload(TypedDict, total=False):
     claim: str
     quotes: list[QuotePayload]
     signed_by: str | None
+    description: str
+    signed_at: str | None
+    session_id: str
 
 
 # -- progress cards -----------------------------------------------------------

@@ -174,7 +174,12 @@ def make_tools(orch: Orchestrator) -> list[Tool]:
             """
             with _turn(orch):
                 finding = await proposals.cite(
-                    orch.gate, claim, quotes, description=description
+                    orch.gate,
+                    claim,
+                    quotes,
+                    description=description,
+                    session_dir=orch.session_dir,
+                    session_id=orch.session.session_id or "",
                 )
             return json.dumps({
                 "signed": finding.signed_by is not None,

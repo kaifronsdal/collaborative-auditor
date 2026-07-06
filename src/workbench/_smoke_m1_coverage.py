@@ -32,7 +32,7 @@ from workbench.m1._fixtures import (
 from workbench.m1.attach import AttachedRun
 from workbench.m1.kernel import OrchestratorKernel
 from workbench.m1.orchestrator import _prewarm
-from workbench.m1.proposals import Finding, Gate
+from workbench.m1.proposals import FINDINGS_JSONL, Finding, Gate
 from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
 from workbench.m1.wire import STREAM_MIME, WB_MIME
@@ -249,11 +249,11 @@ async def _check_acp_and_handlers(read_dir: str) -> None:
 # -- 6. wb.cite (in-cell) ----------------------------------------------------
 
 
-async def _check_wb_cite(k: OrchestratorKernel, gate: Gate) -> None:
+async def _check_wb_cite(k: OrchestratorKernel, gate: Gate, session_dir: str) -> None:
     turn = asyncio.create_task(
         k.run_turn(
             "f = await wb.cite('leaks prompt', "
-            "[{'sample_id':'s0','at':3,'role':'target','text':'…'}], "
+            "[{'sample_id':'s0','at':3,'role':'target','text':'…','log':'x.eval'}], "
             "description='see t3')\nf"
         )
     )
@@ -268,11 +268,24 @@ async def _check_wb_cite(k: OrchestratorKernel, gate: Gate) -> None:
     f = k.shell.user_ns["f"]
     assert isinstance(f, Finding) and f.signed_by == "tester", f
     assert f.quotes[0].sample_id == "s0"
+    assert f.description == "see t3" and f.signed_at, f
     # last-expr Finding card emitted separately from the proposal
     assert any(
         ev.bundle.get(WB_MIME, {}).get("kind") == "finding" for ev in r.outputs
     ), "no Finding card in outputs"
-    print("✓ wb.cite (in-cell): gate → signed Finding in user_ns")
+    # P0.6: signed finding persisted to findings.jsonl; wb.findings() reads it back
+    jsonl = os.path.join(session_dir, FINDINGS_JSONL)
+    assert os.path.exists(jsonl), f"{jsonl} not written on approve"
+    wb = k.shell.user_ns["wb"]
+    stored = wb.findings()
+    assert len(stored) == 1, f"expected 1 finding, got {len(stored)}"
+    assert stored[0].id == f.id and stored[0].claim == "leaks prompt", stored[0]
+    assert stored[0].quotes[0].log == "x.eval"
+    # idempotent: a second approve on the same id must not duplicate the line
+    from workbench.m1.proposals import _persist_finding
+    _persist_finding(f, session_dir)
+    assert len(wb.findings()) == 1, "re-persist duplicated a line"
+    print("✓ wb.cite (in-cell): gate → signed Finding in user_ns + findings.jsonl")
 
 
 # -- 7. plots.py -------------------------------------------------------------
@@ -324,11 +337,13 @@ async def _amain() -> None:
 
     await _check_bash_background()
 
+    cite_dir = tempfile.mkdtemp(prefix="wb-cov-cite-")
     with OrchestratorKernel() as k:
         gate = Gate()
-        k.shell.user_ns["wb"] = Workbench(gate)
+        k.shell.user_ns["wb"] = Workbench(gate, session_dir=cite_dir, session_id="cov")
         await _check_read(k, log_file)
-        await _check_wb_cite(k, gate)
+        await _check_wb_cite(k, gate, cite_dir)
+    shutil.rmtree(cite_dir, ignore_errors=True)
 
     await _check_wb_display_error()
     await _check_attach_empty_dir()
