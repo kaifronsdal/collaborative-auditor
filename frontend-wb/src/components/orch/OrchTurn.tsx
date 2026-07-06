@@ -330,14 +330,14 @@ function CellShell(p: CellShellProps): JSX.Element {
   return (
     <div className={cls}>
       <div
-        className="cc-head"
+        className="cc-head hstack g8"
         {...(onToggle && { role: "button", tabIndex: 0, onClick: onToggle })}
       >
         {p.icon ?? <i className={`bi bi-chevron-${open ? "down" : "right"} cc-chev`} />}
         {open ? (
-          <span className="cc-gist cc-lang">{p.lang}</span>
+          <span className="cc-gist cc-lang truncate">{p.lang}</span>
         ) : (
-          <code className="cc-gist">{p.gist}</code>
+          <code className="cc-gist truncate">{p.gist}</code>
         )}
         {p.errChip && (
           <span className="cell-status err" title={p.errChip}>
@@ -549,16 +549,16 @@ function FileReceipt({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Element
       : resultText(ev.result).length;
   return (
     <div
-      className={`file-receipt${ev.error ? " err" : ""}`}
+      className={`file-receipt hstack g8${ev.error ? " err" : ""}`}
       title={ev.error ? ev.error.message : resultText(ev.result)}
     >
       <i className="bi bi-file-earmark" />
       <span className="fr-verb">{verb}</span>
-      <code className="fr-path">{path}</code>
+      <code className="fr-path truncate">{path}</code>
       {ev.pending ? (
         <i className="bi bi-record-fill fx-dot pending" />
       ) : ev.error ? (
-        <span className="fr-err">{ev.error.message}</span>
+        <span className="fr-err truncate">{ev.error.message}</span>
       ) : (
         <span className="fr-meta">{bytes} bytes</span>
       )}
@@ -572,7 +572,7 @@ function FileReceipt({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Element
  *  `kernel.gate → _emit` mounts among the outputs below. */
 function ReviewReceipt({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Element {
   return (
-    <div className="file-receipt tool-receipt">
+    <div className="file-receipt tool-receipt hstack g8">
       <i className="bi bi-question-circle" />
       <span className="fr-verb">{ev.function}</span>
       {ev.pending && <i className="bi bi-record-fill fx-dot pending" />}
@@ -584,7 +584,7 @@ function ReviewReceipt({ ev, turn }: { ev: ToolEvent; turn: number }): JSX.Eleme
 function Traceback({ err }: { err: ToolCallError }): JSX.Element {
   return (
     <div className="out traceback">
-      <div className="out-head">
+      <div className="out-head hstack g8">
         <i className="bi bi-exclamation-triangle" />
         <span className="out-meta">{err.type}</span>
       </div>

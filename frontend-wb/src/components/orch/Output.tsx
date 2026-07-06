@@ -181,7 +181,7 @@ function TracebackCard({ id, wb }: { id: string; wb: TracebackPayload }): JSX.El
   const at = last && last.file.replace(/^<ipython-input-[^>]*>$/, "cell");
   return (
     <div className="out traceback" data-display-id={id}>
-      <div className="out-head">
+      <div className="out-head hstack g8">
         <i className="bi bi-exclamation-triangle" />
         <span className="out-kind">{ename}</span>
       </div>
@@ -190,7 +190,7 @@ function TracebackCard({ id, wb }: { id: string; wb: TracebackPayload }): JSX.El
           <div className="tb-body">
             <div className="tb-evalue">{evalue}</div>
             <div className="tb-at-row">
-              <code className="tb-at">
+              <code className="tb-at truncate">
                 at {at}:{last.lineno} · {last.line}
               </code>
               <button
@@ -298,7 +298,7 @@ function HtmlOutput({ html }: { html: string }): JSX.Element {
         if (gd.data?.some((t) => t.customdata)) {
           host.insertAdjacentHTML(
             "beforeend",
-            '<div class="fx-more plotly-hint">click a point to open in auditor</div>'
+            '<div class="fx-more hstack g8 plotly-hint">click a point to open in auditor</div>'
           );
         }
       }
@@ -335,7 +335,7 @@ function WbFallback({ id, payload }: { id: string; payload: WbPayload }): JSX.El
     GATED.has(payload.kind) && "pending" in payload && payload.pending !== false;
   return (
     <div className={`out${gated ? " gated" : ""}`} data-display-id={id}>
-      <div className="out-head">
+      <div className="out-head hstack g8">
         <span className="out-kind">{payload.kind}</span>
         {gated && <span className="gate-tag">proposed</span>}
       </div>

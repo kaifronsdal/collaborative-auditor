@@ -10,12 +10,19 @@
   --gate-text: var(--accent-text);
 }
 
+/* -- utilities -- */
+.hstack { display: flex; align-items: center; }
+.g4  { gap: 4px; }
+.g6  { gap: 6px; }
+.g8  { gap: 8px; }
+.g10 { gap: 10px; }
+.g12 { gap: 12px; }
+.g14 { gap: 14px; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
 /* ---- column shell ---- */
 .orch-col-wrap { border-left: 1px solid var(--border); position: relative; }
 .orch-col { padding-bottom: 24px; }
-.orch-head {
-  display: flex; align-items: center; gap: 10px;
-}
 /* `.column-head` (styles.css) forces uppercase 11px on the whole header; keep
    that only on `.head-title` and let the meta chunks read as lowercase mono. */
 .orch-head .head-left {
@@ -45,11 +52,8 @@
   box-shadow: 0 6px 20px hsl(0 0% 0% / .12);
   font: 12px var(--sans); text-transform: none; letter-spacing: 0; font-weight: 400;
 }
-.hgp-row { display: flex; align-items: center; gap: 6px; padding: 4px 6px; }
-.hgp-desc {
-  flex: 1; min-width: 0; color: var(--ink-mid); cursor: pointer;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.hgp-row { padding: 4px 6px; }
+.hgp-desc { flex: 1; color: var(--ink-mid); cursor: pointer; }
 .hgp-desc:hover { color: var(--accent-text); }
 .hgp-btn {
   border: 1px solid var(--border); border-radius: var(--r-sm);
@@ -91,10 +95,7 @@
 .orch-col-wrap .primary-send:disabled { opacity: .35; background: var(--ink-faint); }
 /* §11 interrupt-and-send: same circle, danger tint = "kills running cell". */
 .orch-col-wrap .primary-interrupt { background: var(--danger); }
-.orch-col-wrap .composer-hint {
-  flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.orch-col-wrap .composer-hint { flex: 1; }
 /* §4: floating `↓ N new` pill. Lives inside `.composer` (position:relative)
    and pins above it via `top: -40px`, so it hovers just above the composer
    regardless of textarea auto-grow height. */
@@ -161,7 +162,6 @@
 }
 /* background/detached cells are labeled by `.cc-bg-chip`, no left rail */
 .code-cell .cc-head {
-  display: flex; align-items: center; gap: 8px;
   min-height: 30px; padding: 5px 12px; box-sizing: border-box;
   font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   border-bottom: 1px solid var(--border);
@@ -187,11 +187,7 @@
   font-size: 10px; color: var(--ink-faint); flex-shrink: 0; width: 10px;
   position: relative; top: 0.5px;
 }
-.cc-gist {
-  flex: 1; min-width: 0;
-  font: 11.5px var(--mono); color: var(--ink-faint);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.cc-gist { flex: 1; font: 11.5px var(--mono); color: var(--ink-faint); }
 .cc-gist.cc-lang { font: 11px var(--sans); }
 /* §7: identifiers in the collapsed gist that are live in `user_ns`. Native
    `title=` tooltip carries `type · repr`. */
@@ -248,7 +244,6 @@
    `.tool-receipt` (ask_human/review_*) reuses the same shell — the actual
    UI is the GateCard DisplayEvent that `kernel.gate` mounts below it. */
 .file-receipt {
-  display: flex; align-items: center; gap: 8px;
   padding: 6px 12px; margin-bottom: 8px;
   background: var(--bg-100); border: 1px solid var(--bg-200);
   border-radius: var(--r-md);
@@ -259,16 +254,12 @@
 .file-receipt .fr-verb { color: var(--ink-mid); flex-shrink: 0; }
 .file-receipt .fr-path {
   font: 11.5px var(--mono); color: var(--ink); background: none; padding: 0;
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .file-receipt .fr-meta {
   font: 10.5px var(--mono); color: var(--ink-faint); flex-shrink: 0;
 }
 .file-receipt .fr-meta::before { content: "· "; }
-.file-receipt .fr-err {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  color: var(--danger); font: 11px var(--mono);
-}
+.file-receipt .fr-err { color: var(--danger); font: 11px var(--mono); }
 .file-receipt.err { border-color: hsl(0 40% 82%); }
 .file-receipt .turn-no {
   margin-left: auto; font: 10.5px var(--mono); color: var(--ink-faint);
@@ -295,7 +286,6 @@
 }
 .out + .out { margin-top: 8px; }
 .out-head {
-  display: flex; align-items: center; gap: 8px;
   padding: 7px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   border-bottom: 1px solid var(--border);
 }
@@ -360,15 +350,10 @@
 .gate-body { padding: 12px 14px 4px; }
 /* prompt: single-row variant when the question is short (≤50 chars) and
    options ≤3 — icon · question · buttons · `other…` all on one line. */
-.gate-body.gate-inline {
-  display: flex; align-items: center; gap: 12px;
-  padding: 12px 14px;
-}
+.gate-body.gate-inline { padding: 12px 14px; }
 .gate-inline > i.bi { color: var(--ink-dim); font-size: 15px; flex-shrink: 0; }
 .gate-inline > .gate-q {
-  flex: 1; min-width: 0;
-  font: 14px/1.45 var(--sans); color: var(--ink);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1; font: 14px/1.45 var(--sans); color: var(--ink);
 }
 .gate-inline > .gate-btn { flex-shrink: 0; }
 .out.gated .gate-inline .ask-other {
@@ -398,9 +383,7 @@
 /* action footer — right-aligned; primary filled, ghost outlined-purple,
    danger outlined-red. */
 .gate-actions {
-  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
-  flex-wrap: wrap;
-  padding: 8px 14px 12px;
+  justify-content: flex-end; flex-wrap: wrap; padding: 8px 14px 12px;
 }
 .gate-btn {
   border: 1px solid var(--border); border-radius: var(--r-sm);
@@ -457,15 +440,11 @@ sup.ask-opt-key {
 /* GateCard: inline peek list (first N seeds/quotes before the modal). */
 .gate-peek { margin: 10px 0 2px; }
 .gp-row {
-  display: flex; align-items: center; gap: 10px;
   padding: 5px 0 5px 25px; cursor: pointer;
   font: 12.5px var(--sans); color: var(--ink-mid);
 }
 .gp-row:hover { color: var(--ink); }
-.gp-text {
-  flex: 1; min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.gp-text { flex: 1; }
 .gp-struck { text-decoration: line-through; opacity: .5; }
 .gate-peek.cite-quotes .cite-q { padding: 6px 0 6px 25px; border: none; }
 .gate-peek.cite-quotes .cite-q:hover { background: none; }
@@ -481,16 +460,12 @@ sup.ask-opt-key {
    separators; flex gap does the spacing. */
 .out.answered { border: none; background: none; overflow: visible; }
 .gate-receipt {
-  display: flex; align-items: center; gap: 10px;
   padding: 7px 12px; border-radius: var(--r-md);
   background: var(--bg-100); border: 1px solid var(--bg-200);
   font: 12px var(--sans); color: var(--ink-dim);
 }
 .gate-receipt > i.bi { color: var(--ok); font-size: 13px; flex-shrink: 0; }
 .gate-receipt.denied > i.bi { color: var(--danger); }
-.gate-receipt-label {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 .gate-receipt-value { color: var(--ink); font-weight: 600; flex-shrink: 0; }
 .gate-receipt-time {
   margin-left: auto; color: var(--ink-faint); font: 10.5px var(--mono);
@@ -499,7 +474,6 @@ sup.ask-opt-key {
 
 /* GateCard `<Modal>` body: full checklist with search + bulk toggles. */
 .grm-tools {
-  display: flex; align-items: center; gap: 10px;
   padding: 10px 16px; border-bottom: 1px solid var(--border);
   font: 12px var(--sans); color: var(--ink-dim);
 }
@@ -583,10 +557,7 @@ sup.ask-opt-key {
   margin-bottom: 6px; word-break: break-word;
 }
 .tb-at-row { display: flex; align-items: baseline; gap: 12px; }
-.tb-at {
-  flex: 1; min-width: 0; font: 11px var(--mono); color: var(--ink-dim);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.tb-at { flex: 1; font: 11px var(--mono); color: var(--ink-dim); }
 .tb-toggle {
   flex-shrink: 0;
   border: none; background: none; padding: 0; cursor: pointer;
@@ -600,8 +571,7 @@ sup.ask-opt-key {
 
 /* path + counters line under a run/grade cell head */
 .fx-out {
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  font: 11.5px var(--mono); color: var(--ink-dim);
+  flex-wrap: wrap; font: 11.5px var(--mono); color: var(--ink-dim);
   padding: 0 12px var(--sp-2);
 }
 .fx-out .arrow { color: var(--ink-faint); font-size: 11px; }
@@ -630,7 +600,6 @@ sup.ask-opt-key {
 .row-dot-stopped { color: var(--ink-faint); }
 
 .fx-more {
-  display: flex; align-items: center; gap: 8px;
   padding: 7px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   border-top: 1px dashed var(--border);
 }
@@ -640,9 +609,7 @@ sup.ask-opt-key {
 /* AuditRow inside run_audits */
 .audit-rows { border-top: 1px solid var(--border); }
 .audit-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 7px 14px; font-size: 12.5px;
-  border-bottom: 1px solid var(--bg-200);
+  padding: 7px 14px; font-size: 12.5px; border-bottom: 1px solid var(--bg-200);
 }
 .audit-row:last-child { border-bottom: none; }
 .audit-row:hover { background: var(--bg-100); }
@@ -650,10 +617,7 @@ sup.ask-opt-key {
   font: 11.5px var(--mono); color: var(--ink-mid);
   flex-shrink: 0; width: 64px;
 }
-.audit-row .ar-seed {
-  flex: 1; min-width: 0; color: var(--ink-mid);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.audit-row .ar-seed { flex: 1; color: var(--ink-mid); }
 .ar-status {
   font: 10.5px var(--sans); padding: 1px 8px; border-radius: var(--r-pill);
   flex-shrink: 0; min-width: 60px; text-align: center;
@@ -672,9 +636,7 @@ sup.ask-opt-key {
 
 /* run_eval rows */
 .eval-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 6px 14px; font-size: 12px;
-  border-bottom: 1px solid var(--bg-200);
+  padding: 6px 14px; font-size: 12px; border-bottom: 1px solid var(--bg-200);
 }
 .eval-row:last-child { border-bottom: none; }
 .eval-row:hover { background: var(--bg-100); }
@@ -692,10 +654,7 @@ sup.ask-opt-key {
   flex: 0 1 auto; margin-left: auto; max-width: 55%; text-align: right;
 }
 .eval-row .ar-status { font: 10px var(--sans); padding: 1px 7px; border-radius: var(--r-pill); }
-.eval-row .ar-seed {
-  flex: 1; min-width: 0; color: var(--ink-mid);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.eval-row .ar-seed { flex: 1; color: var(--ink-mid); }
 .eval-row, .audit-row { cursor: pointer; }
 .ar-turns {
   font: 10.5px var(--mono); color: var(--accent-text); flex-shrink: 0;
@@ -814,8 +773,7 @@ sup.ask-opt-key {
 /* Chip row + search sit between `.fx-out` and the row list; `.pc-cols` is
    the clickable column header. Both gated on `total > 8`. */
 .pc-filter {
-  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
-  padding: 6px 14px 4px; border-top: 1px solid var(--border);
+  flex-wrap: wrap; padding: 6px 14px 4px; border-top: 1px solid var(--border);
   font: 11.5px var(--sans); color: var(--ink-faint);
 }
 .pc-chip { cursor: pointer; padding: 2px 4px; color: var(--ink-dim); }
@@ -837,7 +795,6 @@ sup.ask-opt-key {
 }
 .pc-search:focus { border-color: var(--accent); }
 .pc-cols {
-  display: flex; align-items: center; gap: 14px;
   padding: 4px 14px 6px 32px;  /* left aligns "id" over the id column (dot is at 14) */
   font: 10px var(--mono); color: var(--ink-faint);
   text-transform: uppercase; letter-spacing: .05em;
@@ -858,15 +815,11 @@ sup.ask-opt-key {
 /* ---- ScanCard (§C) ---- */
 .scan-rows { border-top: 1px solid var(--border); }
 .scan-row {
-  display: flex; align-items: center; gap: 10px;
   padding: 6px 14px; font: 11.5px var(--mono); color: var(--ink-dim);
   border-bottom: 1px solid var(--bg-200);
 }
 .scan-row:last-child { border-bottom: none; }
-.scan-name {
-  flex: 1; min-width: 0; font: 12px var(--sans); color: var(--ink-mid);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.scan-name { flex: 1; font: 12px var(--sans); color: var(--ink-mid); }
 .scan-found b { color: var(--accent-text); font-weight: 600; }
 .scan-row .fx-bar { width: 60px; }
 .scan-df { border-top: 1px solid var(--border); padding: 8px 14px; overflow-x: auto; }
@@ -895,17 +848,13 @@ sup.ask-opt-key {
 .rd-anchor { background: var(--gate-dim); }
 .rd-empty { color: var(--ink-faint); font-style: italic; }
 .rd-foot {
-  display: flex; align-items: center; gap: 8px;
   padding: 7px 14px; font: var(--fs-xs) var(--sans); color: var(--ink-faint);
   border-top: 1px dashed var(--border);
 }
-.rd-foot .iv-url { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.rd-foot .iv-url { flex: 1; }
 .rd-foot a { color: var(--accent-text); cursor: pointer; flex-shrink: 0; }
 .rd-foot a + a { margin-left: 8px; }
 /* modal variant: larger font, no per-msg max-height */
 .rd-body-lg .rd-msg { font: 13.5px/1.55 var(--sans); padding: 12px 18px 12px 68px; }
 .rd-body-lg .rd-role { left: 18px; top: 14px; }
-.iv-url {
-  font: 10.5px var(--mono); color: var(--ink-faint);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
+.iv-url { font: 10.5px var(--mono); color: var(--ink-faint); }

@@ -272,11 +272,11 @@ export function OrchColumn(): JSX.Element {
             </button>
           </div>
           {cellRunning && hasText ? (
-            <span className="composer-hint composer-hint-running">
+            <span className="composer-hint composer-hint-running truncate">
               or queue · <a onClick={sendNow}>send now (background)</a>
             </span>
           ) : (
-            <span className="composer-hint">
+            <span className="composer-hint truncate">
               enter to send · shift+enter newline
             </span>
           )}
@@ -331,7 +331,7 @@ function OrchHeader({
   const approvable = gates.filter((g) => g.kind === "run_proposal");
 
   return (
-    <div className="column-head orch-head">
+    <div className="column-head orch-head hstack g10">
       <span className="head-left">
         <span className="head-title" title={meta}>orchestrator</span>
         {gates.length > 0 ? (
@@ -352,8 +352,8 @@ function OrchHeader({
             {hover && (
               <div className="head-gate-pop">
                 {gates.map((g) => (
-                  <div key={g.id} className="hgp-row">
-                    <span className="hgp-desc" onClick={() => onJump(g.id)}>
+                  <div key={g.id} className="hgp-row hstack g6">
+                    <span className="hgp-desc truncate" onClick={() => onJump(g.id)}>
                       {g.desc}
                     </span>
                     {g.kind === "run_proposal" && (

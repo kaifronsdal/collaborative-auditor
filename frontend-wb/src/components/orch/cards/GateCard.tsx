@@ -111,7 +111,7 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
           }}
         />
       )}
-      <div className="gate-actions">
+      <div className="gate-actions hstack g8">
         <button
           type="button"
           className="gate-btn danger"
@@ -184,9 +184,9 @@ function variant(p: RunProposalPayload | CiteProposalPayload, struck: Set<string
       kept: surviving.length,
       rows: p.seeds.map((s) => ({ key: s.id, text: s.text })),
       peekCap: 3,
-      peekClass: "gp-row",
+      peekClass: "gp-row hstack g10",
       peekRow: (r) => (
-        <span className="gp-text" title={r.text}>{ellipsis(r.text, 80)}</span>
+        <span className="gp-text truncate" title={r.text}>{ellipsis(r.text, 80)}</span>
       ),
       approveLabel: `approve ${surviving.length * p.n_per_seed}`,
       buildVerdict: () => ({ surviving: surviving.map((s) => s.id) }),
@@ -246,9 +246,9 @@ function Receipt({ payload: p, displayId }: { payload: GatePayload; displayId: s
   }
   return (
     <div className="out answered" data-display-id={displayId}>
-      <div className={`gate-receipt${ok ? "" : " denied"}`}>
+      <div className={`gate-receipt hstack g10${ok ? "" : " denied"}`}>
         <i className={`bi ${ok ? "bi-check-lg" : "bi-x-lg"}`} />
-        <span className="gate-receipt-label">{label}</span>
+        <span className="gate-receipt-label truncate">{label}</span>
         <b className="gate-receipt-value">{value}</b>
         {time && <span className="gate-receipt-time">{time}</span>}
       </div>
@@ -338,9 +338,9 @@ function PromptBody({
   if (inline) {
     return (
       <div ref={rootRef} tabIndex={-1}>
-        <div className="gate-body gate-inline">
+        <div className="gate-body gate-inline hstack g12">
           <i className="bi bi-question-circle" />
-          <span className="gate-q">{payload.question}</span>
+          <span className="gate-q truncate">{payload.question}</span>
           {buttons}
           {!ownOpen && (
             <a className="ask-other" onClick={() => setOwnOpen(true)}>
@@ -348,7 +348,7 @@ function PromptBody({
             </a>
           )}
         </div>
-        {ownOpen && <div className="gate-actions gate-actions-own">{ownRow}</div>}
+        {ownOpen && <div className="gate-actions gate-actions-own hstack g8">{ownRow}</div>}
       </div>
     );
   }
@@ -363,9 +363,9 @@ function PromptBody({
       </div>
       {opts.length > 0 ? (
         <>
-          <div className="gate-actions">{buttons}</div>
+          <div className="gate-actions hstack g8">{buttons}</div>
           {ownOpen ? (
-            <div className="gate-actions gate-actions-own">{ownRow}</div>
+            <div className="gate-actions gate-actions-own hstack g8">{ownRow}</div>
           ) : (
             <a className="ask-other" onClick={() => setOwnOpen(true)}>
               other…
@@ -373,7 +373,7 @@ function PromptBody({
           )}
         </>
       ) : (
-        <div className="gate-actions gate-actions-own">{ownRow}</div>
+        <div className="gate-actions gate-actions-own hstack g8">{ownRow}</div>
       )}
     </div>
   );
@@ -454,7 +454,7 @@ function ReviewModal({
         </>
       }
     >
-      <div className="grm-tools">
+      <div className="grm-tools hstack g10">
         <input
           data-autofocus
           className="grm-search"

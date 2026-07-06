@@ -131,7 +131,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
           </div>
         )}
         {payload.location && (
-          <div className="fx-more">
+          <div className="fx-more hstack g8">
             <span className="fx-more-note" title={payload.location}>
               → {basename(payload.location)}
             </span>
@@ -204,7 +204,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
       const cols: SortCol[] = ["id", "score", "status", "turns"];
       controls = (
         <>
-          <div className="pc-filter">
+          <div className="pc-filter hstack g4">
             {chips.map((c, i) => (
               <a
                 key={c}
@@ -227,7 +227,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
               onChange={(e) => setTextFilter(e.target.value)}
             />
           </div>
-          <div className="pc-cols">
+          <div className="pc-cols hstack g14">
             {cols.map((c) => (
               <a key={c} className="pc-col" onClick={() => clickSort(c)}>
                 {c}
@@ -259,7 +259,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
 
   return (
     <div className="out" data-display-id={displayId}>
-      <div className="out-head">
+      <div className="out-head hstack g8">
         <i
           className={`bi bi-record-fill fx-dot${payload.finished ? "" : " pending"}`}
           style={payload.error ? { color: "var(--danger)" } : undefined}
@@ -269,7 +269,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
       </div>
       {payload.description && <div className="gate-desc">{payload.description}</div>}
 
-      <div className="fx-out">
+      <div className="fx-out hstack g6">
         {payload.finished && !payload.error ? (
           <span className="stat ok">
             <i className="bi bi-check2" /> done
@@ -308,7 +308,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
       )}
 
       {(hidden > 0 || (showAll && allRows.length > ROW_CAP)) && (
-        <div className="fx-more">
+        <div className="fx-more hstack g8">
           <a onClick={() => setShowAll((v) => !v)}>
             {showAll ? (
               <>
@@ -360,7 +360,7 @@ function RunRow({
 
   return (
     <div
-      className={audit ? "audit-row" : "eval-row"}
+      className={`${audit ? "audit-row" : "eval-row"} hstack g10`}
       role="button"
       tabIndex={0}
       title={row.status === "running" ? "watch live in auditor" : "open transcript in auditor"}
@@ -384,7 +384,7 @@ function RunRow({
       >
         {row.id}
       </a>
-      <span className="ar-seed">{row.input}</span>
+      <span className="ar-seed truncate">{row.input}</span>
       {audit ? (
         <span className="ar-grade" title={Object.keys(row.scores).join(", ")}>
           <b>{fmtScore(row.scores)}</b>
@@ -487,8 +487,8 @@ function ScanRow({
 }): JSX.Element {
   const pct = total > 0 ? Math.min(100, (row.scans / total) * 100) : 0;
   return (
-    <div className="scan-row">
-      <span className="scan-name">{row.name}</span>
+    <div className="scan-row hstack g10">
+      <span className="scan-name truncate">{row.name}</span>
       <span className="scan-found">
         <b>{row.results}</b> found
       </span>

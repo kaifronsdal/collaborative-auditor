@@ -77,7 +77,7 @@ export default function ReaderCard({ payload, displayId, send }: Props): JSX.Ele
 
   return (
     <div className="out reader" data-display-id={displayId}>
-      <div className="out-head">
+      <div className="out-head hstack g8">
         <i className={`bi ${isExcerpt ? "bi-quote" : "bi-file-text"}`} />
         <span className="out-meta">
           {payload.sample_id}
@@ -89,8 +89,8 @@ export default function ReaderCard({ payload, displayId, send }: Props): JSX.Ele
 
       {msgList(false)}
 
-      <div className="rd-foot">
-        <span className="iv-url" title={payload.log}>
+      <div className="rd-foot hstack g8">
+        <span className="iv-url truncate" title={payload.log}>
           {basename(payload.log)}
         </span>
         {msgs.length > 0 && (

@@ -27,7 +27,7 @@ export default function FindingCard({ payload, send }: Props): JSX.Element {
     : undefined;
   return (
     <div className="out finding">
-      <div className="out-head">
+      <div className="out-head hstack g8">
         <i
           className="bi bi-bookmark-check-fill"
           style={{ color: payload.signed_by ? "var(--ok)" : "var(--ink-faint)" }}
