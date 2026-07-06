@@ -22,14 +22,18 @@ mid-turn loses everything since the last M0 branch settle.
 **Fix:** FastAPI lifespan `yield; for s in sessions.values():
 s.save()` + `signal.SIGTERM` handler. **S**.
 
-### P0.3 `~/.workbench` is local ephemeral disk
-Both `STORE_DIR` and `session_dir` default to `~/.workbench/` —
-wiped on AISI VM rebuild (7-day TTL). Sessions, findings, `.eval`
-logs, seeds files all gone.
-**Fix:** default to `os.environ.get("WORKBENCH_STORE",
-f"/mnt/s3/users/{AISI_PLATFORM_USER}/workbench")`; make
-`orchestrator.py:140` honour the same `--store-dir` flag
-`server.py:801` already accepts (currently ignored). **S**.
+### P0.3 `--store-dir` not honoured everywhere
+`server.py:801` accepts `--store-dir` (and `STORE_DIR` global at
+:55), but `orchestrator.py:140` hardcodes
+`~/.workbench/sessions/{span_id}` for `session_dir` — so eval
+logs, seeds, and `write_file` artifacts land somewhere the flag
+doesn't control. A user pointing `--store-dir` at durable storage
+(S3 mount, NFS, whatever their setup uses) still loses half the
+session's files.
+**Fix:** `Orchestrator.__init__` reads `session_dir` root from
+the same setting; add `WORKBENCH_STORE` env var as the single
+source both `server.py` and `orchestrator.py` read. Deployment
+docs say where to point it for durability. **S**.
 
 ### P0.4 Pending gate → dangling tool_call on restart
 `messages_for_save()` includes the assistant message whose
@@ -82,14 +86,21 @@ into `ORCHESTRATOR_SYSTEM_PROMPT` at `start_orchestrator` time
 placeholders). Also thread as `wb.DEFAULTS` in the kernel
 namespace so `python` cells can read them. **M**.
 
-### P1.3 No backend model-registry endpoint
-`presets.ts:8-14` is 5 hardcoded ids. The frontend can't
-enumerate installed inspect providers or predep codenames.
-**Fix:** `GET /models` → `inspect_ai.model.registry` provider
-list + per-provider `list_models()` where available + the
-`model_palette.py` MODEL_ORDER as a fallback. `ModelPicker`
-combobox already accepts free-text; this just populates
-suggestions. **M**.
+### P1.3 Model suggestions — per-provider where available
+`presets.ts:8-14` is 5 hardcoded ids. `ModelPicker` already
+accepts free-text (any `provider/model` string) — that's the
+primary path and always works, including for vLLM/sglang/local
+endpoints where enumeration is impossible. Suggestions are a
+convenience layer on top.
+**Fix:** `GET /models` returns whatever it can cheaply enumerate:
+inspect's registered provider names (so `provider/` autocompletes)
++ per-provider `list_models()` where the SDK offers it (Anthropic
+`client.models.list()`, OpenAI `client.models.list()`, Google
+genai `list_models()`) + `model_palette.py` `MODEL_ORDER` as a
+static fallback. Providers without a list API (`vllm/`, `hf/`,
+`sglang/`, project predep proxies) just return the provider prefix
+— user types the rest. Cache 5min. **M** (mostly optional — P1.1's
+free-text picker for the orchestrator is the actual blocker).
 
 ### P1.4 `model_args` unreachable from wire
 `base_url` / `api_key` / provider kwargs are plumbed
@@ -113,15 +124,7 @@ The whole point of an audit is the write-up. Currently: nothing.
 inspect-view URLs) + a run summary table. Button in the sidebar.
 Depends on P0.6. **M**.
 
-### P1.7 Cost / token meter
-Zero visibility into spend. A single `review_seeds` approval can
-launch $50 of audits.
-**Fix:** `ModelUsage` is already in every `ModelEvent`; sum per
-turn/per-run in `orchestrator.view()` + `AttachedRun._poll` reads
-`header.stats.model_usage`. Frontend: a `$N.NN · Mtok` chip in
-the header + per-`eval_run` card. **M**.
-
-### P1.8 Settings panel
+### P1.7 Settings panel
 None exists. At minimum: store-dir, default models per role,
 seed-review threshold (`>$5 or >20 samples` — currently baked
 into the prompt), auto-approve toggle.
@@ -160,9 +163,9 @@ settings at `start_orchestrator` time. **M**.
 - **Keyboard shortcuts / ⌘K palette** — j/k in run-card rows,
   ⌘Enter approve, Esc deny, ⌘K → "launch eval / jump to run /
   new session". **M**.
-- **Dry-run cost estimate** — `review_seeds` card shows
-  `~{n_seeds × max_turns × est_tokens_per_turn × $/tok}` before
-  approve. **S**.
+- **Token usage per run** — `AttachedRun._poll` already reads
+  `header.stats.model_usage`; surface `Ntok` on the eval_run card
+  (informational, not a $ estimate). **S**.
 - **Pin/bookmark transcripts** — star a sample row → floats to a
   "pinned" rail; the raw material for findings. **M**.
 - **`wb.scan` / `generate_rewrite` GenerateConfig** — currently
@@ -193,7 +196,7 @@ settings at `start_orchestrator` time. **M**.
 
 ## Settings inventory (what a settings panel would expose)
 
-Per P1.8, grouped:
+Per P1.7, grouped:
 
 **Global** (`~/.workbench/settings.json`):
 store-dir root · default orchestrator/auditor/target/judge
@@ -218,9 +221,9 @@ timeouts, `INSPECT_STREAM_FLUSH_INTERVAL`.
    PR, ~½ day. Unblocks trusting the tool with real work.
 2. **P0.6 + P1.6** (findings store + export) — the product's
    output. ~1 day.
-3. **P1.1 + P1.2 + P1.3 + P1.4 + P1.5** (model config) — one PR,
-   `ModelPicker` everywhere + `/models` endpoint + open
-   `GenerateConfig`. ~1.5 days.
-4. **P1.7 + P1.8** (cost meter + settings panel). ~1 day.
+3. **P1.1 + P1.2 + P1.4 + P1.5** (model config) — one PR,
+   `ModelPicker` everywhere + open `GenerateConfig` + model_args.
+   P1.3 (suggestions endpoint) optional follow-up. ~1 day.
+4. **P1.7** (settings panel). ~1 day.
 5. **P0.4 + P0.5** (gate/subprocess restart edge cases). ~½ day.
 6. P2 batch as capacity allows.
