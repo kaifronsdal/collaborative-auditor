@@ -41,7 +41,20 @@ aisitools = { git = "ssh://git@github.com/AI-Safety-Institute/aisi-inspect-tools
 
 [dependency-groups]
 dev = [
+    "anyio>=4.8.0",
     "playwright>=1.60.0",
+    "pytest>=8.3.0",
+    "pytest-xdist>=3.6.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Default selection excludes subprocess-heavy and real-API tests; run those
+# explicitly with ``-m slow`` / ``-m real_model`` (or ``-m ''`` for everything).
+addopts = "-m 'not slow and not real_model'"
+markers = [
+    "slow: subprocess / multi-second (hybrid, coverage)",
+    "real_model: hits the real Anthropic API (e2e)",
 ]
 
 [tool.uv]
