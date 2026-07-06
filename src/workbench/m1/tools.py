@@ -24,6 +24,7 @@ import asyncio
 import difflib
 import json
 import os
+import re
 from asyncio.subprocess import PIPE, STDOUT
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -50,6 +51,12 @@ if TYPE_CHECKING:
     from workbench.m1.orchestrator import Orchestrator
 
 _MODEL_TEXT_CAP = 4000
+
+#: Strip ANSI CSI/SGR sequences from subprocess output. ``TERM=dumb`` in the
+#: bash env should suppress them at the source (rich, click, aisitools all
+#: honour it), but anything that hard-codes escapes still leaks through — and
+#: we render to HTML, not a terminal, so escapes are always noise here.
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
 
 @contextmanager
@@ -198,7 +205,7 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
         """Read ``proc.stdout`` to EOF, routing each line to stream or card."""
         assert proc.stdout is not None
         while raw := await proc.stdout.readline():
-            line = raw.decode(errors="replace")
+            line = _ANSI_RE.sub("", raw.decode(errors="replace"))
             if line.startswith('{"wb":'):
                 try:
                     _card(json.loads(line), seen)
@@ -249,7 +256,12 @@ def make_tools(orch: "Orchestrator") -> list[Tool]:
                 # ``src/workbench/m1/`` — not here where the model wrote it.
                 # ``_audit_task.py`` reads this to re-anchor relative paths.
                 "WORKBENCH_SESSION_DIR": str(session_dir),
+                # Kill ANSI at the source — rich/click/aisitools all honour
+                # ``TERM=dumb``; ``NO_COLOR`` alone doesn't (04b regression).
+                # ``_ANSI_RE`` in ``_pump`` strips anything that slips through.
+                "TERM": "dumb",
                 "NO_COLOR": "1",
+                "FORCE_COLOR": "0",
                 "INSPECT_HOOKS_QUIET": "1",
             }
             with _turn(orch):
