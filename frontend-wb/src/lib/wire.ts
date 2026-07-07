@@ -240,6 +240,8 @@ export type Up =
   | { t: "approve"; display_id: string; verdict?: unknown }
   | { t: "detach_cell" }
   | { t: "cancel_cell"; turn: number }
+  // P2 bg-job panel: SIGTERM one tracked ``bash`` subprocess by its bg-id.
+  | { t: "cancel_bg"; id: string }
   | { t: "rewind"; turn: number }
   // P2: drop `user_ns` (re-seed `wb`/analysis names), keep `state.messages`.
   | { t: "restart_kernel" }

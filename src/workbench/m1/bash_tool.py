@@ -313,6 +313,10 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
                     "started_at": time.time(),
                     "background": background,
                 }
+                # ``bg_jobs`` only ships in ``{t:"state"}`` pushes — kick one so
+                # the JobsPanel picks up the new proc without waiting for the
+                # next gate/status change.
+                orch._broadcast_status_soon()  # noqa: SLF001
                 plain: list[str] = []
                 seen: set[str] = set()
 

@@ -8,8 +8,8 @@
  * stream: `bg_done` / `eval_run` payloads in `turns[].outputs` update the
  * dot without waiting for the next full-state push.
  *
- * There is no `{t:"cancel_bg"}` handler yet, so bash rows are read-only
- * (pid + elapsed). Eval rows jump to their `ProgressCard` (whose
+ * Bash rows offer `{t:"cancel_bg", id}` (SIGTERM the process group) via the
+ * × button; eval rows jump to their `ProgressCard` (whose
  * `data-display-id` == `eval_id`) where per-sample `stop_sample` lives.
  */
 import { useMemo, useState, type JSX } from "react";
@@ -61,10 +61,12 @@ export function JobsChip({
   jobs,
   turns,
   onJump,
+  onCancel,
 }: {
   jobs: readonly BgJob[];
   turns: readonly OrchTurnData[];
   onJump: (displayId: string) => void;
+  onCancel: (id: string) => void;
 }): JSX.Element | null {
   const [hover, setHover] = useState(false);
   // Snapshot `now` per hover-open so every row's elapsed is consistent.
@@ -95,7 +97,13 @@ export function JobsChip({
       {hover && (
         <div className="head-jobs-pop">
           {live.map((j) => (
-            <JobRow key={`${j.kind}-${j.id}`} job={j} now={now} onJump={onJump} />
+            <JobRow
+              key={`${j.kind}-${j.id}`}
+              job={j}
+              now={now}
+              onJump={onJump}
+              onCancel={onCancel}
+            />
           ))}
         </div>
       )}
@@ -107,14 +115,17 @@ function JobRow({
   job,
   now,
   onJump,
+  onCancel,
 }: {
   job: BgJob;
   now: number;
   onJump: (displayId: string) => void;
+  onCancel: (id: string) => void;
 }): JSX.Element {
   // Eval rows jump to the run card; bash rows have no stable card until
   // `bg_done` (fresh uuid), so they're inert.
   const jumpable = job.kind === "eval";
+  const cancellable = job.kind === "bash" && job.status === "running";
   const title =
     job.kind === "bash"
       ? `pid ${job.pid ?? "?"} · ${job.cmd_or_task}`
@@ -133,6 +144,18 @@ function JobRow({
       <span className="hjp-elapsed">
         {job.status === "running" ? elapsed(job.started_at, now) : job.status}
       </span>
+      {cancellable && (
+        <button
+          className="hjp-cancel"
+          title="SIGTERM this subprocess"
+          onClick={(e) => {
+            e.stopPropagation();
+            onCancel(job.id);
+          }}
+        >
+          <i className="bi bi-x-lg" />
+        </button>
+      )}
     </div>
   );
 }

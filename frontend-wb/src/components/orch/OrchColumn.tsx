@@ -364,7 +364,12 @@ function OrchHeader({
         <span className={`ctx-gauge ctx-${ctxLevel}`} title={ctxTitle}>
           {ctxPct}%
         </span>
-        <JobsChip jobs={jobs} turns={turns} onJump={onJump} />
+        <JobsChip
+          jobs={jobs}
+          turns={turns}
+          onJump={onJump}
+          onCancel={(id) => send({ t: "cancel_bg", id })}
+        />
         {gates.length > 0 ? (
           <span
             className="head-gate-wrap"

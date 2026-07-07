@@ -617,6 +617,7 @@ UNLOCKED = {
     "approve",
     "detach_cell",
     "cancel_cell",
+    "cancel_bg",
     "interrupt_and_send",
     "stop_sample",
     "scan_branch",
@@ -1020,6 +1021,9 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
         case "cancel_cell":
             if session.orchestrator is not None:
                 session.orchestrator.kernel.cancel(int(data["turn"]))
+        case "cancel_bg":
+            if session.orchestrator is not None:
+                session.orchestrator.cancel_bg(str(data["id"]))
         case "interrupt_and_send":
             await _h_interrupt_and_send(session, data)
         case "rewind":

@@ -437,6 +437,25 @@ class Orchestrator(StepGated):
                     os.killpg(proc.pid, signal.SIGTERM)
         self._bash_procs.clear()
 
+    def cancel_bg(self, job_id: str) -> bool:
+        """Kill one tracked ``bash`` subprocess (``{t:"cancel_bg"}`` handler).
+
+        Same ``killpg`` mechanics as ``close()``. Returns ``False`` if the id
+        is unknown or the process had already exited. The ``_pump`` task's
+        ``proc.wait()`` returns naturally, which pops the entry and emits the
+        usual ``bg_done`` card — so the model sees ``[bg-{id} done · exit N]``.
+        """
+        entry = self._bash_procs.get(job_id)
+        if entry is None:
+            return False
+        proc = entry["proc"]
+        if proc.returncode is not None:
+            return False
+        with suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGTERM)
+        self._broadcast_status_soon()
+        return True
+
     def _initial_messages(self) -> list[ChatMessage]:
         if self._resume_messages is not None:
             dirs = ", ".join(self.run_log_dirs) or "(none)"
