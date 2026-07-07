@@ -60,6 +60,17 @@ async def _amain() -> None:
         session.session_id = "t"
         d = tmpdir / "t"
 
+        # ---- P1.2: wb.DEFAULTS in user_ns; audit_defaults threaded ----------
+        wb = orch.kernel.shell.user_ns["wb"]
+        assert isinstance(wb.DEFAULTS, dict) and "target" in wb.DEFAULTS, wb.DEFAULTS
+        assert orch.audit_defaults == wb.DEFAULTS, (wb.DEFAULTS, orch.audit_defaults)
+        assert "max_turns" in wb.DEFAULTS and "auditor" in wb.DEFAULTS
+        # system prompt was interpolated with concrete defaults (no {target}
+        # placeholder survives); mockllm doesn't read it, but resume does.
+        assert "{target}" not in orch.system_prompt
+        assert wb.DEFAULTS["target"] in orch.system_prompt
+        print(f"✓ P1.2: wb.DEFAULTS = {sorted(wb.DEFAULTS)} in user_ns; prompt interpolated")
+
         # ---- turn 1: display/update/print/last-expr → InfoEvents ---------------
         orch.step()
         await settle()

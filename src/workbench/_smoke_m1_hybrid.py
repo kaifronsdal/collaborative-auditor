@@ -133,6 +133,7 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
         gate=Gate(),
         span_id=span,
         session_dir=session_dir,
+        session=SimpleNamespace(session_id=""),
         record_turn=lambda tid: None,
     )
     (bash, read_file, write_file, edit_file, ask_human, review_seeds, review_finding) = (

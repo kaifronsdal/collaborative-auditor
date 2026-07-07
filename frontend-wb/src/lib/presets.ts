@@ -1,11 +1,14 @@
 /**
- * UI presets for the StartView (M0). Hardcoded model list and example seeds;
- * a real model registry / template library is M1.
+ * UI presets for the StartView. The model list is fetched from `GET /models`
+ * (P1.3 — providers + per-provider suggestions from inspect's registry and
+ * model-data YAML) and falls back to a small hardcoded set if the fetch
+ * fails. `MODELS` and `PROVIDERS` are `let` bindings — importers get the
+ * live binding, so `ModelPicker` reading `MODELS` after the fetch resolves
+ * sees the full list without any subscription plumbing.
  */
 
-/** Models offered in the auditor/target pickers. Full `provider/model` ids as
- *  required by the backend's `get_model()` call. */
-export const MODELS: string[] = [
+/** Hardcoded fallback if `GET /models` is unavailable. */
+const FALLBACK_MODELS: string[] = [
   "anthropic/claude-opus-4-8",
   "anthropic/claude-sonnet-4-6",
   "anthropic/claude-haiku-4-5-20251001",
@@ -13,8 +16,49 @@ export const MODELS: string[] = [
   "google/gemini-3.1-pro",
 ];
 
+/** Models offered in the pickers. Full `provider/model` ids as required by
+ *  the backend's `get_model()` call. Populated by `loadModels()` on module
+ *  load; until then, the fallback list. */
+export let MODELS: string[] = FALLBACK_MODELS;
+
+/** Every registered inspect `modelapi` provider (built-in + entry-point
+ *  extensions). Gateway/local providers (`vllm/`, `sglang/`, …) appear here
+ *  with no suggestions — the picker's free-text path handles them. */
+export let PROVIDERS: string[] = [];
+
+/** Provider order for the flattened suggestion list — first-party labs up
+ *  top, everything else appended in server order. */
+const PROVIDER_ORDER = ["anthropic", "openai", "google", "grok", "mistral"];
+
+/** Fetch `GET /models` and populate `MODELS`/`PROVIDERS`. Idempotent;
+ *  called once at module load and swallows errors (fallback stays). */
+export async function loadModels(): Promise<void> {
+  try {
+    const r = await fetch("/models");
+    if (!r.ok) return;
+    const data = (await r.json()) as {
+      providers: string[];
+      suggestions: Record<string, string[]>;
+    };
+    PROVIDERS = data.providers ?? [];
+    const sugg = data.suggestions ?? {};
+    const rest = Object.keys(sugg).filter((p) => !PROVIDER_ORDER.includes(p));
+    const flat: string[] = [];
+    for (const p of [...PROVIDER_ORDER, ...rest]) {
+      for (const m of sugg[p] ?? []) if (!flat.includes(m)) flat.push(m);
+    }
+    if (flat.length > 0) MODELS = flat;
+  } catch {
+    // keep FALLBACK_MODELS
+  }
+}
+
+void loadModels();
+
 export const DEFAULT_AUDITOR = "anthropic/claude-sonnet-4-6";
 export const DEFAULT_TARGET = "anthropic/claude-haiku-4-5-20251001";
+export const DEFAULT_JUDGE = "anthropic/claude-sonnet-4-6";
+export const DEFAULT_ORCHESTRATOR = "anthropic/claude-opus-4-8";
 
 /** Short display label for a model id.
  *  Strips the `provider/` prefix and the `-YYYYMMDD` date suffix. */

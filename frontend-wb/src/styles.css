@@ -333,6 +333,19 @@ body {
   color: var(--ink-mid); background: var(--bg-100); outline: none; resize: vertical;
 }
 .picker-cfg-textarea:focus { border-color: var(--accent); }
+.picker-cfg-textarea.invalid { border-color: var(--danger); }
+.picker-cfg-err { color: var(--danger); font-size: 10px; }
+
+/* P1.2 — audit-defaults expander on OrchStartCard. */
+.start-defaults {
+  margin-top: 8px; border-top: 1px solid var(--border); padding-top: 8px;
+}
+.start-defaults-body {
+  padding: 8px 4px 4px; display: flex; flex-direction: column; gap: 8px;
+}
+.start-defaults-pickers {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
 .picker-more-toggle {
   border: none; background: none; cursor: pointer;
   font-size: 11px; color: var(--link); padding: 2px 0; margin-top: 2px;

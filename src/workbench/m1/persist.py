@@ -109,6 +109,9 @@ def save_orchestrator(orch: Orchestrator, session: Session, d: Path) -> None:
         metadata={
             "model": orch.model_name,
             "system_prompt": orch.system_prompt,
+            "model_args": orch.model_args,
+            "generate_config": orch.generate_config,
+            "audit_defaults": orch.audit_defaults,
             "span_id": orch.span_id,
             "run_log_dirs": run_log_dirs,
             "rewound_uuids": rewound_uuids,
@@ -162,6 +165,9 @@ def load_orchestrator(session: Session, d: Path) -> dict[str, Any]:
     return {
         "model": md["model"],
         "system_prompt": md.get("system_prompt") or "",
+        "model_args": md.get("model_args") or None,
+        "generate_config": md.get("generate_config") or None,
+        "audit_defaults": md.get("audit_defaults") or None,
         "span_id": span_id,
         "resume_messages": list(sample.messages),
         "run_log_dirs": list(md.get("run_log_dirs") or []),

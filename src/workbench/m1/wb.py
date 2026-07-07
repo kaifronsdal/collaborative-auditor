@@ -50,11 +50,16 @@ class Workbench:
         self._gate = gate
         self._session_dir = session_dir
         self._session_id = session_id
+        #: P1.2 — audit-role defaults from ``OrchStartCard`` (target/auditor/
+        #: judge/max_turns/…). Populated by ``Orchestrator.__init__``; the
+        #: same values are interpolated into the system prompt. Cells read
+        #: e.g. ``wb.DEFAULTS["target"]`` when composing ``bash("inspect eval …")``.
+        self.DEFAULTS: dict[str, Any] = {}
 
     def __repr__(self) -> str:
         return (
             "<wb · attach ask_human review_seeds cite findings scan "
-            "excerpt transcript read_transcript plots>"
+            "excerpt transcript read_transcript plots DEFAULTS>"
         )
 
     def attach(self, log_dir: str) -> AttachedRun:

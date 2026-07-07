@@ -103,6 +103,68 @@ async def _get_or_create(session_id: str) -> Session:
     return sess
 
 
+#: Map ``read_model_info()`` org prefixes to inspect provider names where
+#: they differ (P1.3). Most first-party orgs already match; ``gdm`` is the
+#: YAML's Google key on some inspect versions.
+_ORG_TO_PROVIDER = {"gdm": "google"}
+
+
+@app.get("/models")
+def list_models() -> dict[str, Any]:
+    """P1.3: provider list + per-provider model-id suggestions, all offline.
+
+    ``providers`` is every registered ``modelapi`` (built-in + entry-point
+    extensions like ``narwhal``). ``suggestions`` merges our curated
+    ``MODEL_ORDER`` (flagship-first) with inspect's hand-maintained
+    ``read_model_info`` YAML, filtered to ids whose ``provider/`` prefix is a
+    real registered provider — so every suggestion is a valid ``get_model()``
+    argument. Gateway/local providers (``vllm/`` etc.) get no suggestions;
+    the picker's free-text path covers them.
+    """
+    from inspect_ai._util.entrypoints import ensure_entry_points
+    from inspect_ai._util.registry import registry_find, registry_unqualified_name
+
+    from workbench.m1.model_palette import MODEL_ORDER
+
+    ensure_entry_points()
+    providers = sorted(
+        {
+            registry_unqualified_name(i)
+            for i in registry_find(lambda i: i.type == "modelapi")
+        }
+        - {"none"}
+    )
+    provider_set = set(providers)
+
+    suggestions: dict[str, list[str]] = {}
+
+    def _add(model_id: str) -> None:
+        org, _, name = model_id.partition("/")
+        if not name:
+            return
+        prov = _ORG_TO_PROVIDER.get(org, org)
+        if prov not in provider_set:
+            return
+        full = f"{prov}/{name}" if prov != org else model_id
+        bucket = suggestions.setdefault(prov, [])
+        if full not in bucket:
+            bucket.append(full)
+
+    for ids in MODEL_ORDER.values():
+        for m in ids:
+            _add(m)
+    # inspect's private model-data YAML — fail soft to MODEL_ORDER only.
+    try:
+        from inspect_ai.model._model_data.model_data import read_model_info
+
+        for m in read_model_info():
+            _add(m)
+    except Exception:  # noqa: BLE001
+        logger.debug("read_model_info unavailable; suggestions = MODEL_ORDER only")
+
+    return {"providers": providers, "suggestions": suggestions}
+
+
 @app.get("/sessions")
 def list_sessions() -> list[dict[str, Any]]:
     """Sidebar "Recents": one entry per persisted session under `STORE_DIR`."""
@@ -535,6 +597,8 @@ async def _h_start(session: Session, data: dict) -> None:
         max_turns=int(raw_max_turns) if raw_max_turns is not None else None,
         auditor_config=data.get("auditor_config") or None,
         target_config=data.get("target_config") or None,
+        auditor_model_args=data.get("auditor_model_args") or None,
+        target_model_args=data.get("target_model_args") or None,
     )
     # the branch registered its span ids in `session.span_role`;
     # `_register_and_spawn` re-broadcasts `state` so clients learn
@@ -672,7 +736,11 @@ async def _h_start_orchestrator(session: Session, data: dict) -> None:
         )
         return
     await session.start_orchestrator(
-        model=data["model"], system_prompt=data.get("system_prompt")
+        model=data["model"],
+        system_prompt=data.get("system_prompt"),
+        generate_config=data.get("config") or None,
+        model_args=data.get("model_args") or None,
+        audit_defaults=data.get("audit_defaults") or None,
     )
 
 

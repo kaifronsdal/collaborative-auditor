@@ -115,6 +115,21 @@ export type Down =
   | { t: "rewound"; v: number; span: string; from_uuid: string }
   | { t: "error"; v: number; message: string };
 
+/** P1.2 — per-session defaults for the subprocess audit roles. Interpolated
+ *  into the orchestrator's system prompt (so it sees concrete `provider/model`
+ *  ids, not `{target}` placeholders) and exposed as `wb.DEFAULTS` in the
+ *  kernel namespace. */
+export type AuditDefaults = {
+  target: string;
+  auditor: string;
+  judge: string;
+  target_config?: Record<string, unknown>;
+  auditor_config?: Record<string, unknown>;
+  judge_config?: Record<string, unknown>;
+  max_turns?: number;
+  judge_dimensions?: string;
+};
+
 export type Up =
   | {
       t: "start";
@@ -124,6 +139,8 @@ export type Up =
       max_turns?: number;
       auditor_config?: Record<string, unknown>;
       target_config?: Record<string, unknown>;
+      auditor_model_args?: Record<string, unknown>;
+      target_model_args?: Record<string, unknown>;
     }
   // `target`: branch id, "orch" for the orchestrator, or omitted → `current`.
   | { t: "step"; target?: string }
@@ -175,7 +192,17 @@ export type Up =
   | { t: "export"; branch: BranchId; path: string }
   | { t: "import"; path: string; sample_id?: string }
   // -- M1 orchestrator (M1-NOTEBOOK.md) --
-  | { t: "start_orchestrator"; model: string; system_prompt?: string }
+  | {
+      t: "start_orchestrator";
+      model: string;
+      system_prompt?: string;
+      /** P1.1/P1.5: open `GenerateConfig` dict for the orchestrator model. */
+      config?: Record<string, unknown>;
+      /** P1.4: provider kwargs (`base_url`, `api_key`, …) for `get_model`. */
+      model_args?: Record<string, unknown>;
+      /** P1.2: audit-role defaults → system-prompt interpolation + `wb.DEFAULTS`. */
+      audit_defaults?: AuditDefaults;
+    }
   | { t: "orch_send"; text: string }
   | { t: "approve"; display_id: string; verdict?: unknown }
   | { t: "detach_cell" }

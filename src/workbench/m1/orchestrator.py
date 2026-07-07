@@ -43,6 +43,7 @@ from inspect_ai.model import (
     ChatMessage,
     ChatMessageSystem,
     ChatMessageUser,
+    GenerateConfig,
     Model,
     execute_tools,
     get_model,
@@ -56,7 +57,7 @@ from shortuuid import uuid
 from workbench import config
 from workbench.m1.kernel import OrchestratorKernel
 from workbench.m1.plots import install_template
-from workbench.m1.prompt import ORCHESTRATOR_SYSTEM_PROMPT
+from workbench.m1.prompt import FALLBACK_AUDIT_DEFAULTS, build_system_prompt
 from workbench.m1.proposals import Gate
 from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
@@ -114,6 +115,8 @@ class Orchestrator(StepGated):
         model: str,
         system_prompt: str | None = None,
         model_args: dict[str, Any] | None = None,
+        generate_config: dict[str, Any] | None = None,
+        audit_defaults: dict[str, Any] | None = None,
         max_turns: int = 10_000,
         resume_messages: list[ChatMessage] | None = None,
         span_id: str | None = None,
@@ -122,8 +125,21 @@ class Orchestrator(StepGated):
         self.session = session
         self.model_name = model
         self.model_args = model_args or {}
+        #: P1.1/P1.5 — open ``GenerateConfig`` dict from the orchestrator
+        #: ``ModelPicker`` (reasoning_effort, temperature, or any other key
+        #: ``GenerateConfig`` accepts). ``**``'d into ``GenerateConfig`` at
+        #: ``model.generate`` time so unknown keys surface as a construction
+        #: error rather than silently vanishing.
+        self.generate_config = generate_config or {}
+        #: P1.2 — per-session audit-role defaults (target/auditor/judge/
+        #: max_turns/judge_dimensions + optional per-role ``*_config``).
+        #: Interpolated into the system prompt so the LLM sees concrete ids,
+        #: and exposed as ``wb.DEFAULTS`` in ``user_ns`` for ``python`` cells.
+        self.audit_defaults = {**FALLBACK_AUDIT_DEFAULTS, **(audit_defaults or {})}
         self.system_prompt = (
-            ORCHESTRATOR_SYSTEM_PROMPT if system_prompt is None else system_prompt
+            build_system_prompt(self.audit_defaults)
+            if system_prompt is None
+            else system_prompt
         )
         self.max_turns = max_turns
         #: Persistence (M1.3): pre-save chat history to prepend on resume,
@@ -157,11 +173,13 @@ class Orchestrator(StepGated):
         self.kernel = OrchestratorKernel(
             extra_ns={"SESSION": session}, on_display=self._on_display
         )
-        self.kernel.shell.user_ns["wb"] = Workbench(
+        wb = Workbench(
             self.gate,
             session_dir=str(self.session_dir),
             session_id=session.session_id or "",
         )
+        wb.DEFAULTS = dict(self.audit_defaults)
+        self.kernel.shell.user_ns["wb"] = wb
         self.kernel.shell.user_ns.update(_seed_analysis_ns())
         self._init_gate()
         self._status: Status = "idle"
@@ -448,6 +466,7 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
     """The M1 orchestrator's agent loop — ``generate → execute_tools`` gated
     per turn, with human-queued messages drained before each generate."""
     tools = [python_tool(orch), *make_tools(orch)]
+    gen_config = GenerateConfig(**orch.generate_config)
 
     @agent
     def _factory() -> Agent:
@@ -466,7 +485,7 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
                 # still caught by ``run()``'s outer ``except Exception``.
                 try:
                     state.output = await model.generate(
-                        input=state.messages, tools=tools
+                        input=state.messages, tools=tools, config=gen_config
                     )
                 except Exception as exc:
                     logger.exception("orchestrator turn %d failed", turn)

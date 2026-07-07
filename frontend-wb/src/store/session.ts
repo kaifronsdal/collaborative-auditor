@@ -202,6 +202,8 @@ export type SessionState = {
     target_model: string;
     auditor_config?: Partial<GenerateConfigDict>;
     target_config?: Partial<GenerateConfigDict>;
+    auditor_model_args?: Record<string, unknown>;
+    target_model_args?: Record<string, unknown>;
   }) => void;
   /** Update the sidebar's editable next-audit config. */
   setNextConfig: (patch: Partial<NextConfig>) => void;
@@ -737,6 +739,12 @@ export const useSession = create<SessionState>((set, get) => ({
         : {}),
       ...(params.target_config && Object.keys(params.target_config).length > 0
         ? { target_config: params.target_config as Record<string, unknown> }
+        : {}),
+      ...(params.auditor_model_args
+        ? { auditor_model_args: params.auditor_model_args }
+        : {}),
+      ...(params.target_model_args
+        ? { target_model_args: params.target_model_args }
         : {}),
     });
   },

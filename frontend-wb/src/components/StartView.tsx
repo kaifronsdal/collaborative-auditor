@@ -1,10 +1,18 @@
 import type { JSX } from "react";
 import { useEffect, useRef, useState } from "react";
 
-import { DEFAULT_AUDITOR, MODELS, SEED_PRESETS, modelLabel } from "../lib/presets";
+import {
+  DEFAULT_AUDITOR,
+  DEFAULT_JUDGE,
+  DEFAULT_ORCHESTRATOR,
+  DEFAULT_TARGET,
+  SEED_PRESETS,
+} from "../lib/presets";
+import type { AuditDefaults } from "../lib/wire";
 import { useSession } from "../store/session";
 import { ModelPicker, readStoredConfig } from "./ModelPicker";
-import type { GenerateConfigDict } from "./ModelPicker";
+import type { GenerateConfigDict, ModelArgs } from "./ModelPicker";
+import { Chevron } from "./icons";
 
 /**
  * Empty-state landing screen. Mode selection lives in the sidebar's MODES
@@ -19,10 +27,39 @@ export function StartView(): JSX.Element {
   );
 }
 
-/** M1 orchestrator launcher — system-prompt override + model dropdown + Start. */
+/** One `ModelPicker`'s state bundle — model id + open `GenerateConfig` +
+ *  provider `model_args`. Collapses the six local `useState`s per picker
+ *  into one; `set` is used as `setX((p) => ({...p, ...}))`. */
+type PickerState = { model: string; config: GenerateConfigDict; args: ModelArgs };
+
+function usePicker(role: string, initial: string): [PickerState, (p: PickerState) => void] {
+  const [s, set] = useState<PickerState>(() => ({
+    model: initial,
+    config: readStoredConfig(role),
+    args: {},
+  }));
+  return [s, set];
+}
+
+/** Drop empty-object values so the wire payload stays compact. */
+function nonEmpty<T extends object>(v: T): T | undefined {
+  return Object.keys(v).length > 0 ? v : undefined;
+}
+
+/** M1 orchestrator launcher (P1.1 + P1.2 + P1.4): a full `ModelPicker` for
+ *  the orchestrator model (with `GenerateConfig` + `model_args`), an
+ *  expandable "Audit defaults" section with three more pickers for the
+ *  subprocess audit roles + `max_turns`/`judge_dimensions`, and the optional
+ *  system-prompt override. */
 function OrchStartCard(): JSX.Element {
   const send = useSession((s) => s.send);
-  const [model, setModel] = useState(DEFAULT_AUDITOR);
+  const [orch, setOrch] = usePicker("orchestrator", DEFAULT_ORCHESTRATOR);
+  const [target, setTarget] = usePicker("target", DEFAULT_TARGET);
+  const [auditor, setAuditor] = usePicker("auditor", DEFAULT_AUDITOR);
+  const [judge, setJudge] = usePicker("judge", DEFAULT_JUDGE);
+  const [maxTurns, setMaxTurns] = useState<number>(30);
+  const [judgeDims, setJudgeDims] = useState("");
+  const [defaultsOpen, setDefaultsOpen] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState("");
   const [isStarting, setIsStarting] = useState(false);
 
@@ -32,9 +69,22 @@ function OrchStartCard(): JSX.Element {
     // Clear the new-audit shield so the incoming `state` broadcast (which
     // carries `orchestrator != null`) flips App into DeskView.
     useSession.setState({ pendingNewAudit: false });
+    const audit_defaults: AuditDefaults = {
+      target: target.model,
+      auditor: auditor.model,
+      judge: judge.model,
+      target_config: nonEmpty(target.config),
+      auditor_config: nonEmpty(auditor.config),
+      judge_config: nonEmpty(judge.config),
+      max_turns: maxTurns,
+      ...(judgeDims.trim() ? { judge_dimensions: judgeDims.trim() } : {}),
+    };
     send({
       t: "start_orchestrator",
-      model,
+      model: orch.model,
+      config: nonEmpty(orch.config),
+      model_args: nonEmpty(orch.args),
+      audit_defaults,
       ...(systemPrompt.trim() ? { system_prompt: systemPrompt.trim() } : {}),
     });
   }
@@ -49,24 +99,77 @@ function OrchStartCard(): JSX.Element {
         onChange={(e) => setSystemPrompt(e.target.value)}
       />
       <div className="start-controls">
-        {/* The sidebar entry already says "Orchestrator" — no role chip. */}
-        <label className="mp-field">
-          <span className="mp-role">model</span>
-          <select
-            className="mp-select"
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-          >
-            {MODELS.map((m) => (
-              <option key={m} value={m}>
-                {modelLabel(m)}
-              </option>
-            ))}
-          </select>
-        </label>
+        <ModelPicker
+          role="orchestrator"
+          value={orch.model}
+          config={orch.config}
+          modelArgs={orch.args}
+          onChange={(m, cfg, args) => setOrch({ model: m, config: cfg, args })}
+        />
         <button className="start-btn" disabled={isStarting} onClick={handleStart}>
           Start
         </button>
+      </div>
+
+      {/* P1.2 — audit-role defaults. Interpolated into the system prompt and
+          exposed as `wb.DEFAULTS` in the kernel. */}
+      <div className="start-defaults">
+        <button
+          className="picker-config-toggle"
+          onClick={() => setDefaultsOpen((v) => !v)}
+          type="button"
+        >
+          <Chevron open={defaultsOpen} size={10} className="picker-config-arrow" />
+          {" Audit defaults"}
+        </button>
+        {defaultsOpen && (
+          <div className="start-defaults-body">
+            <div className="start-defaults-pickers">
+              <ModelPicker
+                role="target"
+                value={target.model}
+                config={target.config}
+                modelArgs={target.args}
+                onChange={(m, cfg, args) => setTarget({ model: m, config: cfg, args })}
+              />
+              <ModelPicker
+                role="auditor"
+                value={auditor.model}
+                config={auditor.config}
+                modelArgs={auditor.args}
+                onChange={(m, cfg, args) => setAuditor({ model: m, config: cfg, args })}
+              />
+              <ModelPicker
+                role="judge"
+                value={judge.model}
+                config={judge.config}
+                modelArgs={judge.args}
+                onChange={(m, cfg, args) => setJudge({ model: m, config: cfg, args })}
+              />
+            </div>
+            <div className="picker-cfg-row">
+              <span className="picker-cfg-label">max_turns</span>
+              <input
+                type="number"
+                className="picker-cfg-number"
+                min={1}
+                value={maxTurns}
+                onChange={(e) => setMaxTurns(parseInt(e.target.value, 10) || 1)}
+              />
+            </div>
+            <div className="picker-cfg-row">
+              <span className="picker-cfg-label">judge_dimensions</span>
+              <input
+                type="text"
+                className="picker-cfg-number"
+                style={{ width: "100%" }}
+                placeholder="(default)"
+                value={judgeDims}
+                onChange={(e) => setJudgeDims(e.target.value)}
+              />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -82,12 +185,14 @@ function DeskStartCard(): JSX.Element {
   const [seed, setSeed] = useState("");
   const [auditorModel, setAuditorModel] = useState(() => nextConfig.auditor_model);
   const [targetModel, setTargetModel] = useState(() => nextConfig.target_model);
-  const [auditorConfig, setAuditorConfig] = useState<Partial<GenerateConfigDict>>(
+  const [auditorConfig, setAuditorConfig] = useState<GenerateConfigDict>(
     () => readStoredConfig("auditor"),
   );
-  const [targetConfig, setTargetConfig] = useState<Partial<GenerateConfigDict>>(
+  const [targetConfig, setTargetConfig] = useState<GenerateConfigDict>(
     () => readStoredConfig("target"),
   );
+  const [auditorArgs, setAuditorArgs] = useState<ModelArgs>({});
+  const [targetArgs, setTargetArgs] = useState<ModelArgs>({});
 
   // Track previous nextConfig to detect external updates (e.g. sidebar picker).
   const prevNextConfigRef = useRef(nextConfig);
@@ -124,6 +229,8 @@ function DeskStartCard(): JSX.Element {
       target_model: targetModel,
       auditor_config: auditorConfig,
       target_config: targetConfig,
+      auditor_model_args: nonEmpty(auditorArgs),
+      target_model_args: nonEmpty(targetArgs),
     });
     // The component will unmount as soon as `current` is set by the backend
     // state broadcast, so we don't need to reset isStarting.
@@ -159,9 +266,11 @@ function DeskStartCard(): JSX.Element {
             role="auditor"
             value={auditorModel}
             config={auditorConfig}
-            onChange={(m, cfg) => {
+            modelArgs={auditorArgs}
+            onChange={(m, cfg, args) => {
               setAuditorModel(m);
               setAuditorConfig(cfg);
+              setAuditorArgs(args);
               setNextConfig({ auditor_model: m, auditor_config: cfg });
             }}
           />
@@ -170,9 +279,11 @@ function DeskStartCard(): JSX.Element {
             role="target"
             value={targetModel}
             config={targetConfig}
-            onChange={(m, cfg) => {
+            modelArgs={targetArgs}
+            onChange={(m, cfg, args) => {
               setTargetModel(m);
               setTargetConfig(cfg);
+              setTargetArgs(args);
               setNextConfig({ target_model: m, target_config: cfg });
             }}
           />
