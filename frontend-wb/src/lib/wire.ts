@@ -27,6 +27,20 @@ export type Status = "idle" | "running" | "paused" | "ended" | "waiting";
  *  Orchestrator input goes via `orch_send` (immediate), not the queued map. */
 export type QueuedMap = Record<BranchId, Record<"auditor" | "target", ChatMessage[]>>;
 
+/** P2 bg-job panel — one `bash(background=True)` proc or eval run. */
+export type BgJob = {
+  kind: "bash" | "eval";
+  /** `bg-XXXXXX` handle (bash) or `eval_id` / `log_dir` (eval). */
+  id: string;
+  /** The shell command (bash) or task name (eval). */
+  cmd_or_task: string;
+  status: "running" | "done" | "error" | "attached";
+  pid?: number;
+  log_dir?: string;
+  /** `time.time()` at spawn / `eval_start`; null for resumed run dirs. */
+  started_at?: number | null;
+};
+
 /** M1 orchestrator state, from `Session.view()["orchestrator"]`. */
 export type OrchestratorState = {
   span_id: string;
@@ -37,6 +51,8 @@ export type OrchestratorState = {
   pending_gates: string[];
   /** Turn ids of cells still running detached. */
   bg_cells: number[];
+  /** P2: every tracked `bash(background=True)` + eval run across the session. */
+  bg_jobs?: BgJob[];
   /** Undelivered `[cell-N done · …]` chips (drained into next agent input). */
   notifications: string[];
   /** PRODUCT-GAPS P2: `sum(len(m.text) for m in state.messages)`. */

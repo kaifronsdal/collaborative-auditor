@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import re
+import time
 from asyncio.subprocess import PIPE, STDOUT
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -159,23 +160,28 @@ def _fold_eval(evals: dict[str, EvalRunPayload], line: dict[str, Any]) -> EvalRu
     return p
 
 
-def _card(
-    kernel: OrchestratorKernel,
-    evals: dict[str, EvalRunPayload],
-    line: dict[str, Any],
-    seen: set[str],
-) -> None:
+def _card(orch: Orchestrator, line: dict[str, Any], seen: set[str]) -> None:
     """One ``{"wb":…}`` line → a WB_MIME ``DisplayEvent``.
 
     ``eval_*`` lines are folded into a per-``eval_id`` ``EvalRunPayload``
     snapshot (``kind:"eval_run"``) so successive updates replace the
     same stable card. Non-eval lines (``file``/``ref``/``bg_done``)
     pass through under a fresh id with ``kind = wb``.
+
+    Takes ``orch`` (not just ``kernel``) so an ``eval_start`` can register
+    the run in ``run_log_dirs`` / ``_eval_started`` for the P2 bg-job panel
+    and the kernel-restart note.
     """
+    kernel = orch.kernel
     wb = str(line["wb"])
     if wb.startswith("eval_"):
-        payload = _fold_eval(evals, line)
+        payload = _fold_eval(orch._bash_evals, line)  # noqa: SLF001
         did = line["eval_id"]
+        if wb == "eval_start":
+            orch._eval_started.setdefault(did, time.time())  # noqa: SLF001
+            log_dir = payload.get("log_dir")
+            if log_dir and log_dir not in orch.run_log_dirs:
+                orch.run_log_dirs.append(log_dir)
     else:
         # Non-eval protocol lines (``file``/``ref``) aren't in ``WbPayload``
         # yet — pass through untyped so ``WbFallback`` renders the raw dict.
@@ -194,8 +200,7 @@ def _card(
 
 
 async def _pump(
-    kernel: OrchestratorKernel,
-    evals: dict[str, EvalRunPayload],
+    orch: Orchestrator,
     proc: asyncio.subprocess.Process,
     plain: list[str],
     seen: set[str],
@@ -206,12 +211,12 @@ async def _pump(
         line = _ANSI_RE.sub("", raw.decode(errors="replace"))
         if line.startswith('{"wb":'):
             try:
-                _card(kernel, evals, json.loads(line), seen)
+                _card(orch, json.loads(line), seen)
                 continue
             except (json.JSONDecodeError, KeyError):
                 pass  # not valid protocol — fall through to plain stream
         plain.append(line)
-        _stream(kernel, line)
+        _stream(orch.kernel, line)
     return await proc.wait()
 
 
@@ -229,12 +234,13 @@ def _tail(plain: list[str], code: int | str) -> str:
 def make_bash_tool(orch: Orchestrator) -> Tool:
     """The ``bash`` hybrid tool, closing over ``orch`` for kernel/session_dir.
 
-    Owns the per-orchestrator ``evals`` accumulator (``_fold_eval`` state);
-    the pipeline helpers above take it explicitly.
+    The per-orchestrator ``evals`` accumulator (``_fold_eval`` state) lives
+    on ``orch._bash_evals`` so ``Orchestrator.view()`` can read it for the
+    P2 bg-job panel; the pipeline helpers above take ``orch`` and read it
+    from there.
     """
     kernel = orch.kernel
     session_dir = orch.session_dir
-    evals: dict[str, EvalRunPayload] = {}
     # Read at orchestrator-start (not import) so ``PATCH /settings`` applies to
     # the next session. The literal shows in the tool signature the LLM sees.
     from workbench.config import settings
@@ -286,9 +292,12 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
             with _turn(orch):
                 # ``start_new_session=True`` → proc is its own process-group
                 # leader, so ``Orchestrator.close()`` can ``os.killpg`` the
-                # whole subtree (P0.5). Tracked on ``orch._bash_procs`` from
-                # spawn until ``proc.wait()`` returns; on a cancelled fg
-                # await the proc stays tracked so ``close()`` reaps it.
+                # whole subtree (P0.5). Tracked on ``orch._bash_procs`` (keyed
+                # by ``job_id`` — the ``bg-XXXXXX`` handle for background
+                # procs) from spawn until ``proc.wait()`` returns; on a
+                # cancelled fg await the proc stays tracked so ``close()``
+                # reaps it. The entry carries ``cmd``/``started_at`` so
+                # ``Orchestrator._bg_jobs()`` can render the P2 panel row.
                 proc = await asyncio.create_subprocess_shell(
                     cmd,
                     cwd=session_dir,
@@ -297,16 +306,22 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
                     stderr=STDOUT,
                     start_new_session=True,
                 )
-                orch._bash_procs.add(proc)  # noqa: SLF001
+                job_id = uuid4().hex[:6]
+                orch._bash_procs[job_id] = {  # noqa: SLF001
+                    "proc": proc,
+                    "cmd": cmd,
+                    "started_at": time.time(),
+                    "background": background,
+                }
                 plain: list[str] = []
                 seen: set[str] = set()
 
                 if background:
-                    bg_id = uuid4().hex[:6]
+                    bg_id = job_id
 
                     async def _bg() -> None:
                         try:
-                            code = await _pump(kernel, evals, proc, plain, seen)
+                            code = await _pump(orch, proc, plain, seen)
                             done: BgDonePayload = {
                                 "kind": "bg_done",
                                 "id": bg_id,
@@ -325,7 +340,7 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
                                 f"[bg-{bg_id} done · exit {code} · {cmd[:60]!r}]"
                             )
                         finally:
-                            orch._bash_procs.discard(proc)  # noqa: SLF001
+                            orch._bash_procs.pop(job_id, None)  # noqa: SLF001
 
                     # ``_bg`` copies context at creation, so the ``_turn``
                     # contextvar carries into the detached pump even though
@@ -335,13 +350,13 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
 
                 try:
                     code = await asyncio.wait_for(
-                        _pump(kernel, evals, proc, plain, seen), timeout
+                        _pump(orch, proc, plain, seen), timeout
                     )
-                    orch._bash_procs.discard(proc)  # noqa: SLF001
+                    orch._bash_procs.pop(job_id, None)  # noqa: SLF001
                 except TimeoutError:
                     proc.kill()
                     await proc.wait()
-                    orch._bash_procs.discard(proc)  # noqa: SLF001
+                    orch._bash_procs.pop(job_id, None)  # noqa: SLF001
                     return _tail(plain, f"timeout after {timeout}s")
                 return _tail(plain, code)
 

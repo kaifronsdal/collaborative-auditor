@@ -64,7 +64,7 @@ from workbench.m1.prompt import FALLBACK_AUDIT_DEFAULTS, build_system_prompt
 from workbench.m1.proposals import Gate
 from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
-from workbench.m1.wire import DisplayEvent
+from workbench.m1.wire import DisplayEvent, EvalRunPayload
 from workbench.step import StepGated
 from workbench.view import Status
 
@@ -207,11 +207,24 @@ class Orchestrator(StepGated):
         self.state: AgentState | None = None
         #: The detached ``run()`` task; set by ``Session.start_orchestrator``.
         self.task: asyncio.Task[None] | None = None
-        #: P0.5 — every live ``bash`` subprocess (fg + bg). ``bash_tool``
-        #: adds on spawn and discards on ``proc.wait()``; ``close()`` sends
-        #: SIGTERM to each process group so a server restart doesn't orphan
-        #: an ``inspect eval`` that's still burning tokens.
-        self._bash_procs: set[asyncio.subprocess.Process] = set()
+        #: P0.5 — every live ``bash`` subprocess (fg + bg), keyed by a
+        #: 6-hex job id (== the ``bg-XXXXXX`` handle for background procs).
+        #: Each entry is ``{proc, cmd, started_at, background}`` so
+        #: ``_bg_jobs()`` can render the P2 panel row without re-parsing the
+        #: tool result. ``bash_tool`` adds on spawn and pops on
+        #: ``proc.wait()``; ``close()`` sends SIGTERM to each live process
+        #: group so a server restart doesn't orphan an ``inspect eval``
+        #: that's still burning tokens.
+        self._bash_procs: dict[str, dict[str, Any]] = {}
+        #: The bash-driven ``eval_run`` accumulator — was a
+        #: ``make_bash_tool`` closure local; lifted here so ``_bg_jobs()``
+        #: can read task/log_dir/finished for the P2 panel. Keyed by
+        #: ``eval_id``; ``_fold_eval`` folds each ``{"wb":"eval_*"}`` protocol
+        #: line into the snapshot in place.
+        self._bash_evals: dict[str, EvalRunPayload] = {}
+        #: ``eval_id`` → ``time.time()`` at ``eval_start`` — the panel's
+        #: elapsed column (``EvalRunPayload`` carries no wall-clock stamp).
+        self._eval_started: dict[str, float] = {}
 
     @property
     def status(self) -> Status:
@@ -417,7 +430,8 @@ class Orchestrator(StepGated):
         ``start_new_session=True`` → its pgid == its pid, so ``killpg``
         reaches the whole subtree (``inspect eval`` → docker sandboxes).
         """
-        for proc in list(self._bash_procs):
+        for entry in list(self._bash_procs.values()):
+            proc = entry["proc"]
             if proc.returncode is None:
                 with suppress(ProcessLookupError, PermissionError):
                     os.killpg(proc.pid, signal.SIGTERM)
@@ -445,10 +459,70 @@ class Orchestrator(StepGated):
             "model": self.model_name,
             "pending_gates": list(self.gate.pending),
             "bg_cells": sorted(self.kernel.bg),
+            "bg_jobs": self._bg_jobs(),
             "notifications": list(self.kernel.notifications),
             "context_chars": sum(len(m.text) for m in messages),
             "context_limit": self.CONTEXT_LIMIT_CHARS,
         }
+
+    def _bg_jobs(self) -> list[dict[str, Any]]:
+        """P2 bg-job panel — one row per ``bash(background=True)`` + eval run.
+
+        Bash rows come from ``_bash_procs`` (running-only; entries are popped
+        on ``proc.wait()``). Eval rows come from the live ``_bash_evals``
+        accumulator (task/status/log_dir), falling back to bare
+        ``run_log_dirs`` entries for resumed sessions where the accumulator
+        didn't survive restart.
+        """
+        jobs: list[dict[str, Any]] = []
+        for job_id, entry in self._bash_procs.items():
+            if not entry.get("background"):
+                continue
+            proc = entry["proc"]
+            jobs.append(
+                {
+                    "kind": "bash",
+                    "id": job_id,
+                    "cmd_or_task": entry["cmd"],
+                    "status": "running" if proc.returncode is None else "done",
+                    "pid": proc.pid,
+                    "started_at": entry["started_at"],
+                }
+            )
+        seen_dirs: set[str] = set()
+        for eid, p in self._bash_evals.items():
+            log_dir = p.get("log_dir") or ""
+            if log_dir:
+                seen_dirs.add(log_dir)
+            status = (
+                "error"
+                if p.get("error")
+                else ("done" if p.get("finished") else "running")
+            )
+            jobs.append(
+                {
+                    "kind": "eval",
+                    "id": eid,
+                    "cmd_or_task": p.get("task") or "eval",
+                    "status": status,
+                    "log_dir": log_dir,
+                    "started_at": self._eval_started.get(eid),
+                }
+            )
+        for d in self.run_log_dirs:
+            if d in seen_dirs:
+                continue
+            jobs.append(
+                {
+                    "kind": "eval",
+                    "id": d,
+                    "cmd_or_task": d.rstrip("/").rsplit("/", 1)[-1] or d,
+                    "status": "attached",
+                    "log_dir": d,
+                    "started_at": None,
+                }
+            )
+        return jobs
 
     # -- composer → orchestrator ---------------------------------------------
 

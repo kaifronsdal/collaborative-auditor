@@ -22,11 +22,12 @@ import {
 import type { ChatMessage, Event } from "@tsmono/inspect-common";
 
 import { useEvents } from "../../lib/selectors";
-import type { Status } from "../../lib/wire";
+import type { BgJob, Status } from "../../lib/wire";
 import { useSession } from "../../store/session";
 import { ComposerTextarea } from "../ComposerTextarea";
 import { IconPause, IconPlay, IconSend, IconStep, IconStop } from "../icons";
 import { ShimmerBubble } from "../ShimmerBubble";
+import { JobsChip } from "./JobsPanel";
 import { OrchTurn, type NsSummary } from "./OrchTurn";
 import {
   ORCH_SOURCE,
@@ -75,6 +76,7 @@ export function OrchColumn(): JSX.Element {
   const status = orch?.status ?? "idle";
   const isRunning = status === "running" || status === "waiting";
   const bgCells = orch?.bg_cells ?? EMPTY_BG;
+  const bgJobs = orch?.bg_jobs ?? EMPTY_JOBS;
   const notifications = orch?.notifications ?? EMPTY_NOTIF;
   const last = turns.at(-1);
   const cellRunning = last?.tools.some((t) => t.pending) ?? false;
@@ -224,6 +226,8 @@ export function OrchColumn(): JSX.Element {
           ctxPct={ctxPct}
           ctxTitle={ctxTitle}
           gates={gateInfo}
+          jobs={bgJobs}
+          turns={turns}
           onJump={jumpToGate}
           send={send}
         />
@@ -332,6 +336,8 @@ function OrchHeader({
   ctxPct,
   ctxTitle,
   gates,
+  jobs,
+  turns,
   onJump,
   send,
 }: {
@@ -341,6 +347,8 @@ function OrchHeader({
   ctxPct: number;
   ctxTitle: string;
   gates: GateInfo[];
+  jobs: readonly BgJob[];
+  turns: readonly OrchTurnData[];
   onJump: (id: string) => void;
   send: ReturnType<typeof useSession.getState>["send"];
 }): JSX.Element {
@@ -356,6 +364,7 @@ function OrchHeader({
         <span className={`ctx-gauge ctx-${ctxLevel}`} title={ctxTitle}>
           {ctxPct}%
         </span>
+        <JobsChip jobs={jobs} turns={turns} onJump={onJump} />
         {gates.length > 0 ? (
           <span
             className="head-gate-wrap"
@@ -492,5 +501,6 @@ export function eventsToOrchTurns(
 }
 
 const EMPTY_BG: readonly number[] = [];
+const EMPTY_JOBS: readonly BgJob[] = [];
 const EMPTY_NOTIF: readonly string[] = [];
 const EMPTY_REWOUND: ReadonlySet<string> = new Set();
