@@ -924,6 +924,7 @@ body {
 }
 .settings-label { flex: 1; color: var(--ink-mid); }
 .settings-num { width: 90px; }
+.settings-text { width: 260px; }
 .settings-error { margin-top: var(--sp-2); color: var(--danger); font-size: 11.5px; }
 .settings-actions {
   display: flex; justify-content: flex-end; gap: var(--sp-1);

@@ -165,6 +165,19 @@ def list_models() -> dict[str, Any]:
     return {"providers": providers, "suggestions": suggestions}
 
 
+@app.get("/scanners")
+def list_scanners() -> dict[str, Any]:
+    """P1.8(a): scanner library + named groups for the M0 scan picker.
+
+    ``scanners`` is every name ``wb.scan(logs, "name")`` can resolve
+    (built-in registry + entry-point extensions + user
+    ``scanner_dir/*.py``); ``groups`` is the parsed ``groups.yaml``.
+    """
+    from workbench.m1.scanners import load_groups, load_library
+
+    return {"scanners": sorted(load_library()), "groups": load_groups()}
+
+
 @app.get("/settings")
 def get_settings() -> dict[str, Any]:
     """P1.7: the global `Settings` dataclass as a flat dict."""

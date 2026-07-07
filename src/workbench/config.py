@@ -74,6 +74,11 @@ class Settings:
     #: settled `.eval` after the subprocess exits)
     attach_grace: float = 15.0
 
+    # -- P1.8(a): scanner library --
+    #: Directory of user ``@scanner`` ``*.py`` files + ``groups.yaml``.
+    #: Empty → ``STORE_DIR/scanners``. Consumer: m1/scanners.py.
+    scanner_dir: str = ""
+
     #: Escape hatch for keys added by a newer server that this build's
     #: dataclass doesn't know about — round-tripped verbatim so a PATCH
     #: from an older UI doesn't silently drop them.

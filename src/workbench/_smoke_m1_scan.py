@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from pathlib import Path
 
 import anyio
 from inspect_ai import Task, eval_async
@@ -61,6 +62,66 @@ async def _run(k: OrchestratorKernel) -> None:
     log_dir = tempfile.mkdtemp(prefix="wb-scan-src-")
     await eval_async(make_task("a"), model="mockllm/model", log_dir=log_dir)
     k.shell.user_ns["log_dir"] = log_dir
+
+    # -- P1.8(a): scanner library + named groups --------------------------
+    # A temp scanner_dir with one @scanner factory + a groups.yaml naming
+    # it; patch Settings.scanner_dir; assert resolve() and wb.scan() both
+    # take the group name.
+    import textwrap
+    from dataclasses import replace
+
+    from workbench import config
+    from workbench.m1 import scanners as scanmod
+
+    lib_dir = tempfile.mkdtemp(prefix="wb-scanlib-")
+    (Path(lib_dir) / "flags.py").write_text(
+        textwrap.dedent("""
+            from inspect_scout import Result, Transcript, scanner
+
+            @scanner(messages="all")
+            def has_a():
+                async def scan(t: Transcript) -> Result:
+                    return Result(value="a-" in (t.messages[0].text or ""))
+                return scan
+        """)
+    )
+    (Path(lib_dir) / "groups.yaml").write_text("my-group:\n  - has_a\n")
+    prev_settings = config.settings
+    config.settings = replace(config.settings, scanner_dir=lib_dir)
+    scanmod._lib_cache = None
+    try:
+        lib = scanmod.load_library()
+        assert "has_a" in lib, sorted(lib)
+        groups = scanmod.load_groups()
+        assert groups == {"my-group": ["has_a"]}, groups
+        resolved = scanmod.resolve("my-group")
+        assert set(resolved) == {"has_a"}, resolved
+        # miss → helpful message listing available names
+        try:
+            scanmod.resolve("nope")
+        except ValueError as e:
+            assert "my-group" in str(e) and "has_a" in str(e), str(e)
+        else:
+            raise AssertionError("resolve('nope') should have raised")
+
+        r = await k.run_turn(
+            "sh2 = await wb.scan(log_dir, 'my-group')\n"
+            "await sh2.wait()\n"
+            "sh2"
+        )
+        assert r.success, r.text
+        sh2 = k.shell.user_ns["sh2"]
+        assert sh2.finished and sh2.error is None, (sh2.finished, sh2.error)
+        assert sh2.per_scanner["has_a"]["scans"] == 4, sh2.per_scanner
+        assert "has_a" in r.text, r.text
+        print(
+            f"✓ P1.8(a): resolve('my-group') → {sorted(resolved)}; "
+            f"wb.scan(logs, 'my-group') → {sh2.n_done} scanned"
+        )
+    finally:
+        config.settings = prev_settings
+        scanmod._lib_cache = None
+        shutil.rmtree(lib_dir, ignore_errors=True)
 
     r = await k.run_turn(
         "sh = await wb.scan(log_dir, {'g': grep_scanner('a-')})\n"

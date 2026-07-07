@@ -55,6 +55,12 @@ class Workbench:
         #: same values are interpolated into the system prompt. Cells read
         #: e.g. ``wb.DEFAULTS["target"]`` when composing ``bash("inspect eval …")``.
         self.DEFAULTS: dict[str, Any] = {}
+        #: P1.8(a) — scanner library + named groups from
+        #: ``STORE_DIR/scanners/{*.py,groups.yaml}``. Populated by
+        #: ``Orchestrator.__init__`` so cells can introspect what
+        #: ``wb.scan(logs, "name")`` will resolve to.
+        self.SCANNERS: list[str] = []
+        self.SCANNER_GROUPS: dict[str, list[str]] = {}
 
     def __repr__(self) -> str:
         return (
@@ -157,7 +163,8 @@ class Workbench:
         """Run scout scanners over eval logs — returns a live ``ScanHandle``.
 
         ``logs`` may be an ``AttachedRun`` (uses ``.log_dir``), a path, or a
-        list of paths. ``scanner`` may be a single ``Scanner``, a list, or a
+        list of paths. ``scanner`` may be a name (group or registry/library —
+        see :mod:`.scanners`), a raw ``Scanner``, a list, or a
         ``{name: Scanner}`` dict. Each call gets a fresh ``scans_dir`` so
         ``ScanHandle._poll`` can resolve the one scan location inside it via
         ``scan_list_async``.
@@ -167,19 +174,14 @@ class Workbench:
         from inspect_scout import ScanJob, transcripts_from
         from inspect_scout.aio import scan_async
 
+        from workbench.m1.scanners import resolve
+
         if isinstance(logs, AttachedRun):
             logs = logs.log_dir
         transcripts = transcripts_from(logs)
 
-        if isinstance(scanner, dict):
-            scanners = scanner
-            names = list(scanner)
-        elif isinstance(scanner, (list, tuple)):
-            scanners = list(scanner)
-            names = [s[0] if isinstance(s, tuple) else "?" for s in scanners]
-        else:
-            scanners = [scanner]
-            names = ["scan"]
+        scanners = resolve(scanner)
+        names = list(scanners)
 
         scans_dir = scans_dir or tempfile.mkdtemp(prefix="wb-scan-")
         job = ScanJob(

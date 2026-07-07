@@ -27,6 +27,7 @@ export type Settings = {
   model_text_cap: number;
   read_file_limit: number;
   attach_grace: number;
+  scanner_dir: string;
   [extra: string]: unknown;
 };
 
@@ -145,6 +146,21 @@ export function SettingsModal({ onClose }: { onClose: () => void }): JSX.Element
           {NUM_FIELDS.slice(2).map((f) => (
             <NumRow key={f.key} field={f} draft={draft} patch={patch} />
           ))}
+
+          <div className="settings-section">Scanners</div>
+          <label
+            className="settings-row"
+            title="Directory of @scanner *.py files + groups.yaml. Empty → {store-dir}/scanners."
+          >
+            <span className="settings-label">scanner dir</span>
+            <input
+              type="text"
+              className="picker-cfg-number settings-text"
+              placeholder="{store-dir}/scanners"
+              value={draft.scanner_dir}
+              onChange={(e) => patch("scanner_dir", e.target.value)}
+            />
+          </label>
 
           {error && <div className="settings-error">{error}</div>}
           <div className="settings-actions">

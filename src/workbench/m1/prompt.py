@@ -107,7 +107,7 @@ anything else you need.
   text of the messages, for you to read.
 - `await wb.scan(logs, scanner, *, description="", model=None) -> ScanHandle`
   — run a scout scanner over logs. `handle.df[name]` for results.
-- `wb.cite(...)` / `wb.ask_human(...)` / `wb.review_seeds(...)` — same as
+$SCANNER_GROUPS- `wb.cite(...)` / `wb.ask_human(...)` / `wb.review_seeds(...)` — same as
   the top-level tools, callable in-cell when you compute → review → launch
   in one cell.
 - `wb.plots.by_model(df, col="model") -> dict` / `wb.plots.model_label(model_id) -> str`
@@ -194,6 +194,7 @@ def build_system_prompt(
     ``PATCH /settings`` last wrote.
     """
     from workbench import config  # local: avoid cycle at import time
+    from workbench.m1.scanners import load_groups
 
     s = settings if settings is not None else config.settings
     d = {**FALLBACK_AUDIT_DEFAULTS, **(audit_defaults or {})}
@@ -222,6 +223,23 @@ def build_system_prompt(
         if s.auto_approve_under_threshold
         else ""
     )
+    # P1.8(a): if the user has curated scanner groups, list them under the
+    # ``wb.scan`` bullet so the LLM knows it can pass a group name string.
+    # Fail-soft — a broken ``groups.yaml`` shouldn't block prompt render.
+    try:
+        groups = load_groups()
+    except Exception:  # noqa: BLE001 — user file, fail-soft to no block
+        groups = {}
+    if groups:
+        parts = ", ".join(f"`{g}` ({len(m)})" for g, m in sorted(groups.items()))
+        example = next(iter(sorted(groups)))
+        scanner_groups = (
+            f"  Available scanner groups: {parts} — "
+            f"use as `wb.scan(logs, '{example}')`. "
+            "`wb.SCANNERS` / `wb.SCANNER_GROUPS` list all names.\n"
+        )
+    else:
+        scanner_groups = ""
     return (
         _PROMPT_BODY.replace("$AUDIT_TASK", AUDIT_TASK)
         .replace("$TARGET", str(d["target"]))
@@ -232,6 +250,7 @@ def build_system_prompt(
         .replace("$COST_THRESH", f"{s.seed_review_cost_threshold:g}")
         .replace("$COUNT_THRESH", str(s.seed_review_count_threshold))
         .replace("$AUTO_APPROVE", auto)
+        .replace("$SCANNER_GROUPS", scanner_groups)
     )
 
 
@@ -248,4 +267,5 @@ ORCHESTRATOR_SYSTEM_PROMPT: str = (
     .replace("$COST_THRESH", "5")
     .replace("$COUNT_THRESH", "20")
     .replace("$AUTO_APPROVE", "")
+    .replace("$SCANNER_GROUPS", "")
 )

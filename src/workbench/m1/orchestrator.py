@@ -190,6 +190,17 @@ class Orchestrator(StepGated):
             session_id=session.session_id or "",
         )
         wb.DEFAULTS = dict(self.audit_defaults)
+        # P1.8(a): expose the scanner library + named groups so cells (and
+        # the prompt block below) can list what ``wb.scan(logs, "name")``
+        # resolves to. Fail-soft — a broken user scanner file shouldn't
+        # block orchestrator construction.
+        try:
+            from workbench.m1 import scanners as _scanners
+
+            wb.SCANNERS = sorted(_scanners.load_library())
+            wb.SCANNER_GROUPS = _scanners.load_groups()
+        except Exception:
+            logger.exception("scanner library load failed")
         self.kernel.shell.user_ns["wb"] = wb
         self.kernel.shell.user_ns.update(_seed_analysis_ns())
         self._init_gate()
