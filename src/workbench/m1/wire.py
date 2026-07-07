@@ -77,7 +77,7 @@ class DisplayEvent:
             return str(s["text"])
         for mime in _MODEL_MIME_PREF:
             if t := self.bundle.get(mime):
-                return truncate(str(t), MODEL_TEXT_CAP)
+                return truncate(str(t), MODEL_TEXT_CAP())
         return ""
 
 
@@ -85,7 +85,18 @@ class DisplayEvent:
 #: ``display(Markdown(f"…"))`` (the ``wb.report`` replacement) shows the
 #: computed prose, not ``<IPython.core.display.Markdown object>``.
 _MODEL_MIME_PREF = ("text/markdown", "text/latex", "text/plain")
-MODEL_TEXT_CAP = 4000
+
+
+def MODEL_TEXT_CAP() -> int:
+    """Tool-output truncation cap, from ``Settings.model_text_cap``.
+
+    A function (not a constant) so ``PATCH /settings`` takes effect without
+    a restart. Upper-case name kept for continuity with the pre-P1.7
+    constant; callers were mechanically switched to ``MODEL_TEXT_CAP()``.
+    """
+    from workbench.config import settings
+
+    return settings.model_text_cap
 
 
 def truncate(s: str, n: int) -> str:

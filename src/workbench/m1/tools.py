@@ -45,9 +45,15 @@ def make_tools(orch: Orchestrator) -> list[Tool]:
         p = Path(path)
         return p if p.is_absolute() else session_dir / p
 
+    from workbench.config import settings
+
+    default_read_limit = settings.read_file_limit
+
     @tool
     def read_file() -> Tool:
-        async def execute(path: str, offset: int = 0, limit: int = 2000) -> str:
+        async def execute(
+            path: str, offset: int = 0, limit: int = default_read_limit
+        ) -> str:
             """Read a file as numbered lines.
 
             Args:

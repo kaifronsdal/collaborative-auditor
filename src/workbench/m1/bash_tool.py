@@ -217,8 +217,9 @@ async def _pump(
 
 def _tail(plain: list[str], code: int | str) -> str:
     text = "".join(plain)
-    if len(text) > MODEL_TEXT_CAP:
-        text = f"[… {len(text) - MODEL_TEXT_CAP} bytes elided …]\n" + text[-MODEL_TEXT_CAP:]
+    cap = MODEL_TEXT_CAP()
+    if len(text) > cap:
+        text = f"[… {len(text) - cap} bytes elided …]\n" + text[-cap:]
     return f"{text.rstrip()}\n[exit {code}]" if text.strip() else f"[exit {code}]"
 
 
@@ -234,10 +235,17 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
     kernel = orch.kernel
     session_dir = orch.session_dir
     evals: dict[str, EvalRunPayload] = {}
+    # Read at orchestrator-start (not import) so ``PATCH /settings`` applies to
+    # the next session. The literal shows in the tool signature the LLM sees.
+    from workbench.config import settings
+
+    default_timeout = settings.bash_timeout
 
     @tool(viewer=code_viewer("bash", "cmd"))
     def bash() -> Tool:
-        async def execute(cmd: str, timeout: int = 300, background: bool = False) -> str:
+        async def execute(
+            cmd: str, timeout: int = default_timeout, background: bool = False
+        ) -> str:
             """Run a shell command in the orchestrator's session directory.
 
             stdout/stderr stream to the frontend as they arrive; lines

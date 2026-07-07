@@ -65,6 +65,12 @@ from workbench.m1.wire import (
 )
 
 
+def _default_grace() -> float:
+    from workbench.config import settings
+
+    return settings.attach_grace
+
+
 @dataclass(kw_only=True)
 class AttachedRun(_PollingHandle):
     """Read-only handle on an out-of-process eval writing to ``log_dir``.
@@ -95,8 +101,8 @@ class AttachedRun(_PollingHandle):
     #: Seconds to wait for *any* sign of life (a ``.eval`` file or a ctl
     #: server) before declaring the subprocess dead. e2e-v3: a crashed
     #: ``inspect eval`` left an empty ``log_dir`` and ``.wait()`` sat the
-    #: full timeout.
-    _grace: float = field(default=15.0, repr=False)
+    #: full timeout. Default from ``Settings.attach_grace`` (P1.7).
+    _grace: float = field(default_factory=_default_grace, repr=False)
 
     # -- construction -----------------------------------------------------
 
