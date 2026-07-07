@@ -14,12 +14,12 @@
  * - `scan` — one row *per scanner* (not one card per scanner). Location in
  *   the footer; on finish each scanner's `df_head` HTML renders inline.
  */
-import { Fragment, useRef, useState, type JSX } from "react";
+import { Fragment, useRef, useState, type JSX, type MouseEvent } from "react";
 
 import { basename } from "@tsmono/util";
 
 import type { Up } from "../../../lib/wire";
-import { useSession } from "../../../store/session";
+import { PIN_LABELS, useSession, type Pin, type PinLabel } from "../../../store/session";
 import type {
   EvalRunPayload,
   SampleRowPayload,
@@ -73,6 +73,8 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
   const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [textFilter, setTextFilter] = useState("");
+  // P3 annotation label filter — `null` = no filter.
+  const [labelFilter, setLabelFilter] = useState<PinLabel | null>(null);
   // §8 histogram bin click — `[lo, hi]` inclusive.
   const [scoreRange, setScoreRange] = useState<[number, number] | null>(null);
 
@@ -81,6 +83,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
   // pinnable; running samples get their pin once the log lands.
   const pins = useSession((s) => s.pins);
   const togglePin = useSession((s) => s.togglePin);
+  const setLabel = useSession((s) => s.setLabel);
 
   const markOpened = (id: string): void => {
     opened.current.add(id);
@@ -145,10 +148,18 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
     errored = (payload.rows.done ?? []).filter((r) => r.status === "error").length;
     const log = payload.log;
 
+    // P3: full Pin (not just id) so the row can render `label`. Keyed by
+    // sample_id within this run's `log`.
+    const pinFor =
+      log != null
+        ? new Map(pins.filter((p) => p.log === log).map((p) => [p.sample_id, p]))
+        : null;
+
     // -- §3 filter → sort ----
     const q = textFilter.trim().toLowerCase();
     const filtered = rows.filter((r) => {
       if (statusFilter !== "all" && r.status !== statusFilter) return false;
+      if (labelFilter != null && pinFor?.get(r.id)?.label !== labelFilter) return false;
       if (q && !r.id.toLowerCase().includes(q) && !r.input.toLowerCase().includes(q)) return false;
       if (scoreRange) {
         const s = firstNumeric(r.scores);
@@ -183,20 +194,18 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
       stopping.current.add(row.id);
       rerender();
     };
-    const pinnedIds =
-      log != null
-        ? new Set(pins.filter((p) => p.log === log).map((p) => p.sample_id))
-        : null;
     allRows = sorted.map((r) => (
       <RunRow
         key={r.id}
         row={r}
         opened={opened.current.has(r.id)}
         stopping={r.status === "running" && stopping.current.has(r.id)}
-        pinned={pinnedIds?.has(r.id) ?? false}
+        pin={pinFor?.get(r.id)}
         onClick={() => onRowClick(r)}
         onStop={r.status === "running" ? () => onStop(r) : undefined}
-        onPin={log != null ? () => togglePin(log, r.id) : undefined}
+        onPin={log != null ? (label) => togglePin(log, r.id, label) : undefined}
+        onSetLabel={log != null ? (label) => setLabel(log, r.id, label) : undefined}
+        onFilterLabel={setLabelFilter}
       />
     ));
 
@@ -231,6 +240,14 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
             {scoreRange && (
               <a className="pc-chip pc-range" onClick={() => setScoreRange(null)}>
                 <i className="bi bi-x" /> score {scoreRange[0].toFixed(2)}–{scoreRange[1].toFixed(2)}
+              </a>
+            )}
+            {labelFilter && (
+              <a
+                className={`pc-chip pc-range pin-label-${labelFilter}`}
+                onClick={() => setLabelFilter(null)}
+              >
+                <i className="bi bi-x" /> label:{labelFilter}
               </a>
             )}
             <input
@@ -353,18 +370,22 @@ function RunRow({
   row,
   opened,
   stopping,
-  pinned,
+  pin,
   onClick,
   onStop,
   onPin,
+  onSetLabel,
+  onFilterLabel,
 }: {
   row: SampleRow;
   opened: boolean;
   stopping: boolean;
-  pinned: boolean;
+  pin: Pin | undefined;
   onClick: () => void;
   onStop?: () => void;
-  onPin?: () => void;
+  onPin?: (label?: PinLabel) => void;
+  onSetLabel?: (label: PinLabel | null) => void;
+  onFilterLabel: (label: PinLabel | null) => void;
 }): JSX.Element {
   // Status slot per UI-AUDIT §C: `done` → nothing (dot suffices); `running` →
   // `t{turns}`; `error` → exception class; `stopped` → literal. §9 optimistic
@@ -420,18 +441,13 @@ function RunRow({
       </span>
       {status}
       <span className="ar-slot">
-        {onPin && (
-          <button
-            className={`ar-pin${pinned ? " pinned" : ""}`}
-            title={pinned ? "unpin" : "pin transcript"}
-            aria-label={pinned ? "unpin" : "pin transcript"}
-            onClick={(e) => {
-              e.stopPropagation();
-              onPin();
-            }}
-          >
-            <i className={`bi ${pinned ? "bi-star-fill" : "bi-star"}`} />
-          </button>
+        {onPin && onSetLabel && (
+          <PinButton
+            pin={pin}
+            onPin={onPin}
+            onSetLabel={onSetLabel}
+            onFilterLabel={onFilterLabel}
+          />
         )}
         {onStop && !stopping && (
           <button
@@ -452,6 +468,87 @@ function RunRow({
         )}
       </span>
     </div>
+  );
+}
+
+// -- P3 pin/label button ------------------------------------------------------
+
+/** The row's pin affordance. Unpinned → outline star; plain pin → filled
+ *  star; labelled pin → the label's icon in its `.pin-label-{l}` color.
+ *  Left-click or right-click opens the dropdown (star = plain pin, then the
+ *  four labels, then filter/unpin). Picking a label on an unpinned row pins
+ *  it (`togglePin` add-or-relabel); on a pinned row it relabels in place. */
+function PinButton({
+  pin,
+  onPin,
+  onSetLabel,
+  onFilterLabel,
+}: {
+  pin: Pin | undefined;
+  onPin: (label?: PinLabel) => void;
+  onSetLabel: (label: PinLabel | null) => void;
+  onFilterLabel: (label: PinLabel | null) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const pinned = pin != null;
+  const label = pin?.label;
+  const icon = label
+    ? PIN_LABELS[label].icon
+    : pinned ? "bi-star-fill" : "bi-star";
+  const title = label ? PIN_LABELS[label].title : pinned ? "pinned" : "pin / label";
+
+  const openMenu = (e: MouseEvent): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    setOpen((v) => !v);
+  };
+
+  return (
+    <span className="ar-pin-wrap" onClick={(e) => e.stopPropagation()}>
+      <button
+        className={`ar-pin${pinned ? " pinned" : ""}${label ? ` pin-label-${label}` : ""}`}
+        title={title}
+        aria-label={title}
+        aria-expanded={open}
+        onClick={openMenu}
+        onContextMenu={openMenu}
+      >
+        <i className={`bi ${icon}`} />
+      </button>
+      {open && (
+        <>
+          <div className="pin-menu-backdrop" onClick={() => setOpen(false)} />
+          <div className="pin-menu" role="menu" onClick={() => setOpen(false)}>
+            <button
+              className="pin-menu-item"
+              onClick={() => (pinned ? onSetLabel(null) : onPin())}
+            >
+              <i className="bi bi-star-fill" /> Pin
+            </button>
+            {(Object.keys(PIN_LABELS) as PinLabel[]).map((l) => (
+              <button
+                key={l}
+                className={`pin-menu-item pin-label-${l}${label === l ? " active" : ""}`}
+                onClick={() => onPin(l)}
+              >
+                <i className={`bi ${PIN_LABELS[l].icon}`} /> {PIN_LABELS[l].title}
+              </button>
+            ))}
+            <div className="pin-menu-sep" />
+            {label && (
+              <button className="pin-menu-item" onClick={() => onFilterLabel(label)}>
+                <i className="bi bi-funnel" /> Filter: {label}
+              </button>
+            )}
+            {pinned && (
+              <button className="pin-menu-item" onClick={() => onPin()}>
+                <i className="bi bi-star" /> Unpin
+              </button>
+            )}
+          </div>
+        </>
+      )}
+    </span>
   );
 }
 

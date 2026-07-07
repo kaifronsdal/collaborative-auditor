@@ -20,6 +20,7 @@
   --accent-text: hsl(215 65% 40%);
   --accent-dim: hsl(215 70% 95%);
   --ok: hsl(152 38% 45%);
+  --warn: hsl(28 80% 50%);
   --danger: hsl(0 56% 45%);
 
   /* type scale — three sizes only */
@@ -185,6 +186,51 @@ body {
 .eval-row:hover .ar-pin, .ar-pin.pinned { opacity: 1; }
 .ar-pin:hover { background: var(--bg-200); color: var(--accent-text); }
 .ar-pin.pinned { color: var(--accent-text); }
+
+/* P3 annotation-queue label colors. Applied to the row's `.ar-pin` button,
+ * the dropdown `.pin-menu-item`, the `.pc-chip.pc-range` filter pill, and
+ * the sidebar `.side-pin-group` header — each just tints its `<i>`. The
+ * `unlabelled` group falls through to the default `--accent-text` star. */
+.pin-label-confirmed i      { color: var(--ok); }
+.pin-label-false-positive i { color: var(--ink-faint); }
+.pin-label-interesting i    { color: var(--accent); }
+.pin-label-needs-review i   { color: var(--warn); }
+
+/* `.ar-pin` sits inside a positioned wrapper so the dropdown can anchor to
+ * the row's right edge. `inline-flex` keeps the 18px button footprint. */
+.ar-pin-wrap { position: relative; display: inline-flex; }
+.pin-menu-backdrop { position: fixed; inset: 0; z-index: 19; }
+.pin-menu {
+  position: absolute; right: 0; top: 100%; margin-top: 2px; z-index: 20;
+  min-width: 150px; padding: 4px;
+  background: var(--bg-000); border: 1px solid var(--border);
+  border-radius: var(--r-md); box-shadow: 0 4px 12px hsl(0 0% 0% / .12);
+  display: flex; flex-direction: column;
+}
+.pin-menu-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; border: none; border-radius: var(--r-sm);
+  background: none; cursor: pointer; text-align: left;
+  font: 12px var(--sans); color: var(--ink-mid);
+}
+.pin-menu-item:hover { background: var(--bg-100); }
+.pin-menu-item.active { background: var(--bg-200); font-weight: 500; }
+.pin-menu-item i { width: 14px; font-size: 12px; color: var(--ink-faint); }
+.pin-menu-sep { height: 1px; background: var(--border); margin: 3px 0; }
+
+/* Sidebar PINNED group header: icon (label-tinted) · title · count pill. */
+.side-pin-group {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 10px 2px;
+  font-size: 10.5px; font-weight: 500; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--ink-dim);
+}
+.side-pin-group i { font-size: 11px; }
+.side-pin-count {
+  margin-left: auto; min-width: 16px; padding: 0 5px;
+  border-radius: var(--r-pill); background: var(--bg-200);
+  font: 10px var(--mono); color: var(--ink-dim); text-align: center;
+}
 
 /* status dot: ● running (accent) / ○ paused (dim) / · ended (faint) */
 .status-dot {

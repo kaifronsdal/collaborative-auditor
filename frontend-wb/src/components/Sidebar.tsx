@@ -3,7 +3,13 @@ import type { CSSProperties, JSX } from "react";
 import { basename } from "@tsmono/util";
 
 import type { BranchId, BranchMeta } from "../lib/wire";
-import { type Mode, useSession } from "../store/session";
+import {
+  PIN_LABELS,
+  type Mode,
+  type Pin,
+  type PinLabel,
+  useSession,
+} from "../store/session";
 import { useEffect, useState } from "react";
 import { Chevron } from "./icons";
 import { SettingsModal } from "./SettingsModal";
@@ -156,6 +162,77 @@ function BranchNode({
           visited={nextVisited}
         />
       ))}
+    </div>
+  );
+}
+
+/** P3 sidebar group order — the four labels, then plain-star bookmarks. */
+const PIN_GROUPS = [...(Object.keys(PIN_LABELS) as PinLabel[]), "unlabelled"] as const;
+
+/** P3: pins bucketed by `label` (plain pins under `unlabelled`). Each group
+ *  header shows icon + title + count; rows re-open the sample via
+ *  `{t:"import"}` exactly as the flat P2 list did. */
+function PinnedGroups({
+  pins,
+  onOpen,
+  onUnpin,
+}: {
+  pins: Pin[];
+  onOpen: (log: string, sampleId: string) => void;
+  onUnpin: (log: string, sampleId: string) => void;
+}): JSX.Element {
+  const groups = new Map<PinLabel | "unlabelled", Pin[]>();
+  for (const p of pins) {
+    const key = p.label ?? "unlabelled";
+    const bucket = groups.get(key);
+    bucket ? bucket.push(p) : groups.set(key, [p]);
+  }
+  return (
+    <div className="side-pins">
+      {PIN_GROUPS.map((g) => {
+        const bucket = groups.get(g);
+        if (!bucket) return null;
+        const meta = g === "unlabelled"
+          ? { icon: "bi-star-fill", title: "Unlabelled" }
+          : PIN_LABELS[g];
+        return (
+          <div key={g}>
+            <div className={`side-pin-group pin-label-${g}`}>
+              <i className={`bi ${meta.icon}`} />
+              <span>{meta.title}</span>
+              <span className="side-pin-count">{bucket.length}</span>
+            </div>
+            {bucket.map((p) => {
+              const text = p.note ?? p.sample_id;
+              const base = basename(p.log);
+              return (
+                <div
+                  key={`${p.log}::${p.sample_id}`}
+                  className="side-row"
+                  title={`${text} · ${p.log}`}
+                  onClick={() => onOpen(p.log, p.sample_id)}
+                >
+                  <button
+                    className="side-row-star"
+                    title="unpin"
+                    aria-label="unpin"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onUnpin(p.log, p.sample_id);
+                    }}
+                  >
+                    <i className="bi bi-x" />
+                  </button>
+                  <span className="side-row-title">{text}</span>
+                  <span className="side-row-time">
+                    {base.length > 12 ? `…${base.slice(-12)}` : base}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -343,36 +420,7 @@ export function Sidebar(): JSX.Element {
       {pins.length > 0 && (
         <>
           <div className="side-section">Pinned</div>
-          <div className="side-pins">
-            {pins.map((p) => {
-              const label = p.note ?? p.sample_id;
-              const base = basename(p.log);
-              return (
-                <div
-                  key={`${p.log}::${p.sample_id}`}
-                  className="side-row"
-                  title={`${label} · ${p.log}`}
-                  onClick={() => importEval(p.log, p.sample_id)}
-                >
-                  <button
-                    className="side-row-star"
-                    title="unpin"
-                    aria-label="unpin"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      togglePin(p.log, p.sample_id);
-                    }}
-                  >
-                    <i className="bi bi-star-fill" />
-                  </button>
-                  <span className="side-row-title">{label}</span>
-                  <span className="side-row-time">
-                    {base.length > 12 ? `…${base.slice(-12)}` : base}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+          <PinnedGroups pins={pins} onOpen={importEval} onUnpin={togglePin} />
         </>
       )}
 

@@ -534,6 +534,61 @@ describe("togglePin (P2 pin/bookmark)", () => {
     expect(pins).toHaveLength(1);
     expect(pins[0].log).toBe("/logs/b.eval");
   });
+
+  it("with label on an existing pin relabels (never removes)", () => {
+    const { togglePin } = useSession.getState();
+    togglePin("/logs/run.eval", "s1");
+    expect(useSession.getState().pins[0].label).toBeUndefined();
+
+    togglePin("/logs/run.eval", "s1", "confirmed");
+    let { pins } = useSession.getState();
+    expect(pins).toHaveLength(1);
+    expect(pins[0].label).toBe("confirmed");
+
+    togglePin("/logs/run.eval", "s1", "needs-review");
+    pins = useSession.getState().pins;
+    expect(pins).toHaveLength(1);
+    expect(pins[0].label).toBe("needs-review");
+
+    // no-label toggle still removes, even when labelled
+    togglePin("/logs/run.eval", "s1");
+    expect(useSession.getState().pins).toHaveLength(0);
+  });
+
+  it("with label on a missing pin creates it labelled", () => {
+    const { togglePin } = useSession.getState();
+    togglePin("/logs/run.eval", "s1", "interesting");
+    const { pins } = useSession.getState();
+    expect(pins).toHaveLength(1);
+    expect(pins[0]).toMatchObject({
+      log: "/logs/run.eval",
+      sample_id: "s1",
+      label: "interesting",
+    });
+  });
+});
+
+describe("setLabel (P3 annotation queue)", () => {
+  beforeEach(() => {
+    useSession.setState(emptyState);
+  });
+
+  it("sets and clears label on an existing pin; no-op on missing pin", () => {
+    const { togglePin, setLabel } = useSession.getState();
+
+    // no-op when pin absent
+    setLabel("/logs/run.eval", "s1", "confirmed");
+    expect(useSession.getState().pins).toHaveLength(0);
+
+    togglePin("/logs/run.eval", "s1");
+    setLabel("/logs/run.eval", "s1", "false-positive");
+    expect(useSession.getState().pins[0].label).toBe("false-positive");
+
+    setLabel("/logs/run.eval", "s1", null);
+    const { pins } = useSession.getState();
+    expect(pins).toHaveLength(1);
+    expect(pins[0].label).toBeUndefined();
+  });
 });
 
 describe("start does not add phantom Recents for child branch", () => {

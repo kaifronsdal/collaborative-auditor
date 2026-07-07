@@ -73,6 +73,20 @@ const MODE_KEY = "workbench.mode";
 const NEXT_CONFIG_KEY = "workbench.nextConfig";
 const pinsKey = (sid: string): string => `workbench.pins.${sid}`;
 
+/** P3 annotation-queue label. A labelled pin is a triage decision; a plain
+ *  (unlabelled) pin is just a bookmark. */
+export type PinLabel = "confirmed" | "false-positive" | "interesting" | "needs-review";
+
+/** Label → icon/title map. Exported for the row button + dropdown
+ *  (ProgressCard) and the sidebar group headers — keeps the four-way switch
+ *  in one place. Colors live in `styles.css` as `.pin-label-{label}`. */
+export const PIN_LABELS: Record<PinLabel, { icon: string; title: string }> = {
+  "confirmed":      { icon: "bi-check-circle",    title: "Confirmed" },
+  "false-positive": { icon: "bi-x-circle",        title: "False positive" },
+  "interesting":    { icon: "bi-lightbulb",       title: "Interesting" },
+  "needs-review":   { icon: "bi-question-circle", title: "Needs review" },
+};
+
 /** P2 pin/bookmark: a starred sample row. `log` is the finished `.eval` path
  *  (so a pin can always be re-opened via `{t:"import"}`); `at` is the
  *  Date.now() the pin was created. Persisted per-session to localStorage —
@@ -81,6 +95,8 @@ export type Pin = {
   log: string;
   sample_id: string;
   note?: string;
+  /** P3 annotation label — absent = plain star bookmark. */
+  label?: PinLabel;
   at: number;
 };
 
@@ -118,6 +134,14 @@ function readStoredPins(sid: string): Pin[] {
   } catch {
     return [];
   }
+}
+
+/** Write-through helper for `togglePin`/`setLabel`. Returns the `set()` patch. */
+function persistPins(sid: string | null, pins: Pin[]): { pins: Pin[] } {
+  if (sid != null) {
+    try { localStorage.setItem(pinsKey(sid), JSON.stringify(pins)); } catch { /* ignore */ }
+  }
+  return { pins };
 }
 
 /** Local id for the just-started Recents stub, before `current` arrives. */
@@ -252,9 +276,14 @@ export type SessionState = {
   }) => void;
   /** Update the sidebar's editable next-audit config. */
   setNextConfig: (patch: Partial<NextConfig>) => void;
-  /** Toggle a sample-row bookmark: adds `{log, sample_id, at:now}` if absent,
-   *  removes the matching pin if present. Writes through to localStorage. */
-  togglePin: (log: string, sample_id: string, note?: string) => void;
+  /** Toggle a sample-row bookmark. No `label`: add if absent, remove if
+   *  present (plain star toggle). With `label`: add-or-relabel — an existing
+   *  pin's label is updated in place (never removed). Writes through to
+   *  localStorage. */
+  togglePin: (log: string, sample_id: string, label?: PinLabel) => void;
+  /** Set (or clear, with `null`) an existing pin's annotation label. No-op if
+   *  the pin isn't present — labelling never implicitly creates a pin. */
+  setLabel: (log: string, sample_id: string, label: PinLabel | null) => void;
   /** Select which start card `+ New audit` opens; persisted to localStorage. */
   setMode: (mode: Mode) => void;
   /**
@@ -834,20 +863,36 @@ export const useSession = create<SessionState>((set, get) => ({
     set({ mode });
   },
 
-  togglePin: (log, sample_id, note) => {
+  togglePin: (log, sample_id, label) => {
     set((state) => {
       const idx = state.pins.findIndex(
         (p) => p.log === log && p.sample_id === sample_id
       );
-      const pins =
-        idx >= 0
-          ? [...state.pins.slice(0, idx), ...state.pins.slice(idx + 1)]
-          : [{ log, sample_id, note, at: Date.now() }, ...state.pins];
-      const sid = state.sessionId;
-      if (sid != null) {
-        try { localStorage.setItem(pinsKey(sid), JSON.stringify(pins)); } catch { /* ignore */ }
+      let pins: Pin[];
+      if (idx >= 0 && label != null) {
+        // Relabel in place — a label click on an existing pin is an edit,
+        // not a toggle-off.
+        pins = state.pins.slice();
+        pins[idx] = { ...pins[idx], label };
+      } else if (idx >= 0) {
+        pins = [...state.pins.slice(0, idx), ...state.pins.slice(idx + 1)];
+      } else {
+        pins = [{ log, sample_id, label, at: Date.now() }, ...state.pins];
       }
-      return { pins };
+      return persistPins(state.sessionId, pins);
+    });
+  },
+
+  setLabel: (log, sample_id, label) => {
+    set((state) => {
+      const idx = state.pins.findIndex(
+        (p) => p.log === log && p.sample_id === sample_id
+      );
+      if (idx < 0) return {};
+      const pins = state.pins.slice();
+      const { label: _prev, ...rest } = pins[idx];
+      pins[idx] = label == null ? rest : { ...rest, label };
+      return persistPins(state.sessionId, pins);
     });
   },
 
