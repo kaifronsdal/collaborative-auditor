@@ -1,4 +1,4 @@
-import { type JSX, useEffect } from "react";
+import { type JSX, useEffect, useState } from "react";
 import {
   ComponentIconProvider,
   type ComponentIcons,
@@ -8,6 +8,9 @@ import { useSession } from "./store/session";
 import { Sidebar } from "./components/Sidebar";
 import { StartView } from "./components/StartView";
 import { DeskView } from "./components/DeskView";
+import { CommandPalette } from "./components/CommandPalette";
+import { SettingsModal } from "./components/SettingsModal";
+import { useKeyboardShortcuts } from "./components/useKeyboardShortcuts";
 
 // bootstrap-icon class names for the @tsmono/react shared components
 // (Modal close button, etc). Mirrors inspect-view's baseApplicationIcons.
@@ -41,6 +44,13 @@ export function App(): JSX.Element {
     connect(sid);
   }, [connect]);
 
+  // P2 — ⌘K palette + global shortcuts. The palette can open Settings; the
+  // Sidebar keeps its own gear-button `SettingsModal` (independent state, but
+  // only one is ever mounted at a time in practice).
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  useKeyboardShortcuts({ paletteOpen, setPaletteOpen });
+
   // Show DeskView when there is an active branch OR an orchestrator running
   // (M1: the orch column can drive the desk before any M0 branch exists —
   // Column/SwimlaneColumn render empty-state on a null branch id via the
@@ -55,6 +65,13 @@ export function App(): JSX.Element {
         <main className="app-main">
           {showStart ? <StartView /> : <DeskView />}
         </main>
+        {paletteOpen && (
+          <CommandPalette
+            onClose={() => setPaletteOpen(false)}
+            onOpenSettings={() => setSettingsOpen(true)}
+          />
+        )}
+        {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
       </div>
     </ComponentIconProvider>
   );
