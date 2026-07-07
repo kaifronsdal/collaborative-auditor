@@ -50,6 +50,7 @@ from inspect_ai.log._file import (
     read_eval_log_async,
     read_eval_log_sample_summaries_async,
 )
+from inspect_ai.model import ModelUsage
 from IPython.display import display
 
 from workbench.m1.handles import (
@@ -60,6 +61,7 @@ from workbench.m1.handles import (
 from workbench.m1.wire import (
     EvalRunPayload,
     SampleRowPayload,
+    UsagePayload,
     finite,
     wb_bundle,
 )
@@ -96,6 +98,9 @@ class AttachedRun(_PollingHandle):
     #: ACP discovery entry for this eval (``--acp-server``); ``False`` once
     #: we've decided none exists. Same tri-state as ``_ctl``.
     _acp: DiscoveredEval | None | bool = field(default=None, repr=False)
+    #: P2 token chip — aggregate ``header.stats.model_usage`` (summed over
+    #: every model the eval used). ``None`` until the header carries usage.
+    _usage: UsagePayload | None = field(default=None, repr=False)
     #: First-poll timestamp, for the "nothing ever appeared" early-bail.
     _t0: float = field(default_factory=time.monotonic, repr=False)
     #: Seconds to wait for *any* sign of life (a ``.eval`` file or a ctl
@@ -226,6 +231,13 @@ class AttachedRun(_PollingHandle):
                     self.rows[f"{s.id}#{s.epoch}"] = self._row(s)
                 self._status = header.status
                 self.task_name = self.task_name or header.eval.task
+                if header.stats.model_usage:
+                    u = sum(header.stats.model_usage.values(), start=ModelUsage())
+                    self._usage = {
+                        "input_tokens": u.input_tokens,
+                        "output_tokens": u.output_tokens,
+                        "total_tokens": u.total_tokens,
+                    }
                 if not self.total:
                     n = header.eval.dataset.samples or 0
                     self.total = n * (header.eval.config.epochs or 1)
@@ -408,6 +420,8 @@ class AttachedRun(_PollingHandle):
                 "done": [cast("SampleRowPayload", vars(r)) for r in self.rows.values()],
             },
         }
+        if self._usage is not None:
+            payload["usage"] = self._usage
         if self.finished:
             payload["scores"] = [first_numeric(r.scores) for r in self.rows.values()]
         return wb_bundle(

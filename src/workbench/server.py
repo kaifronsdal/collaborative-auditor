@@ -382,7 +382,19 @@ async def _fork(
     try:
         anchor, inclusive, edited = locate(parent, data)
         child = Branch.fork(
-            session, parent, anchor=anchor, inclusive=inclusive, edited=edited
+            session,
+            parent,
+            anchor=anchor,
+            inclusive=inclusive,
+            edited=edited,
+            # P2 model-swap-on-fork: optional per-fork overrides (default:
+            # inherit ``parent.meta`` verbatim). UI wiring deferred — the
+            # backend + wire accept them so a client can A/B a target model
+            # mid-tree without a fresh ``start``.
+            auditor_model=data.get("auditor_model") or None,
+            target_model=data.get("target_model") or None,
+            auditor_config=data.get("auditor_config") or None,
+            target_config=data.get("target_config") or None,
         )
     except ValueError as exc:
         await _fork_error(session, exc)
@@ -1014,6 +1026,12 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
             # M1-FEATURES §2: discard orchestrator turn N onward.
             if session.orchestrator is not None:
                 await session.orchestrator.rewind(int(data["turn"]))
+        case "restart_kernel":
+            # P2: drop ``user_ns`` (re-seed ``wb``/analysis names), keep
+            # ``state.messages`` — Jupyter "restart kernel" without losing
+            # the agent's plan.
+            if session.orchestrator is not None:
+                session.orchestrator.restart_kernel()
         case "stop_sample":
             await _h_stop_sample(session, data)
         case "scan_branch":

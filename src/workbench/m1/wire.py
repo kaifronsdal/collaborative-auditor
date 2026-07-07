@@ -213,6 +213,22 @@ class EvalRunPayload(TypedDict, total=False):
     elapsed: str
     rows: dict[str, list[SampleRowPayload]]
     scores: list[float | None]
+    usage: UsagePayload
+
+
+class UsagePayload(TypedDict, total=False):
+    """Aggregate ``header.stats.model_usage`` for one run (P2 token chip).
+
+    Summed over every model the eval used (target + auditor + judge). Only
+    ``AttachedRun`` populates this — ``tools._fold_eval`` builds its payload
+    from ``wb_display`` protocol lines that don't carry per-tick usage, so
+    the field is absent on bash-driven cards until the ``.eval`` header
+    settles and the agent ``wb.attach``s.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
 
 
 class ScanPayload(TypedDict, total=False):

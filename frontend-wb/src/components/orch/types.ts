@@ -123,6 +123,9 @@ export type EvalRunPayload = {
   rows: { running: SampleRowPayload[]; done: SampleRowPayload[] };
   /** First numeric score per row, positional with `rows.done` (§8). */
   scores?: (number | null)[];
+  /** P2 — aggregate `header.stats.model_usage` (summed over every model).
+   *  Only `AttachedRun` populates this; absent on `_fold_eval`-built cards. */
+  usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
 };
 
 export type ScanPayload = {

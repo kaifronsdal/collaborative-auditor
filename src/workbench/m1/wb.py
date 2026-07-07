@@ -158,6 +158,7 @@ class Workbench:
         *,
         description: str = "",
         model: str | None = None,
+        config: dict[str, Any] | None = None,
         scans_dir: str | None = None,
     ) -> ScanHandle:
         """Run scout scanners over eval logs — returns a live ``ScanHandle``.
@@ -165,12 +166,14 @@ class Workbench:
         ``logs`` may be an ``AttachedRun`` (uses ``.log_dir``), a path, or a
         list of paths. ``scanner`` may be a name (group or registry/library —
         see :mod:`.scanners`), a raw ``Scanner``, a list, or a
-        ``{name: Scanner}`` dict. Each call gets a fresh ``scans_dir`` so
-        ``ScanHandle._poll`` can resolve the one scan location inside it via
-        ``scan_list_async``.
+        ``{name: Scanner}`` dict. ``config`` is an open ``GenerateConfig``
+        dict for the scan model (P2 — previously model-string-only). Each
+        call gets a fresh ``scans_dir`` so ``ScanHandle._poll`` can resolve
+        the one scan location inside it via ``scan_list_async``.
         """
         import tempfile
 
+        from inspect_ai.model import GenerateConfig
         from inspect_scout import ScanJob, transcripts_from
         from inspect_scout.aio import scan_async
 
@@ -189,6 +192,7 @@ class Workbench:
             scanners=scanners,
             scans=scans_dir,
             model=model,
+            generate_config=GenerateConfig(**config) if config else None,
             # Scout's multiprocess strategy forks workers that each re-run
             # ``platform_init()`` (hooks banner → parent stdout, past the
             # ``_CellStream`` tee). In-kernel scans are small; keep it in-loop.

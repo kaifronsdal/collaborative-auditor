@@ -119,6 +119,18 @@ export type Down =
   | { t: "rewound"; v: number; span: string; from_uuid: string }
   | { t: "error"; v: number; message: string };
 
+/** P2 — optional per-fork model overrides. Any fork-shaped command
+ *  (`branch`/`resample`/`*_auditor`/`edit_*`) may carry these; unset fields
+ *  inherit `parent.meta` verbatim. Lets a fork A/B a different target model
+ *  mid-tree — the replayed prefix is served from tape so the swap only
+ *  affects post-branch-point generates. UI wiring deferred. */
+export type ForkOverrides = {
+  auditor_model?: string;
+  target_model?: string;
+  auditor_config?: Record<string, unknown>;
+  target_config?: Record<string, unknown>;
+};
+
 /** P1.2 — per-session defaults for the subprocess audit roles. Interpolated
  *  into the orchestrator's system prompt (so it sees concrete `provider/model`
  *  ids, not `{target}` placeholders) and exposed as `wb.DEFAULTS` in the
@@ -153,17 +165,17 @@ export type Up =
   | { t: "pause"; target?: string }
   | { t: "end" }
   | { t: "inject"; branch: BranchId; role: Role; message: ChatMessage }
-  | { t: "branch"; at: string }
-  | { t: "resample"; at: string }
-  | { t: "branch_auditor"; branch: BranchId; turn_index: number }
-  | { t: "resample_auditor"; branch: BranchId; turn_index: number }
-  | {
+  | ({ t: "branch"; at: string } & ForkOverrides)
+  | ({ t: "resample"; at: string } & ForkOverrides)
+  | ({ t: "branch_auditor"; branch: BranchId; turn_index: number } & ForkOverrides)
+  | ({ t: "resample_auditor"; branch: BranchId; turn_index: number } & ForkOverrides)
+  | ({
       t: "edit_auditor_call";
       branch: BranchId;
       turn_index: number;
       call_id: string;
       args: Record<string, unknown>;
-    }
+    } & ForkOverrides)
   | {
       t: "rewrite_tool_call";
       branch: BranchId;
@@ -172,14 +184,14 @@ export type Up =
       instruction: string;
       selected_text?: string;
     }
-  | {
+  | ({
       t: "edit_target_message";
       branch: BranchId;
       message_id: string;
       role: "user" | "system" | "tool";
       content: string;
       tool_call_id?: string;
-    }
+    } & ForkOverrides)
   | {
       t: "rewrite_target_message";
       branch: BranchId;
@@ -213,6 +225,8 @@ export type Up =
   | { t: "detach_cell" }
   | { t: "cancel_cell"; turn: number }
   | { t: "rewind"; turn: number }
+  // P2: drop `user_ns` (re-seed `wb`/analysis names), keep `state.messages`.
+  | { t: "restart_kernel" }
   | { t: "interrupt_and_send"; turn: number; text: string }
   | { t: "stop_sample"; id: string; log_dir: string }
   | { t: "import_running"; sample_id: string; log_dir: string }

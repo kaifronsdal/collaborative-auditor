@@ -50,6 +50,10 @@ const firstNumeric = (scores: Record<string, unknown>): number | null => {
   return null;
 };
 
+/** `12_345` → `"12k"`; `1_234_567` → `"1.2M"`. */
+const fmtTokens = (n: number): string =>
+  n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : `${Math.round(n / 1000)}k`;
+
 // -- shared shell -------------------------------------------------------------
 
 export default function ProgressCard({ payload, displayId, send }: Props): JSX.Element {
@@ -286,6 +290,17 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
           <>
             <span className="sep">·</span>
             <span className="stat">{payload.elapsed}</span>
+          </>
+        )}
+        {payload.kind === "eval_run" && payload.usage && (
+          <>
+            <span className="sep">·</span>
+            <span
+              className="stat"
+              title={`in ${payload.usage.input_tokens.toLocaleString()} · out ${payload.usage.output_tokens.toLocaleString()}`}
+            >
+              {fmtTokens(payload.usage.total_tokens)} tok
+            </span>
           </>
         )}
         {payload.error && <span className="stat err">{errClass(payload.error)}</span>}

@@ -189,20 +189,7 @@ class Orchestrator(StepGated):
             session_dir=str(self.session_dir),
             session_id=session.session_id or "",
         )
-        wb.DEFAULTS = dict(self.audit_defaults)
-        # P1.8(a): expose the scanner library + named groups so cells (and
-        # the prompt block below) can list what ``wb.scan(logs, "name")``
-        # resolves to. Fail-soft — a broken user scanner file shouldn't
-        # block orchestrator construction.
-        try:
-            from workbench.m1 import scanners as _scanners
-
-            wb.SCANNERS = sorted(_scanners.load_library())
-            wb.SCANNER_GROUPS = _scanners.load_groups()
-        except Exception:
-            logger.exception("scanner library load failed")
-        self.kernel.shell.user_ns["wb"] = wb
-        self.kernel.shell.user_ns.update(_seed_analysis_ns())
+        self._seed_user_ns(wb)
         self._init_gate()
         self._status: Status = "idle"
         self.queued: list[ChatMessage] = []
@@ -271,6 +258,59 @@ class Orchestrator(StepGated):
             # ships ``{"t":"update"}`` — the M0 path, unchanged.
             ie.uuid = ev.id
         self.session.emit(ie, update=ev.update)
+
+    def _seed_user_ns(self, wb: Workbench) -> None:
+        """Populate ``kernel.shell.user_ns`` with ``wb`` + the analysis names.
+
+        Factored out of ``__init__`` so ``restart_kernel`` can rebuild the
+        namespace identically after ``user_ns.clear()``. ``wb.DEFAULTS`` and
+        the scanner library are re-derived from ``self`` (not preserved from
+        the old ``user_ns``) so a settings change picked up mid-session is
+        honoured on restart.
+        """
+        wb.DEFAULTS = dict(self.audit_defaults)
+        # P1.8(a): expose the scanner library + named groups so cells (and
+        # the prompt block below) can list what ``wb.scan(logs, "name")``
+        # resolves to. Fail-soft — a broken user scanner file shouldn't
+        # block orchestrator construction.
+        try:
+            from workbench.m1 import scanners as _scanners
+
+            wb.SCANNERS = sorted(_scanners.load_library())
+            wb.SCANNER_GROUPS = _scanners.load_groups()
+        except Exception:
+            logger.exception("scanner library load failed")
+        self.kernel.shell.user_ns["wb"] = wb
+        self.kernel.shell.user_ns.update(_seed_analysis_ns())
+
+    def restart_kernel(self) -> None:
+        """P2 — drop ``user_ns``, keep ``state.messages`` (Jupyter "restart kernel").
+
+        Resets the IPython shell (``user_ns`` cleared, ``_prewarm``/template/
+        seeding re-run — same as construction) without touching the agent's
+        chat history, so the model keeps its plan and prior tool results but
+        every Python binding is gone. A ``[kernel restarted …]`` note is
+        queued into the next agent input pointing at ``run_log_dirs`` (same
+        note the resume path uses) so the model knows to re-``wb.attach``
+        rather than reference dead names. ``kernel.outputs`` and the turn
+        counter are preserved — restart is about namespace state, not the
+        display record.
+        """
+        self.kernel.shell.reset(new_session=False)
+        _prewarm()
+        install_template()
+        wb = Workbench(
+            self.gate,
+            session_dir=str(self.session_dir),
+            session_id=self.session.session_id or "",
+        )
+        self._seed_user_ns(wb)
+        # ``_seeded`` is the baseline ``_ns_summary`` filters against; without
+        # re-snapshotting, the fresh ``__builtins__``/IPython names ``reset()``
+        # installed would leak into the next ``cell_done`` tooltip.
+        self.kernel._seeded = set(self.kernel.shell.user_ns)  # noqa: SLF001
+        dirs = ", ".join(self.run_log_dirs) or "(none)"
+        self.kernel.notify(KERNEL_RESTART_NOTE.format(dirs=dirs))
 
     def _broadcast_status_soon(self) -> None:
         """``Gate.on_change`` hook — push ``status`` the moment a gate opens/closes.

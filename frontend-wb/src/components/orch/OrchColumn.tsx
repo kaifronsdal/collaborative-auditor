@@ -276,6 +276,14 @@ export function OrchColumn(): JSX.Element {
             >
               {isRunning ? <IconPause size={14} /> : <IconPlay size={15} />}
             </button>
+            <button
+              type="button"
+              title="restart kernel (clear Python namespace, keep conversation)"
+              disabled={isRunning}
+              onClick={() => send({ t: "restart_kernel" })}
+            >
+              <i className="bi bi-arrow-clockwise" style={{ fontSize: 14 }} />
+            </button>
           </div>
           {cellRunning && hasText ? (
             <span className="composer-hint composer-hint-running truncate">

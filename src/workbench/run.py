@@ -298,9 +298,13 @@ async def generate_rewrite(
 
     m = branch.meta
     model = get_model(m.auditor_model, **(m.auditor_model_args or {}))
+    # P2: honour the branch's ``auditor_config`` (reasoning_effort etc.)
+    # instead of a hardcoded ``max_tokens=4096``. ``max_tokens`` stays as the
+    # floor when the config doesn't set one — a rewrite draft that truncates
+    # mid-JSON is useless.
     out = await model.generate(
         input=[ChatMessageUser(content=prompt)],
-        config=GenerateConfig(max_tokens=4096),
+        config=GenerateConfig(**{"max_tokens": 4096, **(m.auditor_config or {})}),
     )
     raw = out.message.text
     if not raw or not raw.strip():
@@ -641,6 +645,10 @@ class Branch(StepGated):
         edited: Step | None = None,
         branch_id: str | None = None,
         batch: str | None = None,
+        auditor_model: str | None = None,
+        target_model: str | None = None,
+        auditor_config: dict | None = None,
+        target_config: dict | None = None,
     ) -> Branch:
         """A child branch inheriting `parent`'s config, branched at `anchor`
         on the session's `audit_history`.
@@ -656,6 +664,11 @@ class Branch(StepGated):
                 (`edit_*` ops). Served on the first post-prefix turn;
                 `workbench_auditor` emits its `ModelEvent`/`AnchorEvent`
                 inline so `build_history_timeline` resolves it.
+            auditor_model / target_model / *_config: P2 — optional overrides
+                for the child's `BranchMeta` (default: inherit `parent.meta`
+                verbatim). Lets a fork A/B a different target model
+                mid-tree; the replayed prefix is served from tape regardless
+                so the swap only affects post-branch-point generates.
         """
         traj = session.audit_history.branch(
             anchor, from_trajectory=parent.trajectory, inclusive=inclusive
@@ -668,11 +681,11 @@ class Branch(StepGated):
         return cls(
             session,
             seed=m.seed,
-            auditor_model=m.auditor_model,
-            target_model=m.target_model,
+            auditor_model=auditor_model or m.auditor_model,
+            target_model=target_model or m.target_model,
             max_turns=m.max_turns,
-            auditor_config=m.auditor_config,
-            target_config=m.target_config,
+            auditor_config=m.auditor_config if auditor_config is None else auditor_config,
+            target_config=m.target_config if target_config is None else target_config,
             auditor_model_args=m.auditor_model_args,
             target_model_args=m.target_model_args,
             live_scanners=m.live_scanners,
