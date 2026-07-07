@@ -467,6 +467,52 @@ async def _amain() -> None:
                 ".turn[data-turn='9'] .bash-cell .cc-head[role='button']"
             ).click()
 
+            # ── 18 P2: ⌘K CommandPalette ────────────────────────────────────
+            # Same tsmono-Modal shape as SettingsModal — `bodyClassName` is
+            # the stable hook, `[role='dialog']` the clip.
+            await page.keyboard.press("Control+k")
+            await page.wait_for_selector(".cmd-palette", timeout=5_000)
+            await asyncio.sleep(0.15)
+            dialog = page.locator("[role='dialog']:has(.cmd-palette)")
+            await _shot(page, "18-cmd-palette", clip=await dialog.bounding_box())
+            await page.keyboard.press("Escape")
+            await page.wait_for_function(
+                "() => !document.querySelector('.cmd-palette')", timeout=5_000
+            )
+
+            # ── 18b P2: `.head-jobs-chip` hover → job popover ───────────────
+            # `bg_jobs` only ships in `{t:"state"}` (WS-connect + a handful of
+            # server handlers), so the initial connect saw an empty list; push
+            # a fresh snapshot now that `_bash_evals` carries turn-3's real
+            # eval + turn-9's synthetic `e1`.
+            await session.broadcast(
+                {"t": "state", "v": session.version, **session.view()}
+            )
+            await page.wait_for_selector(".head-jobs-chip", timeout=5_000)
+            await orch_col.locator(".column").evaluate("(el) => { el.scrollTop = 0; }")
+            await orch_col.locator(".head-jobs-wrap").hover()
+            await page.wait_for_selector(".head-jobs-pop", timeout=5_000)
+            await asyncio.sleep(0.15)
+            await _shot(page, "18b-jobs-panel", clip=await orch_col.bounding_box())
+            await page.mouse.move(0, 0)
+
+            # ── 18c P2: pin an eval row → sidebar PINNED section ────────────
+            # `.ar-pin` is hover-reveal (opacity 0 → 1 on `.eval-row:hover`);
+            # turn-4's AttachedRun rows have `payload.log` set so `onPin`
+            # is wired. Clicking it fires `togglePin(log, id)` in-page.
+            row = orch_col.locator(".turn[data-turn='4'] .eval-row").first
+            await row.scroll_into_view_if_needed()
+            await row.hover()
+            await row.locator(".ar-pin").click()
+            await page.wait_for_selector(".sidebar .side-pins .side-row", timeout=5_000)
+            await page.mouse.move(0, 0)
+            await asyncio.sleep(0.15)
+            await _shot(
+                page,
+                "18c-pinned-rail",
+                clip=await page.locator(".sidebar").bounding_box(),
+            )
+
             # ── turn 10: §11 interrupt-and-send ─────────────────────────────
             orch.step()
             await page.wait_for_selector(
