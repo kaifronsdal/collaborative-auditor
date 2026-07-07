@@ -607,6 +607,7 @@ UNLOCKED = {
     "cancel_cell",
     "interrupt_and_send",
     "stop_sample",
+    "scan_branch",
 }
 
 
@@ -824,6 +825,76 @@ async def _h_interrupt_and_send(session: Session, data: dict) -> None:
     await session.broadcast_status()
 
 
+async def _h_scan_branch(session: Session, data: dict) -> None:
+    """P1.8(b): run named scanner(s) over an M0 branch's live target messages.
+
+    Materialises ``branch.channel.state.messages`` (the target-facing
+    ``ChatMessage`` list — the same live reference the auditor observes) as a
+    scout ``Transcript`` and calls each resolved scanner on it directly, no
+    ``ScanJob`` / ``.eval`` round-trip. Result lands as a ``ScanPayload``
+    ``InfoEvent`` on the branch's *target* span (so ``useEvents(branch,
+    "target")`` picks it up); the event uuid is the scan id, so the "running"
+    card is patched in place via ``session.emit(update=True)`` when done.
+
+    Non-blocking: emits the running card synchronously, then spawns the scan.
+    """
+    from inspect_ai.event import InfoEvent
+
+    from workbench.m1 import scanners as scanmod
+    from workbench.m1.handles import branch_scan_payload
+    from workbench.m1.wire import WB_MIME
+
+    branch_id = data["branch_id"]
+    branch = session.branches.get(branch_id)
+    if branch is None:
+        await session.broadcast(
+            {"t": "error", "v": session.version, "message": f"unknown branch {branch_id!r}"}
+        )
+        return
+
+    resolved = scanmod.resolve(data["scanner"])
+    names = list(resolved)
+    messages = list(branch.channel.state.messages)
+    scope = data.get("scope", "transcript")
+    if isinstance(scope, dict):
+        # ``{"turn": N}`` → scan the conversation up to and including message N.
+        # Per-bubble UI is P2; the wire shape is here so P1.8(c) can reuse it.
+        messages = messages[: int(scope["turn"]) + 1]
+        desc = f"{data['scanner']} · turn {scope['turn']}"
+    else:
+        desc = f"{data['scanner']} · {len(messages)} messages"
+
+    scan_id = uuid()
+
+    def emit(results: dict[str, Any] | None, error: str | None = None) -> None:
+        text, payload = branch_scan_payload(scan_id, desc, names, results, error=error)
+        ie = InfoEvent(
+            source="branch_scan",
+            span_id=branch.target_span_id,
+            data={"id": scan_id, "bundle": {"text/plain": text, WB_MIME: payload}},
+        )
+        ie.uuid = scan_id
+        session.emit(ie, update=results is not None or error is not None)
+
+    emit(None)
+
+    async def run() -> None:
+        try:
+            results = await scanmod.scan_messages(
+                messages,
+                resolved,
+                transcript_id=branch_id,
+                model=branch.meta.target_model,
+            )
+        except Exception as exc:
+            logger.exception("scan_branch %s failed", branch_id)
+            emit({}, error=f"{type(exc).__name__}: {exc}")
+            return
+        emit(results)
+
+    asyncio.create_task(run())  # noqa: RUF006
+
+
 async def _h_stop_sample(session: Session, data: dict) -> None:  # noqa: ARG001
     """M1-FEATURES §9: per-sample stop from a ``ProgressCard`` row.
     Post-M1-HYBRID the eval is a subprocess — same ACP per-sample cancel as
@@ -944,6 +1015,8 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
                 await session.orchestrator.rewind(int(data["turn"]))
         case "stop_sample":
             await _h_stop_sample(session, data)
+        case "scan_branch":
+            await _h_scan_branch(session, data)
         case "switch":
             branch_id = data["branch"]
             if branch_id not in session.branches:

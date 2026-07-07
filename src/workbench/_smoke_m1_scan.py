@@ -45,6 +45,7 @@ async def _amain() -> None:
     _prewarm()
     with OrchestratorKernel() as k:
         await _run(k)
+    await _run_branch_scan()
     print("\n✓ M1 wb.scan smoke passed")
 
 
@@ -149,6 +150,139 @@ async def _run(k: OrchestratorKernel) -> None:
         f"df['g'] {len(df)} rows, {len(scan_evs)} ticks"
     )
     shutil.rmtree(log_dir, ignore_errors=True)
+
+
+async def _run_branch_scan() -> None:
+    """P1.8(b): ``_h_scan_branch`` on a mock branch.
+
+    Builds a ``Branch`` (no ``run()`` — just channel + target span), connects
+    a hand-built target ``[sys, u1, r1, u2, r2]`` conversation to
+    ``channel.state``, fires ``scan_branch`` with a temp ``@scanner``, and
+    asserts the running → done ``InfoEvent`` pair landed on the branch's
+    target span with a ``ScanPayload`` shape ``ProgressCard`` will render.
+    """
+    import textwrap
+    from dataclasses import replace
+
+    from inspect_ai.model import (
+        ChatMessageAssistant,
+        ChatMessageSystem,
+        ChatMessageUser,
+    )
+
+    from workbench import config
+    from workbench.m1 import scanners as scanmod
+    from workbench.run import Branch
+    from workbench.server import _h_scan_branch
+    from workbench.session import Session
+
+    lib_dir = tempfile.mkdtemp(prefix="wb-scanlib-b-")
+    (Path(lib_dir) / "flags.py").write_text(
+        textwrap.dedent("""
+            from inspect_scout import Result, Transcript, scanner
+
+            @scanner(messages="all")
+            def has_u1():
+                async def scan(t: Transcript) -> Result:
+                    hit = any("u1" in (m.text or "") for m in t.messages)
+                    return Result(value=hit, explanation=f"{len(t.messages)} msgs")
+                return scan
+        """)
+    )
+    prev_settings = config.settings
+    config.settings = replace(config.settings, scanner_dir=lib_dir)
+    scanmod._lib_cache = None
+
+    session = Session()
+    await session.start()
+    try:
+        # A `Branch` without `run()` — `__init__` allocates the channel /
+        # target span / registers `span_role`, which is all `_h_scan_branch`
+        # needs. Populate the target conversation directly via
+        # `channel.state.connect` (what `TargetContext.__init__` would do).
+        base = Branch(
+            session,
+            "scan-base",
+            seed="s",
+            auditor_model="mockllm/model",
+            target_model="mockllm/model",
+        )
+        session.branches[base.branch_id] = base
+        msgs = [
+            ChatMessageSystem(content="sys"),
+            ChatMessageUser(content="u1"),
+            ChatMessageAssistant(content="r1"),
+            ChatMessageUser(content="u2"),
+            ChatMessageAssistant(content="r2"),
+        ]
+        base.channel.state.connect(msgs, [])
+
+        before = set(session.events)
+        await _h_scan_branch(
+            session,
+            {"branch_id": base.branch_id, "scanner": "has_u1", "scope": "transcript"},
+        )
+        # running InfoEvent landed synchronously; find it
+        scan_ids = [
+            e["uuid"]
+            for e in session.events.values()
+            if e["event"] == "info"
+            and e.get("source") == "branch_scan"
+            and e["uuid"] not in before
+        ]
+        assert len(scan_ids) == 1, scan_ids
+        scan_id = scan_ids[0]
+        payload = session.events[scan_id]["data"]["bundle"][WB_MIME]
+        assert payload["kind"] == "scan" and not payload["finished"], payload
+        # routes to the branch's target column
+        assert scan_id in session.by_role.get((base.branch_id, "target"), []), (
+            "scan InfoEvent not routed to (branch, 'target')"
+        )
+
+        # the handler spawned a fire-and-forget task; poll until it patches
+        # the same event (uuid == scan_id) with finished=True.
+        for _ in range(50):
+            payload = session.events[scan_id]["data"]["bundle"][WB_MIME]
+            if payload["finished"]:
+                break
+            await anyio.sleep(0.02)
+        assert payload["finished"] and payload["error"] is None, payload
+        assert payload["per_scanner"]["has_u1"] == {
+            "scans": 1,
+            "results": 1,
+            "errors": 0,
+        }, payload["per_scanner"]
+        assert "True" in payload["df_head"]["has_u1"], payload["df_head"]
+        assert f"{len(msgs)} msgs" in payload["df_head"]["has_u1"]
+        print(
+            f"✓ P1.8(b): scan_branch → InfoEvent({scan_id[:8]}) on target span, "
+            f"has_u1=True over {len(msgs)} messages"
+        )
+
+        # scope={"turn": 0} slices to the first message only → no "u1"
+        await _h_scan_branch(
+            session,
+            {"branch_id": base.branch_id, "scanner": "has_u1", "scope": {"turn": 0}},
+        )
+        for _ in range(50):
+            done = [
+                e["data"]["bundle"][WB_MIME]
+                for e in session.events.values()
+                if e["event"] == "info"
+                and e.get("source") == "branch_scan"
+                and e["uuid"] != scan_id
+            ]
+            if done and done[0]["finished"]:
+                break
+            await anyio.sleep(0.02)
+        assert done and done[0]["finished"], "turn-scope scan never finished"
+        assert "1 msgs" in done[0]["df_head"]["has_u1"], done[0]["df_head"]
+        print("✓ P1.8(b): scope={'turn':0} sliced to 1 message")
+    finally:
+        await session.close()
+        config.settings = prev_settings
+        scanmod._lib_cache = None
+        shutil.rmtree(lib_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

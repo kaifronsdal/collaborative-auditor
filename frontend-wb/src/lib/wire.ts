@@ -210,7 +210,16 @@ export type Up =
   | { t: "rewind"; turn: number }
   | { t: "interrupt_and_send"; turn: number; text: string }
   | { t: "stop_sample"; id: string; log_dir: string }
-  | { t: "import_running"; sample_id: string; log_dir: string };
+  | { t: "import_running"; sample_id: string; log_dir: string }
+  // -- P1.8(b): manual scan of an M0 branch's target conversation --
+  | {
+      t: "scan_branch";
+      branch_id: BranchId;
+      /** Scanner or group name (anything `m1.scanners.resolve` accepts). */
+      scanner: string;
+      /** Whole conversation, or up to (and including) message index N. */
+      scope: "transcript" | { turn: number };
+    };
 
 /** One entry from `GET /sessions` — a persisted session on disk. */
 export type SavedSession = {

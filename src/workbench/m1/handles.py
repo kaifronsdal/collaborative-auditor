@@ -23,6 +23,7 @@ What remains here is the polling-handle machinery ``AttachedRun`` and
 from __future__ import annotations
 
 import asyncio
+import html
 import math
 import time
 from dataclasses import dataclass, field
@@ -246,6 +247,9 @@ class ScanHandle(_PollingHandle):
     def _repr_mimebundle_(
         self, include: Any = None, exclude: Any = None
     ) -> dict[str, Any]:
+        return wb_bundle(*self._payload())
+
+    def _payload(self) -> tuple[str, ScanPayload]:
         state = "done" if self.finished else "running"
         if self.error:
             state = self.error
@@ -264,7 +268,67 @@ class ScanHandle(_PollingHandle):
         }
         if self.finished:
             payload["df_head"] = self._df_head
-        return wb_bundle(
+        return (
             f"<ScanHandle {'+'.join(self.scanner_names)} · {counter} scanned · {state}>",
             payload,
         )
+
+
+def branch_scan_payload(
+    scan_id: str,
+    description: str,
+    names: list[str],
+    results: dict[str, Any] | None = None,
+    *,
+    error: str | None = None,
+) -> tuple[str, ScanPayload]:
+    """Build the ``(text, ScanPayload)`` pair for an M0 branch scan (P1.8b).
+
+    Matches :meth:`ScanHandle._payload`'s shape so ``ProgressCard``'s scan
+    variant renders it unchanged. ``results`` is the ``scan_messages`` output
+    (``{name: Result | Exception}``); ``None`` means "still running". There is
+    no ``scans_dir`` / ``location`` — the scan ran on live in-memory messages,
+    not a scout DB — so both are empty and ``df_head`` is a hand-built one-row
+    ``value / explanation`` table per scanner.
+    """
+    finished = results is not None
+    per_scanner: dict[str, dict[str, int]] = {}
+    df_head: dict[str, str] = {}
+    for name in names:
+        r = (results or {}).get(name)
+        is_err = isinstance(r, Exception)
+        per_scanner[name] = {
+            "scans": 1 if finished else 0,
+            "results": 1 if finished and not is_err else 0,
+            "errors": 1 if is_err else 0,
+        }
+        if finished:
+            if is_err:
+                val, expl = type(r).__name__, str(r)
+            else:
+                val = getattr(r, "value", r)
+                expl = getattr(r, "explanation", None) or getattr(r, "answer", "") or ""
+            df_head[name] = (
+                '<table class="dataframe scan-preview"><thead><tr>'
+                "<th>value</th><th>explanation</th></tr></thead><tbody><tr>"
+                f"<td>{html.escape(str(val))}</td>"
+                f"<td>{html.escape(str(expl))}</td>"
+                "</tr></tbody></table>"
+            )
+    done = sum(s["scans"] for s in per_scanner.values())
+    payload: ScanPayload = {
+        "kind": "scan",
+        "id": scan_id,
+        "description": description,
+        "scans_dir": "",
+        "location": None,
+        "done": done,
+        "total": len(names),
+        "finished": finished,
+        "error": error,
+        "per_scanner": per_scanner,
+    }
+    if finished:
+        payload["df_head"] = df_head
+    state = error or ("done" if finished else "running")
+    return f"<scan {'+'.join(names)} · {done}/{len(names)} · {state}>", payload

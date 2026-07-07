@@ -6,6 +6,7 @@ import { useSession } from "../store/session";
 import { Column, type ColumnHandle } from "./Column";
 import { ComposerTextarea } from "./ComposerTextarea";
 import { OrchColumn } from "./orch/OrchColumn";
+import { ScanControl } from "./ScannerPicker";
 import { SwimlaneColumn } from "./SwimlaneColumn";
 import { IconClose, IconPause, IconPlay, IconSend } from "./icons";
 
@@ -209,7 +210,15 @@ export function DeskView(): JSX.Element {
             </div>
           </div>
 
-          <div onPointerEnter={() => (hoverRole.current = "target")} className="col-wrap">
+          <div
+            onPointerEnter={() => (hoverRole.current = "target")}
+            className="col-wrap"
+            style={{ position: "relative" }}
+          >
+            {/* P1.8(b): scan the target's live transcript. Overlaid on the
+                column head so it works whichever column component renders
+                (SwimlaneColumn / LinearColumn fallback). */}
+            <ScanControl branch={branch} />
             <SwimlaneColumn
               ref={targetRef}
               branch={branch}

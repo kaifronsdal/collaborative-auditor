@@ -30,8 +30,13 @@ from inspect_ai._util.registry import (
     registry_info,
     registry_unqualified_name,
 )
-from inspect_scout import Scanner
-from inspect_scout._scanner.scanner import scanner_create, scanners_from_file
+from inspect_ai.model import ChatMessage
+from inspect_scout import Result, Scanner, Transcript
+from inspect_scout._scanner.scanner import (
+    config_for_scanner,
+    scanner_create,
+    scanners_from_file,
+)
 
 from workbench import config
 
@@ -185,6 +190,52 @@ def _resolve(
     # Raw ``Scanner`` instance (or anything callable the agent built inline).
     name = registry_unqualified_name(spec) if is_registry_object(spec) else repr(spec)
     return {name: spec}
+
+
+async def scan_messages(
+    messages: Sequence[ChatMessage],
+    scanners: dict[str, Scanner],
+    *,
+    transcript_id: str,
+    model: str | None = None,
+) -> dict[str, Result | Exception]:
+    """Run each scanner directly on an in-memory scout ``Transcript``.
+
+    P1.8(b): the M0 branch's target conversation is live in
+    ``branch.channel.state.messages`` — there is no ``.eval`` on disk to
+    point ``ScanJob`` at, so this bypasses ``scan_async`` and calls each
+    scanner on a synthetic ``Transcript(messages=…)`` (same construction
+    scout's own ``as_scorer`` uses). Per-scanner message filtering honours
+    the scanner's declared ``config.content.messages``; events/timelines are
+    empty (a live M0 branch has no per-sample event log to hand over).
+
+    A scanner that raises (wrong input type, model error, …) is captured
+    per-entry so one failure doesn't sink the batch; the caller renders it
+    as ``errors: 1`` in the ``ScanPayload``.
+    """
+    out: dict[str, Result | Exception] = {}
+    for name, s in scanners.items():
+        cfg = config_for_scanner(s)
+        roles = cfg.content.messages
+        if roles == "all" or roles is None:
+            filtered = list(messages)
+        else:
+            filtered = [m for m in messages if m.role in roles]
+        t = Transcript(
+            transcript_id=transcript_id,
+            model=model,
+            messages=filtered,
+            message_count=len(filtered),
+        )
+        try:
+            r = await s(t)
+        except Exception as exc:  # noqa: BLE001
+            out[name] = exc
+            continue
+        # ``list[Result]`` collapses to the first entry for the card; the
+        # full list is what a per-turn (P1.8c) badge would iterate.
+        out[name] = r[0] if isinstance(r, list) and r else r
+    return out
 
 
 def _miss(spec: str, lib: dict[str, Scanner], groups: dict[str, list[str]]) -> str:
