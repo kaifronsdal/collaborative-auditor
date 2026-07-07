@@ -697,16 +697,16 @@ async def _amain() -> None:
             await _shot(page, "15c-m0-desk", full=True)
 
             # ── 16 P1.8(b): ScanControl button + open popover ───────────────
-            # The button overlays the target-column head; opening it mounts
-            # the ScannerPicker combobox — focus it so the dropdown renders
+            # `.scan-trigger` overlays the target-column head; opening it
+            # mounts the restyled `.grm-search` combobox + `gate-btn primary`
+            # Run — focus the input so the `.scan-opt` dropdown renders
             # `my-group` (bold, ·1) + `has_a`.
-            scan_btn = tgt.locator("button.chip[title^='Run a scanner']")
+            scan_btn = tgt.locator(".scan-trigger")
             await scan_btn.wait_for(timeout=5_000)
             await scan_btn.click()
-            await page.wait_for_selector(
-                "input[placeholder*='scanner or group']", timeout=5_000
-            )
-            await page.locator("input[placeholder*='scanner or group']").focus()
+            await page.wait_for_selector(".grm-search", timeout=5_000)
+            await tgt.locator(".grm-search").focus()
+            await page.wait_for_selector(".scan-opt", timeout=5_000)
             await asyncio.sleep(0.2)
             await _shot(page, "16-m0-scan-picker", clip=await tgt.bounding_box())
             await page.keyboard.press("Escape")
