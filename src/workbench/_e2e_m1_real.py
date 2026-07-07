@@ -8,6 +8,8 @@ the intended path unprompted:
       → review_seeds(...)               ← auto-resolved {"surviving":["s0","s1","s2"]}
       → bash("inspect eval …@audit …")  ← subprocess; {"wb":…} → eval_run card
       → python("h = wb.attach(...)")    ← AttachedRun; h.n_done > 0
+      → review_finding(claim, quotes)   ← auto-resolved {"signed":True,"by":"e2e"}
+                                           → findings.jsonl has ≥1 line
 
 plus, opportunistically, ``AttachedRun.interrupt_sample(id)`` on one still-
 running sample over the subprocess's ACP socket.
@@ -33,6 +35,7 @@ import anyio
 from workbench.m1._fixtures import tool_result_text, wb_events
 from workbench.m1.attach import AttachedRun
 from workbench.m1.orchestrator import ORCH_SOURCE
+from workbench.m1.proposals import FINDINGS_JSONL, load_findings
 from workbench.m1.wire import WB_MIME
 from workbench.session import Session
 
@@ -46,7 +49,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
     session = Session()
     await session.start()
 
-    await session.start_orchestrator(model=model, max_turns=12)
+    await session.start_orchestrator(model=model, max_turns=16)
     orch = session.orchestrator
     assert orch is not None
     session_dir: Path = orch.session_dir
@@ -72,22 +75,28 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
         f"Run 3 short audits (max_turns=8) against {target} using seeds "
         f"about system-prompt extraction. Use {target} for the auditor and "
         f"judge roles too. Get my sign-off on the seed list before "
-        f"launching, then attach to the results."
+        f"launching, then attach to the results. Once the run finishes, "
+        f"cite one finding with a supporting quote from the highest-scoring "
+        f"sample so I can sign it."
     )
     orch.play()
 
     # ---- poll until parked / ended / timeout -------------------------------
     # Auto-resolve gates so the e2e doesn't hang on a human card:
-    # ``run_proposal`` → keep the first 3 seeds; anything else → {}.
+    # ``run_proposal`` → keep the first 3 seeds; ``cite_proposal`` →
+    # ``{"signed": True, "by": "e2e"}``; anything else → {}.
     await asyncio.sleep(2.0)
     deadline = t0 + TIMEOUT_S
     last_turn_count = -1
     resolved_run_proposal: str | None = None
+    resolved_cite_proposal: str | None = None
     interrupt_ok: bool | None = None
     while time.monotonic() < deadline:
         for gid in list(orch.gate.pending):
             wb = _find_wb_payload(session, gid)
-            if wb and wb.get("kind") == "run_proposal":
+            kind = wb.get("kind") if wb else None
+            verdict: dict[str, Any]
+            if kind == "run_proposal":
                 seeds = wb.get("seeds") or []
                 verdict = {"surviving": [s["id"] for s in seeds[:3]]}
                 resolved_run_proposal = gid
@@ -95,9 +104,19 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
                     f"  auto-resolving review_seeds {gid[:8]} → surviving="
                     f"{verdict['surviving']} (of {len(seeds)})"
                 )
+            elif kind == "cite_proposal":
+                # ``CiteProposal.resolve`` reads ``signed`` / ``by`` (and
+                # optional ``edits``); ``signed=True`` is what triggers the
+                # ``findings.jsonl`` append in ``proposals.cite``.
+                verdict = {"signed": True, "by": "e2e"}
+                resolved_cite_proposal = gid
+                print(
+                    f"  auto-resolving review_finding {gid[:8]} → signed by e2e "
+                    f"(claim={wb.get('claim')!r}, {len(wb.get('quotes') or [])} quote(s))"
+                )
             else:
                 verdict = {}
-                print(f"  auto-resolving pending gate {gid[:8]} → {{}}")
+                print(f"  auto-resolving pending gate {gid[:8]} ({kind}) → {{}}")
             orch.gate.resolve(gid, verdict)
         # Opportunistic: once an ``AttachedRun`` handle surfaces in the
         # kernel namespace with in-flight samples, interrupt one over ACP.
@@ -129,6 +148,7 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
     # ---- collect ------------------------------------------------------------
     tool_evs = _tool_events(session)
     review_evs = [e for e in tool_evs if e.get("function") == "review_seeds"]
+    finding_evs = [e for e in tool_evs if e.get("function") == "review_finding"]
     bash_evs = [e for e in tool_evs if e.get("function") == "bash"]
     python_evs = [e for e in tool_evs if e.get("function") == "python"]
     eval_bash = [
@@ -198,6 +218,32 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
         )
         print(f"✓ wb.attach → AttachedRun, n_done={n_done}")
 
+        # (f) review_finding → findings.jsonl -------------------------------
+        findings_path = session_dir / FINDINGS_JSONL
+        assert resolved_cite_proposal is not None, (
+            f"no review_finding gate opened ({len(finding_evs)} review_finding "
+            f"tool call(s)) — orchestrator never proposed a citation"
+        )
+        assert findings_path.exists(), (
+            f"cite_proposal {resolved_cite_proposal[:8]} was signed but "
+            f"{findings_path} was never written"
+        )
+        findings = load_findings(session_dir)
+        assert len(findings) >= 1, (
+            f"{findings_path} exists but parsed 0 findings "
+            f"(raw: {findings_path.read_text()!r})"
+        )
+        f0 = findings[0]
+        assert f0.signed_by == "e2e", (
+            f"finding[0].signed_by={f0.signed_by!r} — expected 'e2e' from the "
+            f"auto-resolver verdict"
+        )
+        print(
+            f"✓ review_finding → {findings_path.name}: {len(findings)} line(s); "
+            f"claim={f0.claim!r} signed_by={f0.signed_by!r} "
+            f"quotes={len(f0.quotes)}"
+        )
+
         if interrupt_ok is True:
             print("✓ AttachedRun.interrupt_sample → True over ACP")
         elif interrupt_ok is False:
@@ -213,7 +259,8 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
         print(f"  final status       : {orch.status}")
         print(f"  orchestrator turns : {_n_assistant_turns(session)}")
         print(f"  tool calls         : {len(tool_evs)} "
-              f"(bash={len(bash_evs)} python={len(python_evs)} review={len(review_evs)})")
+              f"(bash={len(bash_evs)} python={len(python_evs)} "
+              f"review_seeds={len(review_evs)} review_finding={len(finding_evs)})")
         print(f"  cell tracebacks    : {len(tool_errors)}")
         for e in tool_errors:
             print(f"    - {e.get('function')}: {tool_result_text(e).splitlines()[-1][:100]}")
@@ -222,6 +269,9 @@ async def _amain(*, model: str, target: str, keep: bool) -> None:
         print(f"  .eval files        : {[str(p) for p in eval_files]}")
         print(f"  AttachedRun n_done : {[h.n_done for h in handles]}")
         print(f"  review_seeds gate  : {resolved_run_proposal}")
+        print(f"  review_finding gate: {resolved_cite_proposal}")
+        print(f"  findings.jsonl     : {len(findings)} line(s) → "
+              f"{[f.claim for f in findings]}")
         print(f"  on_change statuses : {on_change_statuses}")
         print(f"  interrupt_sample   : {interrupt_ok}")
         print("=" * 72)
