@@ -107,7 +107,11 @@ anything else you need.
   text of the messages, for you to read.
 - `await wb.scan(logs, scanner, *, description="", model=None) -> ScanHandle`
   — run a scout scanner over logs. `handle.df[name]` for results.
-$SCANNER_GROUPS- `wb.cite(...)` / `wb.ask_human(...)` / `wb.review_seeds(...)` — same as
+$SCANNER_GROUPS- `wb.diff(a, b, *, on="id") -> DiffHandle` — compare two eval runs by
+  seed. `.df` for the joined table (`_a`/`_b` suffixes + `delta_*` cols),
+  `.flipped` for samples that changed materially, `display(handle)` for a
+  card. `a`/`b` are each an `AttachedRun` or a log path/dir.
+- `wb.cite(...)` / `wb.ask_human(...)` / `wb.review_seeds(...)` — same as
   the top-level tools, callable in-cell when you compute → review → launch
   in one cell.
 - `wb.plots.by_model(df, col="model") -> dict` / `wb.plots.model_label(model_id) -> str`

@@ -9,12 +9,13 @@ that isn't a side-effect is just Python — the agent uses ``pd``/``px``/
 
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 from typing import Any
 
 from workbench.m1 import proposals
 from workbench.m1.attach import AttachedRun
-from workbench.m1.handles import ScanHandle
+from workbench.m1.handles import DiffHandle, ScanHandle
 from workbench.m1.plots import Plots
 from workbench.m1.proposals import Finding, Gate, Prompt, Quote, load_findings
 from workbench.m1.read import (
@@ -64,7 +65,7 @@ class Workbench:
 
     def __repr__(self) -> str:
         return (
-            "<wb · attach ask_human review_seeds cite findings scan "
+            "<wb · attach diff ask_human review_seeds cite findings scan "
             "excerpt transcript read_transcript plots DEFAULTS>"
         )
 
@@ -77,6 +78,79 @@ class Workbench:
         ``await h.wait()`` for the ``.eval`` to settle; ``h.audits`` for
         the DataFrame."""
         return AttachedRun.attach(log_dir, session_dir=self._session_dir)
+
+    def diff(
+        self,
+        a: AttachedRun | str,
+        b: AttachedRun | str,
+        *,
+        on: str | list[str] = "id",
+    ) -> DiffHandle:
+        """Compare two eval runs sample-by-sample (P3 run diff).
+
+        ``a``/``b`` are each an :class:`AttachedRun`, a ``.eval`` path, or a
+        ``log_dir`` (relative paths resolve against the session dir, same as
+        :meth:`attach`). Both are loaded via ``audits_df`` and outer-joined on
+        ``on`` — default ``"id"``, the sample's declared id, which is the
+        column that is stable across two runs of the same seed set
+        (``sample_id`` is a per-run hash). For every numeric ``score_*``
+        column present in both frames a ``delta_<scorer>`` = ``b - a`` column
+        is added; a row is *flipped* if any ``|delta| > 0.5`` or the score
+        changed sign. Returns a :class:`DiffHandle` (``.df`` / ``.flipped`` /
+        ``.summary``); ``display(handle)`` renders a ``DiffCard``.
+        """
+        import pandas as pd
+        from inspect_petri import audits_df
+
+        def load(x: AttachedRun | str) -> tuple[Any, str]:
+            if isinstance(x, AttachedRun):
+                return audits_df(x.location or x.log_dir), (
+                    x.task_name or os.path.basename(x.log_dir)
+                )
+            if not os.path.isabs(x):
+                x = os.path.join(self._session_dir or os.getcwd(), x)
+            return audits_df(x), os.path.basename(os.path.normpath(x))
+
+        da, a_task = load(a)
+        db, b_task = load(b)
+        keys = [on] if isinstance(on, str) else list(on)
+        j = pd.merge(
+            da, db, on=keys, how="outer", suffixes=("_a", "_b"), indicator=True
+        )
+        # Numeric ``score_*`` columns common to both — the diff dimensions.
+        scorers = sorted(
+            c
+            for c in da.columns
+            if c.startswith("score_")
+            and c in db.columns
+            and pd.api.types.is_numeric_dtype(da[c])
+            and pd.api.types.is_numeric_dtype(db[c])
+        )
+        flip = pd.Series(False, index=j.index)
+        mean_delta: dict[str, Any] = {}
+        for c in scorers:
+            name = c[len("score_") :]
+            va, vb = j[f"{c}_a"].astype("float64"), j[f"{c}_b"].astype("float64")
+            d = j[f"delta_{name}"] = vb - va
+            mean_delta[name] = float(d.mean()) if d.notna().any() else None
+            flip = flip | (d.abs() > 0.5) | ((va * vb < 0) & va.notna() & vb.notna())
+        both = j["_merge"] == "both"
+        summary: dict[str, Any] = {
+            "n": int(both.sum()),
+            "n_flipped": int((flip & both).sum()),
+            "n_only_a": int((j["_merge"] == "left_only").sum()),
+            "n_only_b": int((j["_merge"] == "right_only").sum()),
+            "mean_delta": mean_delta,
+        }
+        return DiffHandle(
+            df=j,
+            flipped=j[flip & both].reset_index(drop=True),
+            summary=summary,
+            a_task=a_task,
+            b_task=b_task,
+            on=keys,
+            scorers=scorers,
+        )
 
     # -- review gates (in-cell aliases of the review tools) ---------------
 

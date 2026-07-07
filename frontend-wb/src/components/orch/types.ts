@@ -142,6 +142,24 @@ export type ScanPayload = {
   df_head?: Record<string, string>;
 };
 
+/** P3 run diff — `wb.diff(a, b)` result card (`DiffHandle`). */
+export type DiffPayload = {
+  kind: "run_diff";
+  a_task: string;
+  b_task: string;
+  n: number;
+  n_flipped: number;
+  summary: {
+    n: number;
+    n_flipped: number;
+    n_only_a: number;
+    n_only_b: number;
+    mean_delta: Record<string, number | null>;
+  };
+  /** HTML preview of `.flipped` (or `.df` head when nothing flipped). */
+  df_head: string;
+};
+
 // -- reader cards -------------------------------------------------------------
 
 export type TranscriptPayload = {
@@ -223,6 +241,7 @@ export type WbPayload =
   | FindingPayload
   | EvalRunPayload
   | ScanPayload
+  | DiffPayload
   | TranscriptPayload
   | ExcerptPayload
   | TracebackPayload

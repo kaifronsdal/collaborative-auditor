@@ -32,7 +32,7 @@ from uuid import uuid4
 
 from IPython.display import DisplayHandle, display
 
-from workbench.m1.wire import ScanPayload, wb_bundle
+from workbench.m1.wire import DiffPayload, ScanPayload, finite, wb_bundle
 
 # -- run handles --------------------------------------------------------------
 
@@ -272,6 +272,68 @@ class ScanHandle(_PollingHandle):
             f"<ScanHandle {'+'.join(self.scanner_names)} · {counter} scanned · {state}>",
             payload,
         )
+
+
+@dataclass(kw_only=True)
+class DiffHandle:
+    """Result of ``wb.diff(a, b)`` — two eval runs joined on sample id (P3).
+
+    Not a live/polling handle — the join is computed synchronously in
+    :func:`workbench.m1.wb.Workbench.diff` and this holds the result.
+    ``.df`` is the outer-joined ``audits_df`` with ``_a``/``_b`` suffixes
+    and one ``delta_<scorer>`` column per numeric ``score_*`` column common
+    to both runs (``b - a``). ``.flipped`` is the subset where any
+    ``|delta| > 0.5`` or the score changed sign. ``.summary`` carries
+    per-scorer mean delta and only-in-a/b counts. ``display(handle)``
+    renders a ``DiffCard``.
+    """
+
+    df: Any
+    flipped: Any
+    summary: dict[str, Any]
+    a_task: str
+    b_task: str
+    on: list[str]
+    scorers: list[str]
+
+    def __repr__(self) -> str:
+        s = self.summary
+        return (
+            f"<DiffHandle {self.a_task} vs {self.b_task} · "
+            f"{s['n']} joined · {s['n_flipped']} flipped · "
+            f"only-a {s['n_only_a']} · only-b {s['n_only_b']}>"
+        )
+
+    def _repr_mimebundle_(
+        self, include: Any = None, exclude: Any = None
+    ) -> dict[str, Any]:
+        # Preview: the flipped subset if any, else the joined head — restricted
+        # to the join key + per-scorer a/b/delta columns so the table stays
+        # narrow enough to read in a card.
+        cols = list(self.on)
+        for c in self.scorers:
+            cols += [f"{c}_a", f"{c}_b", f"delta_{c[len('score_') :]}"]
+        head = self.flipped if len(self.flipped) else self.df
+        df_head = (
+            head[cols]
+            .head(5)
+            .to_html(
+                classes="dataframe scan-preview",
+                border=0,
+                index=False,
+                float_format=lambda v: f"{v:.3g}",
+            )
+        )
+        payload: DiffPayload = {
+            "kind": "run_diff",
+            "a_task": self.a_task,
+            "b_task": self.b_task,
+            "n": self.summary["n"],
+            "n_flipped": self.summary["n_flipped"],
+            "summary": finite(self.summary),
+            "df_head": df_head,
+        }
+        return wb_bundle(repr(self), payload)
 
 
 def branch_scan_payload(

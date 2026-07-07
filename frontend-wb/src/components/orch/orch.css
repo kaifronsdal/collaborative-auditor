@@ -873,6 +873,13 @@ sup.ask-opt-key {
 .scan-df table.dataframe { font: 11px/1.4 var(--mono); border-collapse: collapse; }
 .scan-df th, .scan-df td { padding: 3px 8px; border: 1px solid var(--border); text-align: left; }
 
+/* ---- DiffCard (P3 run diff) ---- */
+/* Reuses `.scan-rows`/`.scan-row`/`.scan-df`; only the right-aligned mean-Δ
+   column and its `.pc-cols` header label are diff-specific. */
+.diff-delta { min-width: 90px; text-align: right; justify-content: flex-end; }
+.scan-row .stat.diff-delta b { color: var(--ok); }
+.scan-row .stat.diff-delta.neg b { color: var(--danger); }
+
 /* ---- ReaderCard ---- */
 /* Flat `.rd-msg` list — gutter-left role tag, plain body. Not a `<Bubble>`:
    no rounded box, no CollapsibleContent (§C dense reader). */

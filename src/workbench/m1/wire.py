@@ -246,6 +246,20 @@ class ScanPayload(TypedDict, total=False):
     df_head: dict[str, str]
 
 
+class DiffPayload(TypedDict, total=False):
+    """P3 run diff — ``wb.diff(a, b)`` result card (:class:`.handles.DiffHandle`)."""
+
+    kind: Literal["run_diff"]
+    a_task: str
+    b_task: str
+    n: int
+    n_flipped: int
+    #: ``{n, n_flipped, n_only_a, n_only_b, mean_delta: {scorer: Δ̄}}``.
+    summary: dict[str, Any]
+    #: HTML preview of ``.flipped`` (or ``.df`` head when nothing flipped).
+    df_head: str
+
+
 # -- reader cards -------------------------------------------------------------
 
 
@@ -335,6 +349,7 @@ WbPayload = (
     | FindingPayload
     | EvalRunPayload
     | ScanPayload
+    | DiffPayload
     | TranscriptPayload
     | ExcerptPayload
     | TracebackPayload

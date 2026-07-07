@@ -46,6 +46,8 @@ async def _amain() -> None:
     _prewarm()
     with OrchestratorKernel() as k:
         await _run(k)
+    with OrchestratorKernel() as k:
+        await _run_diff(k)
     await _run_branch_scan()
     print("\n✓ M1 wb.scan smoke passed")
 
@@ -151,6 +153,59 @@ async def _run(k: OrchestratorKernel) -> None:
         f"df['g'] {len(df)} rows, {len(scan_evs)} ticks"
     )
     shutil.rmtree(log_dir, ignore_errors=True)
+
+
+async def _run_diff(k: OrchestratorKernel) -> None:
+    """P3 run diff: two ``@demo`` runs → ``wb.diff(a, b)`` in-cell.
+
+    Seeds two mockllm ``.eval`` dirs (3 vs 4 samples so ``n_only_b == 1``),
+    calls ``wb.diff`` on the paths, and asserts ``.df`` shape / ``.summary``
+    counts / a ``run_diff`` payload landed in the cell's outputs.
+    """
+    from workbench.m1._audit_task import demo
+
+    k.shell.user_ns["wb"] = Workbench(Gate())
+    dir_a = tempfile.mkdtemp(prefix="wb-diff-a-")
+    dir_b = tempfile.mkdtemp(prefix="wb-diff-b-")
+    try:
+        await eval_async(demo(n=3), model="mockllm/model", log_dir=dir_a)
+        await eval_async(demo(n=4), model="mockllm/model", log_dir=dir_b)
+        k.shell.user_ns["dir_a"] = dir_a
+        k.shell.user_ns["dir_b"] = dir_b
+
+        r = await k.run_turn("d = wb.diff(dir_a, dir_b)\ndisplay(d)\nd")
+        assert r.success, r.text
+        d = k.shell.user_ns["d"]
+        # 3 samples in both, one only-in-b, one score_* delta column.
+        assert d.df.shape[0] == 4, d.df.shape
+        assert set(d.on) == {"id"}
+        assert d.scorers == ["score__always_one"], d.scorers
+        assert "delta__always_one" in d.df.columns, list(d.df.columns)
+        assert "score__always_one_a" in d.df.columns
+        s = d.summary
+        assert s["n"] == 3 and s["n_only_a"] == 0 and s["n_only_b"] == 1, s
+        # constant score=1 on both sides → no flips, mean delta 0.
+        assert s["n_flipped"] == 0 and len(d.flipped) == 0, s
+        assert s["mean_delta"]["_always_one"] == 0.0, s["mean_delta"]
+        # DiffPayload emitted via WB_MIME
+        payloads = [
+            ev.bundle[WB_MIME]
+            for ev in r.outputs
+            if WB_MIME in ev.bundle and ev.bundle[WB_MIME]["kind"] == "run_diff"
+        ]
+        assert payloads, [ev.bundle.keys() for ev in r.outputs]
+        p = payloads[0]
+        assert p["n"] == 3 and p["n_flipped"] == 0, p
+        assert p["summary"]["n_only_b"] == 1
+        assert "<table" in p["df_head"] and "delta__always_one" in p["df_head"]
+        assert "3 joined" in r.text and "0 flipped" in r.text, r.text
+        print(
+            f"✓ P3 wb.diff: {d.df.shape[0]}×{d.df.shape[1]} joined, "
+            f"summary={s}, {len(payloads)} run_diff payload(s)"
+        )
+    finally:
+        shutil.rmtree(dir_a, ignore_errors=True)
+        shutil.rmtree(dir_b, ignore_errors=True)
 
 
 async def _run_branch_scan() -> None:

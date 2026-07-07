@@ -7,6 +7,7 @@ import type { ComponentType } from "react";
 
 import type { Up } from "../../../lib/wire";
 import type { WbPayload } from "../types";
+import DiffCard from "./DiffCard";
 import FindingCard from "./FindingCard";
 import GateCard from "./GateCard";
 import ProgressCard from "./ProgressCard";
@@ -30,6 +31,7 @@ export const cards: Record<string, AnyCard> = {
   cite_proposal: GateCard,
   eval_run: ProgressCard,
   scan: ProgressCard,
+  run_diff: DiffCard,
   excerpt: ReaderCard,
   transcript: ReaderCard,
   finding: FindingCard,
