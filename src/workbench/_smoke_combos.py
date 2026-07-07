@@ -338,6 +338,32 @@ async def c4_inject_during_paused_replay() -> None:
             f"inject did not queue: {child.queued['auditor']}"
         )
 
+        # Unqueue: inject a second message, remove it by id, assert only the
+        # first survives (and the wire echo carries the removed id).
+        conn = FakeConn()
+        session.connections.append(conn)
+        await _dispatch(
+            session,
+            {
+                "t": "inject",
+                "branch": child_id,
+                "role": "auditor",
+                "message": {"role": "user", "content": "OOPS", "id": "fb2"},
+            },
+        )
+        assert len(child.queued["auditor"]) == 2
+        await _dispatch(
+            session,
+            {"t": "unqueue", "branch": child_id, "role": "auditor", "message_id": "fb2"},
+        )
+        assert len(child.queued["auditor"]) == 1, (
+            f"unqueue left {len(child.queued['auditor'])}: {child.queued['auditor']}"
+        )
+        assert child.queued["auditor"][0].id == "fb1", child.queued["auditor"]
+        unq = [m for m in conn.sent if m["t"] == "unqueued"]
+        assert len(unq) == 1 and unq[0]["message_id"] == "fb2", conn.sent
+        session.connections.remove(conn)
+
         await _dispatch(session, {"t": "play"})
         await session.branch_tasks[child_id]
         assert child.error is None, f"child failed: {child.error}"

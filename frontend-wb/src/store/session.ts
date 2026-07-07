@@ -396,6 +396,17 @@ export type SessionState = {
    * appears before the server echo), then send `{t:"inject", …}`.
    */
   inject: (branch: BranchId, role: "auditor" | "target", message: ChatMessage) => void;
+
+  /** Remove a queued message before the next turn consumes it. Optimistically
+   *  drops it from `queued[branch][role]` (ghost bubble disappears
+   *  immediately), then sends `{t:"unqueue", …}`. */
+  unqueue: (branch: BranchId, role: "auditor" | "target", messageId: string) => void;
+
+  /** One-shot handoff into the auditor composer: when non-null, `DeskView`
+   *  picks it up into the textarea and clears it. Set by the queued-bubble
+   *  edit action (unqueue → prefill composer with the old text). */
+  composerDraft: string | null;
+  setComposerDraft: (text: string | null) => void;
 };
 
 /** Resolve a single ModelEvent's `input_refs` against the pool. */
@@ -478,6 +489,7 @@ export const useSession = create<SessionState>((set, get) => ({
   prevCurrent: null,
   error: null,
   rewriteDrafts: {},
+  composerDraft: null,
 
   apply: (msg: Down) =>
     set((state) => {
@@ -671,6 +683,20 @@ export const useSession = create<SessionState>((set, get) => ({
             roles[msg.role].push(msg.message);
           }
           return { queued, version: msg.v };
+        }
+
+        case "unqueued": {
+          const roles = state.queued[msg.branch];
+          if (roles == null) return { version: msg.v };
+          const kept = roles[msg.role].filter((m) => m.id !== msg.message_id);
+          if (kept.length === roles[msg.role].length) return { version: msg.v };
+          return {
+            queued: {
+              ...state.queued,
+              [msg.branch]: { ...roles, [msg.role]: kept },
+            },
+            version: msg.v,
+          };
         }
 
         case "rewrite_draft": {
@@ -1079,6 +1105,18 @@ export const useSession = create<SessionState>((set, get) => ({
     });
     get().send({ t: "inject", branch, role, message });
   },
+
+  unqueue: (branch, role, messageId) => {
+    set((state) => {
+      const roles = state.queued[branch];
+      if (roles == null) return {};
+      const kept = roles[role].filter((m) => m.id !== messageId);
+      return { queued: { ...state.queued, [branch]: { ...roles, [role]: kept } } };
+    });
+    get().send({ t: "unqueue", branch, role, message_id: messageId });
+  },
+
+  setComposerDraft: (text) => set({ composerDraft: text }),
 }));
 
 /**

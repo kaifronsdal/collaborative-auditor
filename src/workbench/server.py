@@ -637,6 +637,7 @@ async def _import(session: Session, history: Any, meta: Any) -> None:
 #: the work; blocking dispatch on them would serialise unrelated commands
 #: behind a running cell.
 UNLOCKED = {
+    "unqueue",
     "rewrite_tool_call",
     "rewrite_target_message",
     "export",
@@ -738,6 +739,40 @@ async def _h_inject(session: Session, data: dict) -> None:
             "branch": branch_id,
             "role": role,
             "message": data["message"],
+        }
+    )
+
+
+async def _h_unqueue(session: Session, data: dict) -> None:
+    """Remove a not-yet-consumed injected message from ``queued[role]`` by id.
+
+    Mirror of ``_h_inject``: mutates the branch's ``queued`` list in place and
+    broadcasts a targeted ``{t:"unqueued", …}`` so every connection drops the
+    ghost bubble. No-op (with a warning) if the id isn't queued — the turn may
+    have already drained it, or the client optimistically raced a prior
+    unqueue.
+    """
+    branch_id = data["branch"]
+    role = data["role"]
+    message_id = data["message_id"]
+    branch = session.branches.get(branch_id)
+    if branch is None:
+        logger.warning("unqueue for unknown branch %r — dropping", branch_id)
+        return
+    q = branch.queued[role]
+    for i, m in enumerate(q):
+        if m.id == message_id:
+            del q[i]
+            break
+    else:
+        logger.warning("unqueue: %r not in %s.queued[%s]", message_id, branch_id, role)
+    await session.broadcast(
+        {
+            "t": "unqueued",
+            "v": session.version,
+            "branch": branch_id,
+            "role": role,
+            "message_id": message_id,
         }
     )
 
@@ -960,6 +995,8 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
             await _h_transport(session, data, cmd)
         case "inject":
             await _h_inject(session, data)
+        case "unqueue":
+            await _h_unqueue(session, data)
         case "branch":
             # Inclusive branch at a target assistant anchor: the clicked
             # target response is in the replayed prefix; the *next* auditor

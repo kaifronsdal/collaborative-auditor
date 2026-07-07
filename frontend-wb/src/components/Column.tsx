@@ -1,5 +1,7 @@
 import { type JSX, forwardRef, useMemo } from "react";
 
+import type { ChatMessage } from "@tsmono/inspect-common";
+
 import { eventsToTurns, isModelEvent } from "../lib/events";
 import {
   useEvents,
@@ -13,6 +15,7 @@ import { Bubble } from "./Bubble";
 import { ModelEventRow } from "./ModelEventRow";
 import { ShimmerBubble } from "./ShimmerBubble";
 import { SwimlaneColumn } from "./SwimlaneColumn";
+import { contentText } from "./tool-renderers/util";
 import { useColumnScroll } from "./useColumnScroll";
 
 type Props = {
@@ -95,9 +98,58 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
         <Bubble key={m.id ?? `s${i}`} msg={m} ghost byline={`staged · ${m.role}`} />
       ))}
       {queued.map((m, i) => (
-        <Bubble key={m.id ?? `q${i}`} msg={m} ghost byline="queued" />
+        <QueuedBubble key={m.id ?? `q${i}`} branch={branch} role={role} msg={m} />
       ))}
       {showShimmer && <ShimmerBubble />}
     </div>
   );
 });
+
+/**
+ * A queued (injected, not-yet-consumed) ghost bubble with hover actions:
+ * × removes it from the branch's queue; edit (auditor only — the sole column
+ * with a composer) unqueues then hands the text back to the composer via
+ * `composerDraft` so the operator can revise and re-send.
+ */
+export function QueuedBubble({
+  branch,
+  role,
+  msg,
+}: {
+  branch: BranchId;
+  role: Role;
+  msg: ChatMessage;
+}): JSX.Element {
+  const unqueue = useSession((s) => s.unqueue);
+  const setComposerDraft = useSession((s) => s.setComposerDraft);
+  // Actions need a stable id to target the backend queue entry; injected
+  // messages always carry one (DeskView mints a uuid), but guard anyway.
+  const canAct = msg.id != null && role !== "orch";
+  const canEdit = canAct && role === "auditor";
+  return (
+    <div className="lead-wrap">
+      <Bubble msg={msg} ghost byline="queued" />
+      {canAct && (
+        <div className="msg-actions queued-actions">
+          {canEdit && (
+            <button
+              title="edit — unqueue and return text to the composer"
+              onClick={() => {
+                unqueue(branch, role as "auditor" | "target", msg.id!);
+                setComposerDraft(contentText(msg.content));
+              }}
+            >
+              <i className="bi bi-pencil" />
+            </button>
+          )}
+          <button
+            title="remove from queue"
+            onClick={() => unqueue(branch, role as "auditor" | "target", msg.id!)}
+          >
+            <i className="bi bi-x-lg" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -31,7 +31,7 @@ import {
 import type { BranchId, Role } from "../lib/wire";
 import { useSession } from "../store/session";
 import { Bubble } from "./Bubble";
-import { LinearColumn, type ColumnHandle } from "./Column";
+import { LinearColumn, QueuedBubble, type ColumnHandle } from "./Column";
 import { ModelEventRow } from "./ModelEventRow";
 import { ShimmerBubble } from "./ShimmerBubble";
 import { useColumnScroll } from "./useColumnScroll";
@@ -186,7 +186,7 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
         <Bubble key={m.id ?? `s${i}`} msg={m} ghost byline={`staged · ${m.role}`} />
       ))}
       {queued.map((m, i) => (
-        <Bubble key={m.id ?? `q${i}`} msg={m} ghost byline="queued" />
+        <QueuedBubble key={m.id ?? `q${i}`} branch={branch} role={role} msg={m} />
       ))}
       {showShimmer && <ShimmerBubble />}
     </div>

@@ -67,6 +67,16 @@ export function DeskView(): JSX.Element {
   }, []);
 
   const [feedback, setFeedback] = useState("");
+  // One-shot handoff from a queued-bubble edit action: pick the draft up
+  // into the composer, then clear it so the next edit isn't suppressed.
+  const composerDraft = useSession((s) => s.composerDraft);
+  const setComposerDraft = useSession((s) => s.setComposerDraft);
+  useEffect(() => {
+    if (composerDraft != null) {
+      setFeedback(composerDraft);
+      setComposerDraft(null);
+    }
+  }, [composerDraft, setComposerDraft]);
 
   // Drag-to-resize: vars live on `.desk-body` so both grid columns track the split.
   const bodyRef = useRef<HTMLDivElement>(null);

@@ -111,6 +111,13 @@ export type Down =
       role: "auditor" | "target";
       message: ChatMessage;
     }
+  | {
+      t: "unqueued";
+      v: number;
+      branch: BranchId;
+      role: "auditor" | "target";
+      message_id: string;
+    }
   | { t: "timeline"; v: number; branch: BranchId; role: Role; timeline: ServerTimeline }
   | {
       t: "rewrite_draft";
@@ -184,6 +191,7 @@ export type Up =
   | { t: "pause"; target?: string }
   | { t: "end" }
   | { t: "inject"; branch: BranchId; role: Role; message: ChatMessage }
+  | { t: "unqueue"; branch: BranchId; role: "auditor" | "target"; message_id: string }
   | ({ t: "branch"; at: string } & ForkOverrides)
   | ({ t: "resample"; at: string } & ForkOverrides)
   | ({ t: "branch_auditor"; branch: BranchId; turn_index: number } & ForkOverrides)

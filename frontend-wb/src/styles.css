@@ -611,6 +611,10 @@ body {
 .lead-wrap:has(.user) .msg-actions,
 .lead-wrap:has(.ghost) .msg-actions { justify-content: flex-end; }
 .lead-wrap:hover .msg-actions { opacity: 1; }
+/* Queued (injected, not-yet-consumed) ghost bubble — × / edit hover row.
+   Composed with `.msg-actions` so button/hover treatment is inherited. */
+.queued-actions { margin-top: 4px; }
+.queued-actions button { font-size: 13px; }
 .msg-actions button {
   border: none; background: none; cursor: pointer; padding: 0;
   display: inline-flex; align-items: center; justify-content: center;
