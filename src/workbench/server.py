@@ -165,6 +165,28 @@ def list_models() -> dict[str, Any]:
     return {"providers": providers, "suggestions": suggestions}
 
 
+@app.get("/settings")
+def get_settings() -> dict[str, Any]:
+    """P1.7: the global `Settings` dataclass as a flat dict."""
+    d = asdict(config.settings)
+    d.update(d.pop("extra"))
+    return d
+
+
+@app.patch("/settings")
+def patch_settings(body: dict[str, Any]) -> dict[str, Any]:
+    """P1.7: merge ``body`` into ``config.settings``, persist, return new.
+
+    Rebinds the module-level singleton so subsequent ``build_system_prompt``
+    calls (next ``start_orchestrator``) see the new thresholds. Already-
+    running orchestrators keep their rendered prompt.
+    """
+    config.patch_settings(body)
+    d = asdict(config.settings)
+    d.update(d.pop("extra"))
+    return d
+
+
 @app.get("/sessions")
 def list_sessions() -> list[dict[str, Any]]:
     """Sidebar "Recents": one entry per persisted session under `STORE_DIR`."""

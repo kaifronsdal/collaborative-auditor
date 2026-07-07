@@ -4,6 +4,7 @@ import type { BranchId, BranchMeta } from "../lib/wire";
 import { type Mode, useSession } from "../store/session";
 import { useEffect, useState } from "react";
 import { Chevron } from "./icons";
+import { SettingsModal } from "./SettingsModal";
 
 const COLLAPSED_KEY = "workbench.sidebarCollapsed";
 
@@ -132,6 +133,7 @@ export function Sidebar(): JSX.Element {
     location.assign(url.toString());
   }
 
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     try {
       return localStorage.getItem(COLLAPSED_KEY) === "true";
@@ -182,6 +184,14 @@ export function Sidebar(): JSX.Element {
         </div>
         <button
           className="side-icon-btn"
+          onClick={() => setSettingsOpen(true)}
+          title="Settings"
+          aria-label="Settings"
+        >
+          <i className="bi bi-gear" style={{ fontSize: 12 }} />
+        </button>
+        <button
+          className="side-icon-btn"
           onClick={toggleCollapsed}
           title="Collapse sidebar"
           aria-label="Collapse sidebar"
@@ -189,6 +199,7 @@ export function Sidebar(): JSX.Element {
           <i className="bi bi-chevron-left" style={{ fontSize: 12 }} />
         </button>
       </div>
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 
       <button className="side-new" onClick={newAudit}>
         <span className="plus">+</span> New audit
