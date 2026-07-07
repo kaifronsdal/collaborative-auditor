@@ -51,6 +51,14 @@ from inspect_petri._auditor.agent import AUDITOR_CONTINUE_PROMPT
 from workbench.sources import GEN_SOURCE, TURN_END_SOURCE
 
 
+class AuditorRefusedError(RuntimeError):
+    """The auditor model returned ``stop_reason == "content_filter"``
+    (Anthropic's ``"refusal"``) — the auditor system prompt triggered an
+    API-level safety filter. Raised from the loop so ``Branch.run()``
+    surfaces it as ``branch.error`` and the UI shows it instead of
+    spinning to ``max_turns`` on an empty tape."""
+
+
 class TurnHooks(Protocol):
     """The two per-turn desk seams — implemented by ``Branch``."""
 
@@ -122,6 +130,24 @@ def workbench_auditor(
                 # empty there); stays unconditional so M0 replay works.
                 divergent = bool(tape.pending) and len(tape.log) >= tape.prefix_len
                 state.output = await generate(input=input_msgs, tools=tools)
+                # Anthropic's ``stop_reason: "refusal"`` (mapped by inspect
+                # to ``content_filter``) returns empty content + no tool
+                # calls — the auditor prompt triggered an API-level safety
+                # filter. Without this check the loop appends
+                # ``AUDITOR_CONTINUE_PROMPT`` and gets refused again until
+                # ``max_turns``, leaving a 0-turn tape that every fork/edit
+                # op then errors on. Surface it as the branch's terminal
+                # error instead. ``Branch.run()`` catches this and
+                # broadcasts ``{t:"error"}``.
+                if state.output.stop_reason == "content_filter":
+                    raise AuditorRefusedError(
+                        f"auditor model {model_name!r} was refused by the "
+                        f"provider (content_filter / API-level refusal) at "
+                        f"turn {turn}. The auditor system prompt likely "
+                        f"triggered a safety filter — try a different "
+                        f"auditor model (opus / sonnet are typically cleared "
+                        f"for red-team auditing; fable-5 has stricter filters)."
+                    )
                 if divergent:
                     _emit_divergent(model_name, list(state.messages), state.output)
                 state.messages.append(state.output.message)

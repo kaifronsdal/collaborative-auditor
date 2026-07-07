@@ -117,6 +117,12 @@ def find_auditor_step(steps: list[Step], turn_index: int) -> Step:
             n += 1
             if n == turn_index:
                 return s
+    if n == -1:
+        raise ValueError(
+            "this branch has 0 auditor turns — the auditor never produced "
+            "a response (likely refused by the provider on turn 0; check "
+            "the branch error). Nothing to fork/edit from."
+        )
     raise ValueError(
         f"auditor turn_index {turn_index} out of range (tape has {n + 1} auditor turns)"
     )

@@ -928,10 +928,15 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   newAudit: () => {
-    // Back to the empty StartView. The backend branch is untouched; clicking
-    // its Recents row re-views it (same socket, `current` flips back).
-    // `pendingNewAudit` prevents the next backend `state` broadcast from
-    // overwriting `current` back to the old branch.
+    // A "new audit" is a *fresh session*, not another root branch in the
+    // current one — otherwise the sidebar tree accretes every failed
+    // attempt (mythos-5 → fable-5 → mythos-preview cascade). Sibling
+    // audits in one session are what fork/branch is for. Guard for vitest.
+    if (typeof window !== "undefined" && window.location) {
+      const id = Math.random().toString(36).slice(2, 10);
+      window.location.assign(`?session=${id}`);
+      return;
+    }
     set({ current: null, pendingNewAudit: true });
   },
 

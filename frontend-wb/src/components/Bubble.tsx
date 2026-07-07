@@ -24,6 +24,18 @@ function renderBlock(block: Content, i: number): JSX.Element | null {
     case "text":
       return <Markdown key={i}>{block.text}</Markdown>;
     case "reasoning":
+      // Anthropic extended-thinking with ``redacted: true`` puts an
+      // encrypted base64 blob in ``.reasoning`` — never render that.
+      // Show the ``.summary`` (if the provider gave one) or a placeholder.
+      // Non-redacted reasoning (open-weights / opt-in) renders as before.
+      if ((block as { redacted?: boolean }).redacted) {
+        const summary = (block as { summary?: string }).summary;
+        return (
+          <span key={i} className="reasoning reasoning-redacted">
+            {summary || "[extended reasoning — redacted by provider]"}
+          </span>
+        );
+      }
       return (
         <span key={i} className="reasoning">
           {block.reasoning}
