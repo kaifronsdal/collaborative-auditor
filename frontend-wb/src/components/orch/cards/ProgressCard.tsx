@@ -19,6 +19,7 @@ import { Fragment, useRef, useState, type JSX } from "react";
 import { basename } from "@tsmono/util";
 
 import type { Up } from "../../../lib/wire";
+import { useSession } from "../../../store/session";
 import type {
   EvalRunPayload,
   SampleRowPayload,
@@ -74,6 +75,12 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
   const [textFilter, setTextFilter] = useState("");
   // §8 histogram bin click — `[lo, hi]` inclusive.
   const [scoreRange, setScoreRange] = useState<[number, number] | null>(null);
+
+  // P2 pin/bookmark — store-direct so parent chain (OrchColumn/Output) needn't
+  // thread it. Only `eval_run` rows with a written `.eval` (`log != null`) are
+  // pinnable; running samples get their pin once the log lands.
+  const pins = useSession((s) => s.pins);
+  const togglePin = useSession((s) => s.togglePin);
 
   const markOpened = (id: string): void => {
     opened.current.add(id);
@@ -176,14 +183,20 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
       stopping.current.add(row.id);
       rerender();
     };
+    const pinnedIds =
+      log != null
+        ? new Set(pins.filter((p) => p.log === log).map((p) => p.sample_id))
+        : null;
     allRows = sorted.map((r) => (
       <RunRow
         key={r.id}
         row={r}
         opened={opened.current.has(r.id)}
         stopping={r.status === "running" && stopping.current.has(r.id)}
+        pinned={pinnedIds?.has(r.id) ?? false}
         onClick={() => onRowClick(r)}
         onStop={r.status === "running" ? () => onStop(r) : undefined}
+        onPin={log != null ? () => togglePin(log, r.id) : undefined}
       />
     ));
 
@@ -340,14 +353,18 @@ function RunRow({
   row,
   opened,
   stopping,
+  pinned,
   onClick,
   onStop,
+  onPin,
 }: {
   row: SampleRow;
   opened: boolean;
   stopping: boolean;
+  pinned: boolean;
   onClick: () => void;
   onStop?: () => void;
+  onPin?: () => void;
 }): JSX.Element {
   // Status slot per UI-AUDIT §C: `done` → nothing (dot suffices); `running` →
   // `t{turns}`; `error` → exception class; `stopped` → literal. §9 optimistic
@@ -396,6 +413,19 @@ function RunRow({
       </span>
       {status}
       <span className="ar-slot">
+        {onPin && (
+          <button
+            className={`ar-pin${pinned ? " pinned" : ""}`}
+            title={pinned ? "unpin" : "pin transcript"}
+            aria-label={pinned ? "unpin" : "pin transcript"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPin();
+            }}
+          >
+            <i className={`bi ${pinned ? "bi-star-fill" : "bi-star"}`} />
+          </button>
+        )}
         {onStop && !stopping && (
           <button
             className="ar-stop"

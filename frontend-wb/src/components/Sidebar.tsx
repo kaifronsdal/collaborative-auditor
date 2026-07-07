@@ -1,5 +1,7 @@
 import type { JSX } from "react";
 
+import { basename } from "@tsmono/util";
+
 import type { BranchId, BranchMeta } from "../lib/wire";
 import { type Mode, useSession } from "../store/session";
 import { useEffect, useState } from "react";
@@ -112,6 +114,8 @@ export function Sidebar(): JSX.Element {
   const switchBranch = useSession((s) => s.switchBranch);
   const mode = useSession((s) => s.mode);
   const setMode = useSession((s) => s.setMode);
+  const pins = useSession((s) => s.pins);
+  const togglePin = useSession((s) => s.togglePin);
 
   useEffect(() => {
     void fetchSessions();
@@ -283,6 +287,36 @@ export function Sidebar(): JSX.Element {
             );
           })}
       </div>
+
+      {pins.length > 0 && (
+        <>
+          <div className="side-section">Pinned</div>
+          <div className="side-pins">
+            {pins.map((p) => (
+              <div
+                key={`${p.log}::${p.sample_id}`}
+                className="side-row"
+                title={p.note ?? `${p.sample_id} · ${p.log}`}
+                onClick={() => importEval(p.log, p.sample_id)}
+              >
+                <button
+                  className="side-row-star"
+                  title="unpin"
+                  aria-label="unpin"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    togglePin(p.log, p.sample_id);
+                  }}
+                >
+                  <i className="bi bi-star-fill" />
+                </button>
+                <span className="side-row-title">{p.sample_id}</span>
+                <span className="side-row-time">{basename(p.log)}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       {current && (
         <>

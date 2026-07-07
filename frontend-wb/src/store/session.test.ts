@@ -166,6 +166,7 @@ const emptyState = {
   sessionsList: [],
   branchConfig: {},
   branches: {},
+  pins: [],
   error: null,
 };
 
@@ -499,6 +500,39 @@ describe("multi-branch fixture (smoke_branch_deep)", () => {
         }
       }
     }
+  });
+});
+
+describe("togglePin (P2 pin/bookmark)", () => {
+  beforeEach(() => {
+    useSession.setState(emptyState);
+  });
+
+  it("adds a pin, then removes it on second toggle of same (log, sample_id)", () => {
+    const { togglePin } = useSession.getState();
+    togglePin("/logs/run.eval", "sample-1");
+    let { pins } = useSession.getState();
+    expect(pins).toHaveLength(1);
+    expect(pins[0]).toMatchObject({ log: "/logs/run.eval", sample_id: "sample-1" });
+    expect(pins[0].at).toBeGreaterThan(0);
+
+    togglePin("/logs/run.eval", "sample-1");
+    pins = useSession.getState().pins;
+    expect(pins).toHaveLength(0);
+  });
+
+  it("keys on (log, sample_id) — same sample_id in different logs are distinct", () => {
+    const { togglePin } = useSession.getState();
+    togglePin("/logs/a.eval", "s1");
+    togglePin("/logs/b.eval", "s1");
+    expect(useSession.getState().pins).toHaveLength(2);
+    // most-recent first
+    expect(useSession.getState().pins[0].log).toBe("/logs/b.eval");
+
+    togglePin("/logs/a.eval", "s1");
+    const { pins } = useSession.getState();
+    expect(pins).toHaveLength(1);
+    expect(pins[0].log).toBe("/logs/b.eval");
   });
 });
 

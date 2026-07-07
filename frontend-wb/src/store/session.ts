@@ -71,6 +71,18 @@ export type RewriteDraft = {
 export type Mode = "desk" | "orch";
 const MODE_KEY = "workbench.mode";
 const NEXT_CONFIG_KEY = "workbench.nextConfig";
+const pinsKey = (sid: string): string => `workbench.pins.${sid}`;
+
+/** P2 pin/bookmark: a starred sample row. `log` is the finished `.eval` path
+ *  (so a pin can always be re-opened via `{t:"import"}`); `at` is the
+ *  Date.now() the pin was created. Persisted per-session to localStorage —
+ *  server-side persist is P3. */
+export type Pin = {
+  log: string;
+  sample_id: string;
+  note?: string;
+  at: number;
+};
 
 function readStoredMode(): Mode {
   try {
@@ -96,6 +108,15 @@ function readStoredNextConfig(): NextConfig {
     return { ...DEFAULT_NEXT_CONFIG, ...(JSON.parse(raw) as Partial<NextConfig>) };
   } catch {
     return DEFAULT_NEXT_CONFIG;
+  }
+}
+
+function readStoredPins(sid: string): Pin[] {
+  try {
+    const raw = localStorage.getItem(pinsKey(sid));
+    return raw ? (JSON.parse(raw) as Pin[]) : [];
+  } catch {
+    return [];
   }
 }
 
@@ -201,6 +222,9 @@ export type SessionState = {
    *  what `+ New audit` / the empty StartView renders — a running session's
    *  mode is fixed by whether it has an `orchestrator`. */
   mode: Mode;
+  /** P2 pin/bookmark: starred sample rows (most-recent first). Loaded from
+   *  `localStorage["workbench.pins.{sessionId}"]` on `connect()`. */
+  pins: Pin[];
 
   /**
    * Stash of the real branch id before we set `current = PENDING_BRANCH`.
@@ -228,6 +252,9 @@ export type SessionState = {
   }) => void;
   /** Update the sidebar's editable next-audit config. */
   setNextConfig: (patch: Partial<NextConfig>) => void;
+  /** Toggle a sample-row bookmark: adds `{log, sample_id, at:now}` if absent,
+   *  removes the matching pin if present. Writes through to localStorage. */
+  togglePin: (log: string, sample_id: string, note?: string) => void;
   /** Select which start card `+ New audit` opens; persisted to localStorage. */
   setMode: (mode: Mode) => void;
   /**
@@ -418,6 +445,7 @@ export const useSession = create<SessionState>((set, get) => ({
   candidateBatches: {},
   nextConfig: readStoredNextConfig(),
   mode: readStoredMode(),
+  pins: [],
   prevCurrent: null,
   error: null,
   rewriteDrafts: {},
@@ -686,7 +714,7 @@ export const useSession = create<SessionState>((set, get) => ({
       // replaced it). Lets a fresh connect re-open cleanly.
       if (get().ws === next) set({ ws: null, sessionId: null });
     };
-    set({ ws: next, sessionId });
+    set({ ws: next, sessionId, pins: readStoredPins(sessionId) });
   },
 
   disconnect: () => {
@@ -789,6 +817,23 @@ export const useSession = create<SessionState>((set, get) => ({
   setMode: (mode) => {
     try { localStorage.setItem(MODE_KEY, mode); } catch { /* ignore */ }
     set({ mode });
+  },
+
+  togglePin: (log, sample_id, note) => {
+    set((state) => {
+      const idx = state.pins.findIndex(
+        (p) => p.log === log && p.sample_id === sample_id
+      );
+      const pins =
+        idx >= 0
+          ? [...state.pins.slice(0, idx), ...state.pins.slice(idx + 1)]
+          : [{ log, sample_id, note, at: Date.now() }, ...state.pins];
+      const sid = state.sessionId;
+      if (sid != null) {
+        try { localStorage.setItem(pinsKey(sid), JSON.stringify(pins)); } catch { /* ignore */ }
+      }
+      return { pins };
+    });
   },
 
   fetchSessions: async () => {
