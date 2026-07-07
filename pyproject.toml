@@ -39,6 +39,7 @@ aisitools = { git = "ssh://git@github.com/AI-Safety-Institute/aisi-inspect-tools
 [dependency-groups]
 dev = [
     "anyio>=4.8.0",
+    "nbformat>=5.10.4",
     "playwright>=1.60.0",
     "pytest>=8.3.0",
     "pytest-xdist>=3.6.0",

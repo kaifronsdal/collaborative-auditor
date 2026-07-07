@@ -1,4 +1,4 @@
-import type { JSX } from "react";
+import type { CSSProperties, JSX } from "react";
 
 import { basename } from "@tsmono/util";
 
@@ -15,6 +15,72 @@ const MODES: { id: Mode; icon: string; label: string }[] = [
   { id: "desk", icon: "bi-chat-left-text", label: "Collaborative Auditor" },
   { id: "orch", icon: "bi-terminal", label: "Orchestrator" },
 ];
+
+const EXPORT_MENU_STYLE: CSSProperties = {
+  position: "absolute",
+  right: 0,
+  top: "100%",
+  marginTop: 4,
+  zIndex: 10,
+  background: "var(--bg-elevated, #fff)",
+  border: "1px solid var(--border, #0002)",
+  borderRadius: 6,
+  boxShadow: "0 4px 12px #0002",
+  minWidth: 140,
+  padding: 4,
+  display: "flex",
+  flexDirection: "column",
+};
+
+const EXPORT_ROW_STYLE: CSSProperties = {
+  display: "flex",
+  gap: 8,
+  alignItems: "center",
+  padding: "6px 10px",
+  fontSize: 12,
+  textDecoration: "none",
+  color: "inherit",
+  borderRadius: 4,
+};
+
+/**
+ * P1.6/P3 — session export dropdown. A single icon button that reveals two
+ * plain `<a download>` rows (Markdown findings / Jupyter notebook); both
+ * endpoints set `Content-Disposition` so the browser saves the file without
+ * JS. Closes on any click (link or backdrop).
+ */
+function ExportMenu({ sessionId }: { sessionId: string }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  return (
+    <span style={{ float: "right", position: "relative" }}>
+      <button
+        className="side-icon-btn"
+        title="Export session"
+        aria-label="Export session"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <i className="bi bi-file-earmark-arrow-down" style={{ fontSize: 11 }} />
+      </button>
+      {open && (
+        <>
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 9 }}
+            onClick={() => setOpen(false)}
+          />
+          <div style={EXPORT_MENU_STYLE} onClick={() => setOpen(false)}>
+            <a style={EXPORT_ROW_STYLE} href={`/sessions/${sessionId}/export.md`} download>
+              <i className="bi bi-markdown" /> Markdown
+            </a>
+            <a style={EXPORT_ROW_STYLE} href={`/sessions/${sessionId}/export.ipynb`} download>
+              <i className="bi bi-journal-code" /> Notebook
+            </a>
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
 
 /** Format a timestamp as a relative string ("2m ago", "3h ago", etc.). */
 function relTime(ts: number): string {
@@ -228,21 +294,7 @@ export function Sidebar(): JSX.Element {
 
       <div className="side-section">
         Recents
-        {sessionId && (
-          // P1.6: markdown write-up of every signed finding for the current
-          // session. Plain <a download> — the endpoint sets Content-Disposition
-          // so the browser saves `findings-{id}.md` without JS.
-          <a
-            className="side-icon-btn"
-            style={{ float: "right" }}
-            href={`/sessions/${sessionId}/export.md`}
-            download
-            title="Export findings as markdown"
-            aria-label="Export findings"
-          >
-            <i className="bi bi-file-earmark-arrow-down" style={{ fontSize: 11 }} />
-          </a>
-        )}
+        {sessionId && <ExportMenu sessionId={sessionId} />}
       </div>
       <div className="side-recents">
         {savedSessions.length === 0 && sessionsList.length === 0 ? (

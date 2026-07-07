@@ -195,6 +195,30 @@ async def _amain() -> None:
         await settle()
         assert orch.status == "paused"
 
+        # ---- P3: .ipynb export -------------------------------------------------
+        import nbformat
+
+        from workbench.m1.export import export_ipynb
+
+        nb = export_ipynb(orch)
+        nbformat.validate(nb)
+        assert len(nb["cells"]) > 0, "export_ipynb produced no cells"
+        # Header + ≥1 markdown (turn-1 prose "run") + ≥1 code cell (turn-1
+        # python) with outputs mapped from ``kernel.outputs``.
+        code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
+        assert code_cells, [c["cell_type"] for c in nb["cells"]]
+        c1 = code_cells[0]
+        assert c1["source"] == CELLS[0], c1["source"]
+        otypes = {o["output_type"] for o in c1["outputs"]}
+        # turn-1 emitted a stable display, a print, and a last-expr (2)
+        assert "stream" in otypes and "execute_result" in otypes, otypes
+        assert nb["cells"][0]["cell_type"] == "markdown"
+        assert "Session" in nb["cells"][0]["source"]
+        print(
+            f"✓ P3: export_ipynb → {len(nb['cells'])} cells "
+            f"({len(code_cells)} code), nbformat.validate OK"
+        )
+
         # ---- M1.3 persistence: pure .eval (no sidecar) -------------------------
         # No explicit ``session.save()`` — P0.1's per-turn save wrote turns
         # 1+2, and P0.2's ``Session.close()`` (in ``mock_orch_session``'s

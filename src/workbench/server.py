@@ -258,6 +258,32 @@ async def export_findings(session_id: str) -> Response:
     )
 
 
+@app.get("/sessions/{session_id}/export.ipynb")
+async def export_notebook(session_id: str) -> Response:
+    """P3: the orchestrator conversation as an nbformat-v4 notebook.
+
+    Prose → markdown cells, ``python``/``bash`` tool calls → code cells with
+    the turn's live ``DisplayEvent`` bundles as ``outputs`` — so plots and
+    DataFrames render natively when the file is opened in Jupyter/VS Code.
+    404s (via ``{"cells":[]}`` stub) are avoided by returning a header-only
+    notebook when no orchestrator has started.
+    """
+    session = await _get_or_create(session_id)
+    from workbench.m1.export import export_ipynb
+
+    orch = session.orchestrator
+    nb = (
+        export_ipynb(orch)
+        if orch is not None
+        else {"nbformat": 4, "nbformat_minor": 5, "metadata": {}, "cells": []}
+    )
+    return Response(
+        content=json.dumps(nb),
+        media_type="application/x-ipynb+json",
+        headers={"Content-Disposition": f'attachment; filename="{session_id}.ipynb"'},
+    )
+
+
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()

@@ -104,6 +104,13 @@ export function CommandPalette({
       run: () => { if (sessionId) download(`/sessions/${sessionId}/export.md`); },
     },
     {
+      id: "export-ipynb",
+      label: "Export as notebook",
+      hint: sessionId ? `${sessionId}.ipynb` : undefined,
+      disabled: sessionId == null,
+      run: () => { if (sessionId) download(`/sessions/${sessionId}/export.ipynb`); },
+    },
+    {
       id: "orch-toggle",
       label: orchRunning ? "Pause orchestrator" : "Play orchestrator",
       disabled: orch == null,
