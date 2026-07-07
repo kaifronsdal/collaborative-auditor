@@ -237,6 +237,7 @@ class Orchestrator(StepGated):
             self.gate,
             session_dir=str(self.session_dir),
             session_id=session.session_id or "",
+            file_hashes=self.file_hashes,
         )
         self._seed_user_ns(wb)
         self._init_gate()
@@ -367,6 +368,7 @@ class Orchestrator(StepGated):
             self.gate,
             session_dir=str(self.session_dir),
             session_id=self.session.session_id or "",
+            file_hashes=self.file_hashes,
         )
         self._seed_user_ns(wb)
         # ``_seeded`` is the baseline ``_ns_summary`` filters against; without

@@ -41,6 +41,7 @@ class Workbench:
         *,
         session_dir: str | None = None,
         session_id: str = "",
+        file_hashes: dict[str, str] | None = None,
     ) -> None:
         # ``gate`` is the only kernel dependency (``ask_human``/``review_seeds``/
         # ``cite`` await it); holding just the ``Gate`` keeps ``wb`` decoupled
@@ -51,6 +52,10 @@ class Workbench:
         self._gate = gate
         self._session_dir = session_dir
         self._session_id = session_id
+        #: P3 versioning — a *live reference* to ``orch.file_hashes`` (the same
+        #: dict ``write_file``/``edit_file`` mutate), so ``wb.cite()`` snapshots
+        #: whatever versions were in effect at cite time.
+        self._file_hashes = file_hashes if file_hashes is not None else {}
         #: P1.2 — audit-role defaults from ``OrchStartCard`` (target/auditor/
         #: judge/max_turns/…). Populated by ``Orchestrator.__init__``; the
         #: same values are interpolated into the system prompt. Cells read
@@ -185,6 +190,7 @@ class Workbench:
             description=description,
             session_dir=self._session_dir,
             session_id=self._session_id,
+            file_hashes=dict(self._file_hashes),
         )
 
     def findings(self) -> list[Finding]:

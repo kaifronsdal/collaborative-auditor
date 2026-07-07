@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     from workbench.m1.orchestrator import Orchestrator
 
 
-def make_tools(orch: Orchestrator) -> list[Tool]:
+def make_tools(orch: Orchestrator) -> list[Tool]:  # noqa: PLR0915
     """The 7 non-``python`` hybrid tools, each a closure over ``orch``:
     ``bash`` / ``read_file`` / ``write_file`` / ``edit_file`` /
     ``ask_human`` / ``review_seeds`` / ``review_finding``. The 8th tool,
@@ -118,6 +118,7 @@ def make_tools(orch: Orchestrator) -> list[Tool]:
                 return f"[error: {old!r} appears {n} times in {path} — be more specific]"
             dst = src.replace(old, new, 1)
             p.write_text(dst)
+            orch.file_hashes[path] = hashlib.sha256(dst.encode()).hexdigest()[:12]
             diff = "".join(
                 difflib.unified_diff(
                     src.splitlines(keepends=True),
