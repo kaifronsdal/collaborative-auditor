@@ -275,6 +275,23 @@ function AssistantProse({
           >
             <i className="bi bi-arrow-counterclockwise" />
           </button>
+          <button
+            type="button"
+            title={`fork a new session from before turn ${turn}`}
+            onClick={() => {
+              if (
+                confirm(
+                  `Fork a new session from turn ${turn}? This session is saved ` +
+                    `(reopen from Recents); the fork gets a fresh kernel and ` +
+                    `its own working dir.`
+                )
+              ) {
+                send({ t: "fork_orchestrator", at_turn: turn });
+              }
+            }}
+          >
+            <i className="bi bi-signpost-split" />
+          </button>
         </BlockActions>
       )}
     </div>

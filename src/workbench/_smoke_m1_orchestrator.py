@@ -250,6 +250,55 @@ async def _amain() -> None:
 
     await sess2.close()
     shutil.rmtree(tmpdir, ignore_errors=True)
+
+    # ---- P2 session fork: fork_orchestrator → new Session ------------------
+    from workbench import server as _server
+
+    tmpdir2 = Path(tempfile.mkdtemp(prefix="wb-orch-fork-"))
+    async with mock_orch_session(TURNS, max_turns=5) as (session, orch, conn):
+        session.store_dir = tmpdir2
+        session.session_id = "p"
+        # run turns 1+2 (resolve the gate) so ``_turn_msg[2]`` exists
+        orch.step()
+        await settle()
+        orch.step()
+        await settle()
+        assert orch.gate.resolve(next(iter(orch.gate.pending)), "yes")
+        await settle()
+        # seed things fork_seed / __init__ should propagate
+        orch.run_log_dirs.append("runs/r1")
+        (orch.session_dir / "seeds.json").write_text('["a"]')
+        (orch.session_dir / "runs").mkdir(exist_ok=True)
+        parent_dir = orch.session_dir
+
+        new_id = await session.fork_orchestrator(2)
+        assert new_id in _server.sessions and "p" not in _server.sessions
+        child = _server.sessions[new_id]
+        await settle()
+        corch = child.orchestrator
+        assert corch is not None and corch.state is not None
+        # fork at turn 2 = keep [system, asst_t1, tool_t1] + FORK_NOTE
+        roles = [m.role for m in corch.state.messages]
+        assert roles == ["system", "assistant", "tool", "user"], roles
+        assert "[forked from session p at turn 2" in corch.state.messages[-1].text
+        # run_log_dirs absolutized against parent's session_dir + exposed
+        assert corch.run_log_dirs == [str(parent_dir / "runs/r1")], corch.run_log_dirs
+        wb2 = corch.kernel.shell.user_ns["wb"]
+        assert wb2.DEFAULTS["parent_runs"] == corch.run_log_dirs
+        # own session_dir; top-level file copied, ``runs/`` NOT
+        assert corch.session_dir != parent_dir
+        assert (corch.session_dir / "seeds.json").read_text() == '["a"]'
+        assert not (corch.session_dir / "runs").exists()
+        # fresh findings store
+        assert not (corch.session_dir / "findings.jsonl").exists()
+        print(
+            f"✓ P2 fork: session {new_id!r} · {roles} · "
+            f"run_log_dirs={corch.run_log_dirs} · seeds.json copied"
+        )
+        await child.close()
+        _server.sessions.pop(new_id, None)
+    shutil.rmtree(tmpdir2, ignore_errors=True)
+
     print("\n✓ all M1.1 wire + M1.3 persistence smoke checks passed")
 
 

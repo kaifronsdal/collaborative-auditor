@@ -39,6 +39,7 @@ from inspect_ai.log._transcript import init_transcript
 from inspect_ai.model import ChatMessage
 from inspect_petri._auditor import build_history_timeline
 from inspect_petri.target import History
+from shortuuid import uuid
 
 from workbench.timeline import build_auditor_timeline
 from workbench.view import Role
@@ -445,6 +446,9 @@ class Session:
         resume_messages: list[ChatMessage] | None = None,
         span_id: str | None = None,
         run_log_dirs: list[str] | None = None,
+        parent_session_dir: Path | None = None,
+        parent_session_id: str | None = None,
+        fork_at_turn: int | None = None,
     ) -> None:
         """Construct the M1 `Orchestrator`, spawn its `run()`, broadcast state."""
         from workbench.m1.orchestrator import Orchestrator
@@ -460,10 +464,53 @@ class Session:
             resume_messages=resume_messages,
             span_id=span_id,
             run_log_dirs=run_log_dirs,
+            parent_session_dir=parent_session_dir,
+            parent_session_id=parent_session_id,
+            fork_at_turn=fork_at_turn,
         )
         self.orchestrator = orch
         orch.task = asyncio.create_task(orch.run())
         await self.broadcast({"t": "state", "v": self.version, **self.view()})
+
+    async def fork_orchestrator(self, at_turn: int) -> str:
+        """P2 — branch the orchestrator at ``at_turn`` into a **new** `Session`.
+
+        Seeds via ``Orchestrator.fork_seed``, closes *this* session (persists
+        it and — critically — releases the ``OrchestratorKernel`` singleton so
+        the fork's ``run()`` can ``__enter__`` its own), then constructs a
+        fresh `Session` under a new ``session_id`` and starts its orchestrator
+        with the seed. The parent is evicted from ``server.sessions`` so
+        navigating back to it triggers ``Session.load`` (fresh kernel, resume
+        note) rather than hitting a closed in-memory husk.
+
+        Registration into ``server.sessions`` is done here (lazy import — the
+        reverse edge of the ``server → session`` module dependency) rather
+        than returned to the caller, so the fork is reachable the instant the
+        frontend's ``{t:"forked"}`` handler reconnects.
+        """
+        from workbench import server
+
+        assert self.orchestrator is not None, "no orchestrator to fork"
+        seed = self.orchestrator.fork_seed(at_turn)
+        await self.close()
+        if self.session_id is not None:
+            server.sessions.pop(self.session_id, None)
+
+        new_id = uuid()
+        child = Session(new_id, self.store_dir)
+        await child.start()
+        server.sessions[new_id] = child
+        await child.start_orchestrator(**seed)
+        # Let ``run()`` reach ``self.state = state`` (CPU-only up to
+        # ``await_step``) so the immediate ``save()`` persists the seeded
+        # history — otherwise a crash before the fork's first ``record_turn``
+        # would lose it.
+        for _ in range(20):
+            if child.orchestrator is not None and child.orchestrator.state is not None:
+                break
+            await asyncio.sleep(0)
+        child.save()
+        return new_id
 
     def notify(self, text: str) -> None:
         """Ship a lightweight `{"t":"notify"}` sys-chip to connected clients."""
@@ -505,8 +552,8 @@ class Session:
             idx = ordered.index(from_uuid)
         except ValueError:
             return
-        for uuid in ordered[idx:]:
-            if (e := self.events.get(uuid)) is not None:
+        for u in ordered[idx:]:
+            if (e := self.events.get(u)) is not None:
                 e["rewound"] = True
         self.version += 1
         self._enqueue(

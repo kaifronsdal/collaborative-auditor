@@ -133,6 +133,9 @@ export type Down =
   // event carries a top-level `rewound: true` (works for ModelEvent/ToolEvent
   // too, which have no `.data`).
   | { t: "rewound"; v: number; span: string; from_uuid: string }
+  // P2 session fork: server closed the parent, minted + registered a new
+  // Session seeded from `fork_seed(at_turn)`; frontend navigates to it.
+  | { t: "forked"; session_id: string }
   | { t: "error"; v: number; message: string };
 
 /** P2 — optional per-fork model overrides. Any fork-shaped command
@@ -243,6 +246,10 @@ export type Up =
   // P2 bg-job panel: SIGTERM one tracked ``bash`` subprocess by its bg-id.
   | { t: "cancel_bg"; id: string }
   | { t: "rewind"; turn: number }
+  // P2 session fork: branch the orchestrator conversation at `at_turn` into
+  // a fresh Session (own session_dir, kernel, findings). Server replies
+  // `{t:"forked", session_id}` → navigate.
+  | { t: "fork_orchestrator"; at_turn: number }
   // P2: drop `user_ns` (re-seed `wb`/analysis names), keep `state.messages`.
   | { t: "restart_kernel" }
   | { t: "interrupt_and_send"; turn: number; text: string }

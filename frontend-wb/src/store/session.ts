@@ -666,6 +666,21 @@ export const useSession = create<SessionState>((set, get) => ({
           };
         }
 
+        case "forked": {
+          // P2 session fork: server has closed the parent (this session's
+          // pool/events/byRole are now stale) and registered a fresh Session
+          // under `msg.session_id`. Navigate — same hard-reload path as the
+          // sidebar's `openSession`, so `App.connect()` opens a clean socket
+          // and the first `push_full_state` seeds store from scratch.
+          // `typeof` guard: the vitest node env has no `location`.
+          if (typeof location !== "undefined") {
+            const url = new URL(location.href);
+            url.searchParams.set("session", msg.session_id);
+            location.assign(url.toString());
+          }
+          return {};
+        }
+
         case "error": {
           // Roll back any optimistic branch/resample/edit: drop PENDING_BRANCH
           // from byRole and restore `current` to the previous real id.

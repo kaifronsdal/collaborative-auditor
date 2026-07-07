@@ -31,8 +31,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import signal
 from contextlib import suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import anyio
@@ -107,6 +109,20 @@ KERNEL_RESTART_NOTE = (
     "{dirs}. Re-read via wb.attach(log_dir).audits or audits_df(log_dir).]"
 )
 
+#: P2 session fork — synthetic user note appended to a forked orchestrator's
+#: ``resume_messages`` in place of ``KERNEL_RESTART_NOTE``. The kernel is fresh
+#: (same as a resume), but the parent's ``run_log_dirs`` were absolutized and
+#: seeded into ``wb.DEFAULTS["parent_runs"]`` so ``wb.attach()`` on them still
+#: resolves; new ``bash("… --log-dir runs/X")`` writes to the fork's own dir.
+FORK_NOTE = (
+    "[forked from session {parent} at turn {turn} — kernel is fresh; parent "
+    "runs re-attached via absolute paths in wb.DEFAULTS['parent_runs']]"
+)
+
+#: File suffixes copied from ``parent.session_dir`` into a fork's own
+#: ``session_dir`` (top-level only — ``runs/`` is a directory and skipped).
+_FORK_COPY_SUFFIXES = frozenset({".json", ".yaml", ".txt", ".py", ".md"})
+
 #: P0.4 — synthetic tool_result for a tool_call that was mid-flight (gate
 #: pending, subprocess running) when the session was saved. Injected by
 #: ``messages_for_save`` so a resumed ``generate`` doesn't hit the provider's
@@ -132,6 +148,9 @@ class Orchestrator(StepGated):
         resume_messages: list[ChatMessage] | None = None,
         span_id: str | None = None,
         run_log_dirs: list[str] | None = None,
+        parent_session_dir: Path | None = None,
+        parent_session_id: str | None = None,
+        fork_at_turn: int | None = None,
     ) -> None:
         self.session = session
         self.model_name = model
@@ -157,6 +176,12 @@ class Orchestrator(StepGated):
         #: and any ``eval_run`` log dirs the pre-save turns produced.
         self._resume_messages = resume_messages
         self.run_log_dirs: list[str] = list(run_log_dirs or [])
+        #: P2 session fork — when this orchestrator was seeded from a
+        #: ``fork_seed()``, ``_initial_messages`` swaps ``KERNEL_RESTART_NOTE``
+        #: for ``FORK_NOTE`` and ``_seed_user_ns`` exposes the (absolutized)
+        #: parent ``run_log_dirs`` as ``wb.DEFAULTS["parent_runs"]``.
+        self._parent_session_id = parent_session_id
+        self._fork_at_turn = fork_at_turn
 
         self.span_id = span_id or uuid()
         session.span_role[self.span_id] = ("orch", "orch")
@@ -169,6 +194,14 @@ class Orchestrator(StepGated):
         #: branch JSON.
         self.session_dir = config.sessions_dir() / self.span_id
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        # P2 fork: copy top-level artifacts the parent's model wrote (seed
+        # lists, notes, helper .py) so the fork's ``read_file``/``bash`` sees
+        # them. ``runs/`` is a directory and skipped — the fork attaches to
+        # parent runs via absolute path, and writes its own under ``./runs``.
+        if parent_session_dir is not None:
+            for f in Path(parent_session_dir).iterdir():
+                if f.is_file() and f.suffix in _FORK_COPY_SUFFIXES:
+                    shutil.copy2(f, self.session_dir / f.name)
         # Align the ``python`` kernel's cwd with ``bash``/file tools —
         # otherwise a file the agent writes in a python cell lands in the
         # server's cwd (repo root), not ``session_dir``, and its next
@@ -282,6 +315,8 @@ class Orchestrator(StepGated):
         honoured on restart.
         """
         wb.DEFAULTS = dict(self.audit_defaults)
+        if self._parent_session_id is not None:
+            wb.DEFAULTS["parent_runs"] = list(self.run_log_dirs)
         # P1.8(a): expose the scanner library + named groups so cells (and
         # the prompt block below) can list what ``wb.scan(logs, "name")``
         # resolves to. Fail-soft — a broken user scanner file shouldn't
@@ -458,10 +493,52 @@ class Orchestrator(StepGated):
 
     def _initial_messages(self) -> list[ChatMessage]:
         if self._resume_messages is not None:
-            dirs = ", ".join(self.run_log_dirs) or "(none)"
-            note = ChatMessageUser(content=KERNEL_RESTART_NOTE.format(dirs=dirs))
-            return [*self._resume_messages, note]
+            if self._parent_session_id is not None:
+                text = FORK_NOTE.format(
+                    parent=self._parent_session_id, turn=self._fork_at_turn
+                )
+            else:
+                dirs = ", ".join(self.run_log_dirs) or "(none)"
+                text = KERNEL_RESTART_NOTE.format(dirs=dirs)
+            return [*self._resume_messages, ChatMessageUser(content=text)]
         return [ChatMessageSystem(content=self.system_prompt)]
+
+    # -- P2 session fork ------------------------------------------------------
+
+    def fork_seed(self, at_turn: int) -> dict[str, Any]:
+        """``start_orchestrator`` kwargs to seed a fresh session from turn N.
+
+        ``resume_messages`` is ``messages_for_save()`` (so a mid-tool save's
+        synthetic result pairing applies) truncated at ``_turn_msg[at_turn]``
+        — same slice as ``rewind(at_turn)``. ``run_log_dirs`` is absolutized
+        against *this* ``session_dir`` so the fork's ``wb.attach("runs/r1")``
+        (which resolves against the *fork's* dir) can't reach them, but
+        ``wb.attach(wb.DEFAULTS["parent_runs"][i])`` can. Fresh ``span_id`` →
+        the fork gets its own ``session_dir``; ``parent_session_dir`` is
+        passed so ``__init__`` copies top-level artifacts across.
+        """
+        messages = self.messages_for_save()
+        msg_id = self._turn_msg.get(at_turn)
+        if msg_id is not None:
+            idx = next((i for i, m in enumerate(messages) if m.id == msg_id), None)
+            if idx is not None:
+                messages = messages[:idx]
+        run_log_dirs = [
+            d if os.path.isabs(d) else str(self.session_dir / d)
+            for d in self.run_log_dirs
+        ]
+        return {
+            "model": self.model_name,
+            "system_prompt": self.system_prompt,
+            "model_args": dict(self.model_args),
+            "generate_config": dict(self.generate_config),
+            "audit_defaults": dict(self.audit_defaults),
+            "resume_messages": messages,
+            "run_log_dirs": run_log_dirs,
+            "parent_session_dir": self.session_dir,
+            "parent_session_id": self.session.session_id,
+            "fork_at_turn": at_turn,
+        }
 
     # -- view (for Session.view()) --------------------------------------------
 

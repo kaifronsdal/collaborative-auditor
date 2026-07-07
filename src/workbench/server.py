@@ -1026,6 +1026,17 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
                 session.orchestrator.cancel_bg(str(data["id"]))
         case "interrupt_and_send":
             await _h_interrupt_and_send(session, data)
+        case "fork_orchestrator":
+            # P2 session fork: seed a NEW Session from this orchestrator at
+            # turn N, close+evict this one, register the fork in ``sessions``,
+            # tell the frontend to navigate. ``broadcast`` on the (now-closed)
+            # parent is fine — it writes directly to ``connections``, not the
+            # drain stream.
+            if session.orchestrator is None:
+                logger.warning("fork_orchestrator before start_orchestrator")
+                return
+            new_id = await session.fork_orchestrator(int(data["at_turn"]))
+            await session.broadcast({"t": "forked", "session_id": new_id})
         case "rewind":
             # M1-FEATURES §2: discard orchestrator turn N onward.
             if session.orchestrator is not None:
