@@ -18,6 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import tempfile
+import textwrap
+from dataclasses import replace
 from pathlib import Path
 
 import anyio
@@ -579,6 +582,31 @@ async def _amain() -> None:
             # auditor/target columns. The `[data-expandable-panel] button`
             # selector is the stable (non-hashed) hook `ExpandablePanel` gives
             # us — its `.moreToggle*` classes are CSS-module scoped.
+            #
+            # P1.8: patch a temp `scanner_dir` (`has_a` + `my-group`) so
+            # `/scanners` populates the picker dropdown and the branch's
+            # `live_scanners=["has_a"]` resolves in `post_turn` → one
+            # `.turn-score-chip` under the target reply.
+            from workbench.m1 import scanners as scanmod
+
+            lib_dir = tempfile.mkdtemp(prefix="wb-shot-scanlib-")
+            (Path(lib_dir) / "flags.py").write_text(
+                textwrap.dedent("""
+                    from inspect_scout import Result, Transcript, scanner
+
+                    @scanner(messages="all")
+                    def has_a():
+                        async def scan(t: Transcript) -> Result:
+                            hit = "a" in (t.messages[-1].text or "")
+                            return Result(value=hit, explanation="demo scan")
+                        return scan
+                """)
+            )
+            (Path(lib_dir) / "groups.yaml").write_text("my-group:\n  - has_a\n")
+            prev_settings = config.settings
+            config.settings = replace(config.settings, scanner_dir=lib_dir)
+            scanmod._lib_cache = None
+
             m0 = Session()
             await m0.start()
             sessions["m0shots"] = m0
@@ -591,15 +619,23 @@ async def _amain() -> None:
                 max_turns=len(M0_AUDITOR),
                 auditor_model_args={"custom_outputs": list(M0_AUDITOR)},
                 target_model_args={"custom_outputs": list(M0_TARGET)},
+                live_scanners=["has_a"],
             )
             m0.branches["b0"] = m0b
             m0.current = "b0"
             m0b.play()
             await asyncio.create_task(m0b.run())
+            # `post_turn` scores are fire-and-forget — let them settle so the
+            # chip renders resolved (`has_a: 1.00`) instead of the spinner.
+            for _ in range(200):
+                if not m0b._score_tasks:
+                    break
+                await anyio.sleep(0.02)
 
             await page.goto(f"http://127.0.0.1:{ui_port}/?session=m0shots")
             await page.wait_for_selector(".columns .column", timeout=15_000)
             aud = page.locator(".columns .col-wrap").first
+            tgt = page.locator(".columns .col-wrap").last
             toggle = aud.locator(".bubble.system [data-expandable-panel] button").first
             await toggle.wait_for(timeout=10_000)
             await aud.locator(".column").evaluate("(el) => { el.scrollTop = 0; }")
@@ -613,7 +649,47 @@ async def _amain() -> None:
             # `set_system_message` bubble with its own toggle.
             await page.mouse.move(0, 0)
             await _shot(page, "15c-m0-desk", full=True)
+
+            # ── 16 P1.8(b): ScanControl button + open popover ───────────────
+            # The button overlays the target-column head; opening it mounts
+            # the ScannerPicker combobox — focus it so the dropdown renders
+            # `my-group` (bold, ·1) + `has_a`.
+            scan_btn = tgt.locator("button.chip[title^='Run a scanner']")
+            await scan_btn.wait_for(timeout=5_000)
+            await scan_btn.click()
+            await page.wait_for_selector(
+                "input[placeholder*='scanner or group']", timeout=5_000
+            )
+            await page.locator("input[placeholder*='scanner or group']").focus()
+            await asyncio.sleep(0.2)
+            await _shot(page, "16-m0-scan-picker", clip=await tgt.bounding_box())
+            await page.keyboard.press("Escape")
+            await scan_btn.click()  # close popover
+
+            # ── 16b P1.8(c): `.turn-score-chip` under the target reply ──────
+            await tgt.locator(".column").evaluate(
+                "(el) => { el.scrollTop = el.scrollHeight; }"
+            )
+            await page.wait_for_selector(".turn-score-chip", timeout=10_000)
+            await page.mouse.move(0, 0)
+            await asyncio.sleep(0.15)
+            await _shot(page, "16b-m0-turn-score", clip=await tgt.bounding_box())
+
+            # ── 17 P1.7: sidebar gear → SettingsModal ───────────────────────
+            # `@tsmono/react` Modal's outer classes are CSS-module hashed;
+            # `bodyClassName="settings-modal"` is the stable hook and
+            # `[role='dialog']` its portal-root ancestor for the clip.
+            await page.locator(".side-icon-btn[aria-label='Settings']").click()
+            await page.wait_for_selector(".settings-modal", timeout=5_000)
+            await asyncio.sleep(0.2)
+            dialog = page.locator("[role='dialog']:has(.settings-modal)")
+            await _shot(page, "17-settings-modal", clip=await dialog.bounding_box())
+            await page.keyboard.press("Escape")
+
             await m0.close()
+            config.settings = prev_settings
+            scanmod._lib_cache = None
+            shutil.rmtree(lib_dir, ignore_errors=True)
 
             if errors:
                 print("\npage errors:")

@@ -82,6 +82,9 @@ export default defineConfig({
         ws: true,
       },
       "/sessions": process.env.VITE_BACKEND ?? "http://127.0.0.1:8765",
+      "/scanners": process.env.VITE_BACKEND ?? "http://127.0.0.1:8765",
+      "/settings": process.env.VITE_BACKEND ?? "http://127.0.0.1:8765",
+      "/models": process.env.VITE_BACKEND ?? "http://127.0.0.1:8765",
     },
   },
   test: {
