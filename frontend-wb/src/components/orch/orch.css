@@ -34,6 +34,13 @@
   color: var(--ink-faint);
 }
 .orch-head .rl-dot { margin: 0 0 0 2px; position: relative; top: -1px; }
+/* PRODUCT-GAPS P2: coarse context-window gauge next to the status dot. */
+.orch-head .ctx-gauge {
+  font: 10px/1 var(--mono); color: var(--ink-faint);
+  padding: 2px 5px; border: 1px solid var(--border); border-radius: var(--r-pill);
+}
+.orch-head .ctx-gauge.ctx-mid { color: hsl(28 80% 45%); border-color: hsl(28 80% 45% / .4); }
+.orch-head .ctx-gauge.ctx-hi { color: var(--danger); border-color: var(--danger); }
 /* `N waiting` header pill — GatePill absorbs the status dot (UI-AUDIT §B). */
 .head-gate-wrap { position: relative; }
 .head-gate-jump {

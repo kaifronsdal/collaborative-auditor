@@ -34,6 +34,16 @@ export type OutputProps = {
 /** Kinds whose fallback shell gets the gate treatment. */
 const GATED = new Set(["run_proposal", "cite_proposal", "prompt"]);
 
+/** PRODUCT-GAPS P2: desktop notification body for a completion payload, or
+ *  null if this bundle isn't (yet) a completion. `bg_done` is one-shot;
+ *  `eval_run` flips `finished` false→true via `dh.update()`. */
+function completionBody(wb: WbPayload | undefined): string | null {
+  if (wb?.kind === "bg_done") return `bg cell done · pid ${wb.pid} exit ${wb.exit}`;
+  if (wb?.kind === "eval_run" && wb.finished)
+    return `eval ${wb.task} done · ${wb.done}/${wb.total}`;
+  return null;
+}
+
 /** §6: pick the most useful clipboard representation of a bundle. Thunked so
  *  DataFrame TSV / JSON.stringify only run on click. */
 function bundleCopyText(bundle: DisplayBundle): () => string {
@@ -62,6 +72,22 @@ export function Output({ id, bundle, stable, settled }: OutputProps): JSX.Elemen
     lastBundle.current = bundle;
     updates.current += 1;
   }
+
+  // PRODUCT-GAPS P2: fire a desktop notification when a `bg_done` lands or an
+  // `eval_run` flips to `finished` while the tab is hidden. `notified` latches
+  // per stable-keyed instance so re-renders and later `dh.update()`s (e.g. a
+  // trailing `elapsed` refresh) don't re-fire. `document.hidden` also gates
+  // the reconnect-snapshot case — reloading implies the tab is visible.
+  const notified = useRef(false);
+  useEffect(() => {
+    if (notified.current) return;
+    const body = completionBody(bundle[WB_MIME]);
+    if (body == null) return;
+    notified.current = true;
+    if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+      new Notification("workbench", { body });
+    }
+  }, [bundle]);
 
   const inner = renderBundle(id, bundle, send);
   if (inner == null) return null;

@@ -392,7 +392,13 @@ class Orchestrator(StepGated):
 
     # -- view (for Session.view()) --------------------------------------------
 
+    #: PRODUCT-GAPS P2 context gauge — inspect's ``get_model()`` doesn't expose
+    #: a context-window size, so hardcode a conservative default (Claude-class
+    #: models are 200k+). Chars ≠ tokens; the frontend gauge is coarse anyway.
+    CONTEXT_LIMIT_CHARS = 200_000
+
     def view(self) -> dict[str, Any]:
+        messages = self.state.messages if self.state is not None else []
         return {
             "span_id": self.span_id,
             "status": self.status,
@@ -400,6 +406,8 @@ class Orchestrator(StepGated):
             "pending_gates": list(self.gate.pending),
             "bg_cells": sorted(self.kernel.bg),
             "notifications": list(self.kernel.notifications),
+            "context_chars": sum(len(m.text) for m in messages),
+            "context_limit": self.CONTEXT_LIMIT_CHARS,
         }
 
     # -- composer → orchestrator ---------------------------------------------

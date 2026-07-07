@@ -686,6 +686,14 @@ export const useSession = create<SessionState>((set, get) => ({
   send: (msg: Up) => {
     const ws = get().ws;
     if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    // PRODUCT-GAPS P2: request desktop-notification permission on the first
+    // user-initiated send (browsers require a user gesture on the call stack).
+    // One-shot — `permission !== "default"` short-circuits after grant/deny.
+    // `typeof` guard (not `"Notification" in window`) so the node vitest env,
+    // which has no `window`, doesn't ReferenceError.
+    if (typeof Notification !== "undefined" && Notification.permission === "default") {
+      void Notification.requestPermission();
+    }
   },
 
   start: (params) => {

@@ -200,6 +200,14 @@ export function OrchColumn(): JSX.Element {
     setText("");
   };
 
+  // PRODUCT-GAPS P2: coarse context-window gauge. `context_chars` only ships
+  // in the full `{t:"state"}` push (once per turn), which is fine for a header
+  // percentage — it doesn't need to track mid-stream deltas.
+  const ctxChars = orch?.context_chars ?? 0;
+  const ctxLimit = orch?.context_limit ?? 200_000;
+  const ctxPct = Math.min(100, Math.round((ctxChars / ctxLimit) * 100));
+  const ctxTitle = `${Math.round(ctxChars / 1000)}k / ${Math.round(ctxLimit / 1000)}k chars`;
+
   const meta = [
     shortModel(orch?.model),
     `turn ${turns.length}`,
@@ -213,6 +221,8 @@ export function OrchColumn(): JSX.Element {
           meta={meta}
           statusText={statusText}
           dot={dotClass(status, cellRunning)}
+          ctxPct={ctxPct}
+          ctxTitle={ctxTitle}
           gates={gateInfo}
           onJump={jumpToGate}
           send={send}
@@ -311,6 +321,8 @@ function OrchHeader({
   meta,
   statusText,
   dot,
+  ctxPct,
+  ctxTitle,
   gates,
   onJump,
   send,
@@ -318,6 +330,8 @@ function OrchHeader({
   meta: string;
   statusText: string;
   dot: string;
+  ctxPct: number;
+  ctxTitle: string;
   gates: GateInfo[];
   onJump: (id: string) => void;
   send: ReturnType<typeof useSession.getState>["send"];
@@ -325,11 +339,15 @@ function OrchHeader({
   const [hover, setHover] = useState(false);
   // `ask_human` gates need a value; only `run_proposal`s can be bulk-approved.
   const approvable = gates.filter((g) => g.kind === "run_proposal");
+  const ctxLevel = ctxPct > 90 ? "hi" : ctxPct > 70 ? "mid" : "lo";
 
   return (
     <div className="column-head orch-head hstack g10">
       <span className="head-left">
         <span className="head-title" title={meta}>orchestrator</span>
+        <span className={`ctx-gauge ctx-${ctxLevel}`} title={ctxTitle}>
+          {ctxPct}%
+        </span>
         {gates.length > 0 ? (
           <span
             className="head-gate-wrap"

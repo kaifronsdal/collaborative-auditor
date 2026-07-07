@@ -39,6 +39,10 @@ export type OrchestratorState = {
   bg_cells: number[];
   /** Undelivered `[cell-N done · …]` chips (drained into next agent input). */
   notifications: string[];
+  /** PRODUCT-GAPS P2: `sum(len(m.text) for m in state.messages)`. */
+  context_chars?: number;
+  /** Rough context-window ceiling in chars (backend default 200k). */
+  context_limit?: number;
 };
 
 /** Branch metadata included in `state` broadcasts. */
