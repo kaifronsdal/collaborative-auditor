@@ -70,12 +70,32 @@ export type RewriteDraft = {
  *  doesn't care until a `start` / `start_orchestrator` is actually sent. */
 export type Mode = "desk" | "orch";
 const MODE_KEY = "workbench.mode";
+const NEXT_CONFIG_KEY = "workbench.nextConfig";
 
 function readStoredMode(): Mode {
   try {
     return localStorage.getItem(MODE_KEY) === "orch" ? "orch" : "desk";
   } catch {
     return "desk";
+  }
+}
+
+const DEFAULT_NEXT_CONFIG: NextConfig = {
+  auditor_model: DEFAULT_AUDITOR,
+  target_model: DEFAULT_TARGET,
+  auditor_config: {},
+  target_config: {},
+};
+
+/** P2-persist: `nextConfig` survives reload. Merge over defaults so new keys
+ *  added later aren't `undefined` on old stored blobs. */
+function readStoredNextConfig(): NextConfig {
+  try {
+    const raw = localStorage.getItem(NEXT_CONFIG_KEY);
+    if (!raw) return DEFAULT_NEXT_CONFIG;
+    return { ...DEFAULT_NEXT_CONFIG, ...(JSON.parse(raw) as Partial<NextConfig>) };
+  } catch {
+    return DEFAULT_NEXT_CONFIG;
   }
 }
 
@@ -396,12 +416,7 @@ export const useSession = create<SessionState>((set, get) => ({
   branchConfig: {},
   branches: {},
   candidateBatches: {},
-  nextConfig: {
-    auditor_model: DEFAULT_AUDITOR,
-    target_model: DEFAULT_TARGET,
-    auditor_config: {},
-    target_config: {},
-  },
+  nextConfig: readStoredNextConfig(),
   mode: readStoredMode(),
   prevCurrent: null,
   error: null,
@@ -762,7 +777,13 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   setNextConfig: (patch) => {
-    set((state) => ({ nextConfig: { ...state.nextConfig, ...patch } }));
+    set((state) => {
+      const nextConfig = { ...state.nextConfig, ...patch };
+      try {
+        localStorage.setItem(NEXT_CONFIG_KEY, JSON.stringify(nextConfig));
+      } catch { /* ignore */ }
+      return { nextConfig };
+    });
   },
 
   setMode: (mode) => {

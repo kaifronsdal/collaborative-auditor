@@ -24,11 +24,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import anyio
+from inspect_ai.model import ChatMessage
 from inspect_petri.target import History, Trajectory
+from pydantic import TypeAdapter
 
 if TYPE_CHECKING:
     from workbench.run import Branch
     from workbench.session import Session
+
+#: Round-trip ``branch.queued`` / ``orch.queued`` (P2-persist) — the discriminated
+#: ``ChatMessage`` union needs pydantic to reconstruct the right subclass.
+_MESSAGES = TypeAdapter(list[ChatMessage])
 
 
 def save_session(session: Session, branch: Branch | None = None) -> None:
@@ -50,6 +56,12 @@ def save_session(session: Session, branch: Branch | None = None) -> None:
                 "current": session.current,
                 "created_at": session.created_at,
                 "seed": session.seed,
+                # P2-persist: Resample-N picker state — without this an open
+                # candidate batch is orphaned on reload (children still in
+                # `audit_history` but no picker to choose/dismiss them).
+                "candidate_batches": {
+                    bid: asdict(b) for bid, b in session.candidate_batches.items()
+                },
             }
         )
     )
@@ -69,7 +81,17 @@ def _write_branch(d: Path, branch: Branch) -> None:
         if k not in ("auditor_model_args", "target_model_args")
     }
     (d / f"{branch.branch_id}.json").write_text(
-        json.dumps({"meta": meta, "status": branch.status})
+        json.dumps(
+            {
+                "meta": meta,
+                "status": branch.status,
+                # P2-persist: injected messages awaiting the next turn boundary.
+                "queued": {
+                    role: [m.model_dump(mode="json") for m in msgs]
+                    for role, msgs in branch.queued.items()
+                },
+            }
+        )
     )
 
 
@@ -84,13 +106,17 @@ async def load_session(session_id: str, store_dir: Path) -> Session:
     task exits.
     """
     from workbench.run import Branch, BranchMeta
-    from workbench.session import Session
+    from workbench.session import CandidateBatch, Session
 
     d = store_dir / session_id
     index = json.loads((d / "index.json").read_text())
     sess = Session(session_id, store_dir)
     sess.created_at = index["created_at"]
     sess.audit_history = History.load(json.loads((d / "history.json").read_text()))
+    sess.candidate_batches = {
+        bid: CandidateBatch(**b)
+        for bid, b in (index.get("candidate_batches") or {}).items()
+    }
     await sess.start()
 
     # Spawn in pre-order (parent before children) so a child's shared-
@@ -117,6 +143,8 @@ async def load_session(session_id: str, store_dir: Path) -> Session:
         traj.tape.rewind()
         branch = Branch(sess, trajectory=traj, **asdict(meta))
         branch.status = data["status"]
+        for role, msgs in (data.get("queued") or {}).items():
+            branch.queued[role] = _MESSAGES.validate_python(msgs)
         sess.branches[branch.branch_id] = branch
         if data["status"] == "ended":
             branch.play()
@@ -130,6 +158,12 @@ async def load_session(session_id: str, store_dir: Path) -> Session:
         from workbench.m1.persist import load_orchestrator
 
         meta = load_orchestrator(sess, d)
+        # P2-persist: ``queued`` isn't an ``Orchestrator.__init__`` param
+        # (``session.start_orchestrator`` takes explicit kwargs); pop it here
+        # and restore onto the constructed instance.
+        queued = meta.pop("queued", [])
         await sess.start_orchestrator(**meta)
+        if sess.orchestrator is not None and queued:
+            sess.orchestrator.queued.extend(queued)
 
     return sess

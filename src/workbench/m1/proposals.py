@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
@@ -240,6 +241,36 @@ def _as_quote(q: Any) -> Quote:
     return Quote(**{k: d[k] for k in ("sample_id", "at", "role", "text", "log") if k in d})
 
 
+async def _resolve_quote_logs(quotes: list[Quote], session_dir: str | Path) -> None:
+    """Fill empty ``Quote.log`` by scanning ``session_dir/**/*.eval``.
+
+    e2e-v7: the ``review_finding`` tool schema only asks for
+    ``{sample_id, at, role, text}`` — the model doesn't know (and shouldn't
+    have to track) which ``.eval`` a sample lives in. Every eval the
+    orchestrator launches writes under ``session_dir`` (``bash("inspect eval
+    … --log-dir runs/…")``), so index ``sample_id → log path`` from disk and
+    backfill any quote whose ``log`` arrived empty. A quote whose sample id
+    isn't found stays empty (the ``FindingCard`` *open* link degrades to a
+    no-op) rather than failing the sign-off.
+    """
+    pending = [q for q in quotes if not q.log and q.sample_id]
+    if not pending:
+        return
+    from inspect_ai.log import list_eval_logs
+    from inspect_ai.log._file import read_eval_log_sample_summaries_async
+
+    index: dict[str, str] = {}
+    for info in list_eval_logs(str(session_dir), recursive=True):
+        try:
+            summaries = await read_eval_log_sample_summaries_async(info.name)
+        except (zipfile.BadZipFile, ValueError):
+            continue
+        for s in summaries:
+            index.setdefault(str(s.id), info.name)
+    for q in pending:
+        q.log = index.get(q.sample_id, "")
+
+
 @dataclass
 class CiteProposal(BaseProposal):
     """The pre-sign gate card for ``wb.cite`` / the ``review_finding`` tool.
@@ -424,11 +455,10 @@ async def cite(
     event stream. ``session_dir=None`` (bare ``Workbench(gate)`` in tests)
     skips the write.
     """
-    prop = CiteProposal(
-        claim=claim,
-        quotes=[_as_quote(q) for q in quotes],
-        description=description,
-    )
+    qs = [_as_quote(q) for q in quotes]
+    if session_dir is not None:
+        await _resolve_quote_logs(qs, session_dir)
+    prop = CiteProposal(claim=claim, quotes=qs, description=description)
     await gate(prop)
     # ``gate()`` has already called ``prop.resolve(verdict)`` — claim/quotes
     # now reflect any human edits; read the normalized ``prop.verdict``.

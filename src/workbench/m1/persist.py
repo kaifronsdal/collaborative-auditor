@@ -42,6 +42,7 @@ from inspect_ai.log import (
     read_eval_log,
     write_eval_log,
 )
+from inspect_ai.model import ChatMessage
 from pydantic import TypeAdapter
 
 from workbench.m1.orchestrator import ORCH_SOURCE
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
 ORCH_EVAL = "orchestrator.eval"
 
 _EVENTS = TypeAdapter(list[Event])
+_MESSAGES = TypeAdapter(list[ChatMessage])
 
 
 def _collect_run_log_dirs(session: Session) -> list[str]:
@@ -115,6 +117,8 @@ def save_orchestrator(orch: Orchestrator, session: Session, d: Path) -> None:
             "span_id": orch.span_id,
             "run_log_dirs": run_log_dirs,
             "rewound_uuids": rewound_uuids,
+            # P2-persist: user messages queued for the next generate.
+            "queued": [m.model_dump(mode="json") for m in orch.queued],
         },
     )
     log = EvalLog(
@@ -171,4 +175,6 @@ def load_orchestrator(session: Session, d: Path) -> dict[str, Any]:
         "span_id": span_id,
         "resume_messages": list(sample.messages),
         "run_log_dirs": list(md.get("run_log_dirs") or []),
+        # Popped by ``persist.load_session`` and applied post-construction.
+        "queued": _MESSAGES.validate_python(md.get("queued") or []),
     }

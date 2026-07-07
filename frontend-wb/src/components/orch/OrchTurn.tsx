@@ -293,17 +293,37 @@ function UserAsk({ msg }: { msg: ChatMessage }): JSX.Element {
 
 /** UI-AUDIT §C: collapsed-first. A settled, non-erroring cell is noise —
  *  show a one-line gist. `forceOpen` (running/errored) wins; a user's manual
- *  toggle sticks (later transitions leave it alone once `userToggled`). */
-function useCollapsedFirst(forceOpen: boolean): [open: boolean, toggle: () => void] {
-  const [collapsed, setCollapsed] = useState(!forceOpen);
-  const userToggled = useRef(false);
+ *  toggle sticks (later transitions leave it alone once `userToggled`).
+ *
+ *  P2-persist: `key` (``{sessionId}:{turnId}…``) mirrors the toggled state
+ *  to `localStorage` so reload doesn't collapse a cell the user opened. Only
+ *  a manual toggle writes — the `forceOpen` auto-transition is derived. */
+function useCollapsedFirst(
+  forceOpen: boolean,
+  key: string,
+): [open: boolean, toggle: () => void] {
+  const storageKey = `workbench.cell.${key}`;
+  const stored = useMemo<boolean | null>(() => {
+    try {
+      const v = localStorage.getItem(storageKey);
+      return v === null ? null : v === "1";
+    } catch {
+      return null;
+    }
+  }, [storageKey]);
+  const [collapsed, setCollapsed] = useState(stored ?? !forceOpen);
+  const userToggled = useRef(stored !== null);
   useEffect(() => {
     if (!userToggled.current) setCollapsed(!forceOpen);
   }, [forceOpen]);
   const toggle = (): void => {
     if (forceOpen) return;
     userToggled.current = true;
-    setCollapsed((v) => !v);
+    setCollapsed((v) => {
+      const next = !v;
+      try { localStorage.setItem(storageKey, next ? "1" : "0"); } catch { /* */ }
+      return next;
+    });
   };
   return [forceOpen || !collapsed, toggle];
 }
@@ -428,8 +448,9 @@ function CodeCell({
   ns: NsSummary;
 }): JSX.Element {
   const send = useSession((s) => s.send);
+  const sessionId = useSession((s) => s.sessionId);
   const forceOpen = running || errored;
-  const [open, toggle] = useCollapsedFirst(forceOpen);
+  const [open, toggle] = useCollapsedFirst(forceOpen, `${sessionId}:${turn}`);
   // `run in background` is only offered on the *live* blocking cell:
   // `running` (ToolEvent still `pending`) implies this is the latest turn —
   // the agent loop can't advance past an unfinished tool call.
@@ -503,12 +524,13 @@ function BashCell({
   hasStream: boolean;
 }): JSX.Element {
   const cmd = typeof ev.arguments.cmd === "string" ? ev.arguments.cmd : "";
+  const sessionId = useSession((s) => s.sessionId);
   const running = ev.pending === true;
   const errored = ev.error != null;
   const background = ev.arguments.background === true;
   const result = resultText(ev.result);
   const forceOpen = running || errored;
-  const [open, toggle] = useCollapsedFirst(forceOpen);
+  const [open, toggle] = useCollapsedFirst(forceOpen, `${sessionId}:${turn}:${ev.id}`);
   return (
     <CellShell
       className={`bash-cell${background ? " bg" : ""}`}

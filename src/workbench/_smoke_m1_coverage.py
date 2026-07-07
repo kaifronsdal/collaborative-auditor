@@ -274,10 +274,14 @@ async def _check_acp_and_handlers(read_dir: str) -> None:
 
 
 async def _check_wb_cite(k: OrchestratorKernel, gate: Gate, session_dir: str) -> None:
+    # e2e-v7: quote arrives without ``log`` (the tool schema doesn't ask for
+    # it); ``cite()`` must resolve it from ``session_dir/**/*.eval``. The
+    # caller has already copied a fixture ``.eval`` (containing ``s0``) under
+    # ``session_dir/runs/``.
     turn = asyncio.create_task(
         k.run_turn(
             "f = await wb.cite('leaks prompt', "
-            "[{'sample_id':'s0','at':3,'role':'target','text':'…','log':'x.eval'}], "
+            "[{'sample_id':'s0','at':3,'role':'target','text':'…'}], "
             "description='see t3')\nf"
         )
     )
@@ -292,6 +296,8 @@ async def _check_wb_cite(k: OrchestratorKernel, gate: Gate, session_dir: str) ->
     f = k.shell.user_ns["f"]
     assert isinstance(f, Finding) and f.signed_by == "tester", f
     assert f.quotes[0].sample_id == "s0"
+    assert f.quotes[0].log, f"Quote.log not resolved: {f.quotes[0]!r}"
+    assert f.quotes[0].log.endswith(".eval"), f.quotes[0].log
     assert f.description == "see t3" and f.signed_at, f
     # last-expr Finding card emitted separately from the proposal
     assert any(
@@ -304,7 +310,7 @@ async def _check_wb_cite(k: OrchestratorKernel, gate: Gate, session_dir: str) ->
     stored = wb.findings()
     assert len(stored) == 1, f"expected 1 finding, got {len(stored)}"
     assert stored[0].id == f.id and stored[0].claim == "leaks prompt", stored[0]
-    assert stored[0].quotes[0].log == "x.eval"
+    assert stored[0].quotes[0].log == f.quotes[0].log, "resolved log not persisted"
     # idempotent: a second approve on the same id must not duplicate the line
     from workbench.m1.proposals import _persist_finding
     _persist_finding(f, session_dir)
@@ -363,6 +369,8 @@ async def _amain() -> None:
     await _check_bash_reap()
 
     cite_dir = tempfile.mkdtemp(prefix="wb-cov-cite-")
+    os.makedirs(os.path.join(cite_dir, "runs", "r0"))
+    shutil.copy(log_file.removeprefix("file://"), os.path.join(cite_dir, "runs", "r0"))
     with OrchestratorKernel() as k:
         gate = Gate()
         k.shell.user_ns["wb"] = Workbench(gate, session_dir=cite_dir, session_id="cov")
