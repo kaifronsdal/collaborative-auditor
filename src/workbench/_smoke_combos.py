@@ -839,6 +839,112 @@ async def c10_fork_frozen_unreached_turn() -> None:
         await session.close()
 
 
+# ── C11: P1.8(c) live per-turn scanners ────────────────────────────────────
+# Branch with `live_scanners=["marks_r2"]`; run 2 target turns. `post_turn`
+# fires the scanner on each target reply (fire-and-forget), emitting a
+# pending `turn_score` InfoEvent then updating it in place with the score.
+# Assert: one resolved score per target anchor, routed to the target column,
+# `score` matches (r1 → 0.0, r2 → 1.0).
+#
+# The scanner is loaded from a temp file (P1.8(a) library path) rather than
+# defined inline: this module has ``from __future__ import annotations`` so
+# an inline scanner's param annotation would be the *string* "Transcript",
+# which scout's ``create_implicit_loader`` (raw ``inspect.signature``, not
+# ``get_type_hints``) can't resolve.
+
+
+async def c11_live_scanners_post_turn() -> None:
+    import shutil
+    import tempfile
+    import textwrap
+    from dataclasses import replace
+    from pathlib import Path
+
+    from workbench import config
+    from workbench.m1 import scanners as scanmod
+
+    lib_dir = tempfile.mkdtemp(prefix="wb-c11-scanlib-")
+    (Path(lib_dir) / "flags.py").write_text(
+        textwrap.dedent("""
+            from inspect_scout import Result, Transcript, scanner
+
+            @scanner(messages="all")
+            def marks_r2():
+                async def scan(t: Transcript) -> Result:
+                    return Result(
+                        value=t.messages[-1].text == "r2",
+                        explanation=f"saw {t.messages[-1].text!r}",
+                    )
+                return scan
+        """)
+    )
+    prev_settings = config.settings
+    config.settings = replace(config.settings, scanner_dir=lib_dir)
+    scanmod._lib_cache = None
+
+    session = Session()
+    await session.start()
+    try:
+        base = Branch(
+            session,
+            "base",
+            seed="live-scanner smoke",
+            auditor_model="mockllm/model",
+            target_model="mockllm/model",
+            max_turns=3,
+            auditor_model_args={"custom_outputs": auditor_by_turn(SCRIPT3)},
+            target_model_args={
+                "custom_outputs": target_by_last_user({"u1": "r1", "u2": "r2"})
+            },
+            live_scanners=["marks_r2"],
+        )
+        session.branches["base"] = base
+        session.current = "base"
+        base.play()
+        task = asyncio.create_task(base.run())
+        session.branch_tasks["base"] = task
+        await task
+        assert base.error is None, base.error
+
+        # fire-and-forget: wait for outstanding score tasks to settle
+        with anyio.fail_after(5.0):
+            while base._score_tasks:
+                await anyio.sleep(0.01)
+
+        scores = [
+            ev["data"]
+            for ev in session.events.values()
+            if ev.get("event") == "info"
+            and isinstance(ev.get("data"), dict)
+            and ev["data"].get("kind") == "turn_score"
+        ]
+        anchors = [
+            s.anchor_id
+            for s in base.audit_tape.log
+            if s.source == TARGET_GEN_SOURCE and isinstance(s.value, ModelOutput)
+        ]
+        assert len(anchors) == 2, anchors
+        by_anchor = {s["turn_uuid"]: s for s in scores}
+        assert set(by_anchor) == set(anchors), (sorted(by_anchor), sorted(anchors))
+        assert by_anchor[anchors[0]]["score"] == 0.0, by_anchor[anchors[0]]
+        assert by_anchor[anchors[1]]["score"] == 1.0, by_anchor[anchors[1]]
+        assert by_anchor[anchors[1]]["scanner"] == "marks_r2"
+        assert "r2" in by_anchor[anchors[1]]["explanation"]
+        for s in scores:
+            assert s["error"] is None, s
+        # routed to the target column (span_id → (branch, "target"))
+        target_uuids = session.by_role.get(("base", "target"), [])
+        for a in anchors:
+            assert f"ts:base:{a}:marks_r2" in target_uuids, (
+                f"turn_score for {a} not in by_role[target]"
+            )
+    finally:
+        await session.close()
+        config.settings = prev_settings
+        scanmod._lib_cache = None
+        shutil.rmtree(lib_dir, ignore_errors=True)
+
+
 # ── runner ──────────────────────────────────────────────────────────────────
 
 TESTS = [
@@ -852,6 +958,7 @@ TESTS = [
     ("C8   edit resume(prefill=…)", c8_edit_resume_prefill),
     ("C9   two rollbacks in prefix → edit", c9_two_rollbacks_then_edit),
     ("C10  fork frozen parent @ unreached turn", c10_fork_frozen_unreached_turn),
+    ("C11  P1.8(c) live per-turn scanners", c11_live_scanners_post_turn),
 ]
 
 

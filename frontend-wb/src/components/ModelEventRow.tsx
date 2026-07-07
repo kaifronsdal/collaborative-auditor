@@ -5,7 +5,7 @@ import { useRef, useState, type JSX } from "react";
 import { pairToolCalls, type Turn } from "../lib/events";
 import { useSession } from "../store/session";
 import { BranchNav } from "./BranchNav";
-import { Bubble, renderContent } from "./Bubble";
+import { Bubble, TurnScoreChips, renderContent } from "./Bubble";
 import { CandidateCell, useOpenBatchId } from "./CandidateCell";
 import { RawModal } from "./RawModal";
 import { RewritePanel, SelectionPill, useSelectionPill } from "./RewritePanel";
@@ -236,6 +236,8 @@ export function ModelEventRow({
           {ev.pending && <span className="cursor" />}
         </div>
       ) : null}
+      {/* P1.8(c) — live per-turn scanner badges on the target's reply. */}
+      {!auditor && !ev.pending && <TurnScoreChips uuid={anchorId} />}
 
       {(tools.length > 0 || callPairs.length > 0) && (
         <div className="tool-pairs">

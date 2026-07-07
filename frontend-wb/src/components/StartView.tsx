@@ -193,6 +193,9 @@ function DeskStartCard(): JSX.Element {
   );
   const [auditorArgs, setAuditorArgs] = useState<ModelArgs>({});
   const [targetArgs, setTargetArgs] = useState<ModelArgs>({});
+  // P1.8(c) — comma-separated scanner/group names to fire on each target
+  // reply. Autocomplete via `GET /scanners` is a follow-up; plain text for now.
+  const [liveScannersRaw, setLiveScannersRaw] = useState("");
 
   // Track previous nextConfig to detect external updates (e.g. sidebar picker).
   const prevNextConfigRef = useRef(nextConfig);
@@ -223,6 +226,10 @@ function DeskStartCard(): JSX.Element {
   function handleStart(): void {
     if (!canStart) return;
     setIsStarting(true);
+    const live_scanners = liveScannersRaw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
     startAudit({
       seed: seed.trim(),
       auditor_model: auditorModel,
@@ -231,6 +238,11 @@ function DeskStartCard(): JSX.Element {
       target_config: targetConfig,
       auditor_model_args: nonEmpty(auditorArgs),
       target_model_args: nonEmpty(targetArgs),
+      // TODO(P1.8c wire-through): `store.start` / `wire.Up` / `_h_start` don't
+      // yet carry `live_scanners` — 1-line follow-up in each once P1.8(b)
+      // lands (both batches touch server.py). Until then this is dropped by
+      // the store; kept here so the follow-up is a plumbing-only change.
+      ...(live_scanners.length > 0 ? { live_scanners } : {}),
     });
     // The component will unmount as soon as `current` is set by the backend
     // state broadcast, so we don't need to reset isStarting.
@@ -295,6 +307,19 @@ function DeskStartCard(): JSX.Element {
           >
             Start
           </button>
+        </div>
+
+        {/* P1.8(c) — live per-turn scanners. */}
+        <div className="picker-cfg-row start-live-scanners">
+          <span className="picker-cfg-label">live scanners</span>
+          <input
+            type="text"
+            className="picker-cfg-number"
+            style={{ width: "100%" }}
+            placeholder="scanner or group names, comma-separated (optional)"
+            value={liveScannersRaw}
+            onChange={(e) => setLiveScannersRaw(e.target.value)}
+          />
         </div>
       </div>
   );

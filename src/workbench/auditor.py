@@ -66,6 +66,12 @@ class TurnHooks(Protocol):
         """Called after the model returns, before tools execute."""
         ...
 
+    def post_turn(self) -> None:
+        """Called after tools execute — i.e. once any target reply this turn
+        has landed on the L2 tape. Fire-and-forget seam for P1.8(c) live
+        scanners; must not block (the desk gate is ``pre_turn``'s job)."""
+        ...
+
 
 def workbench_auditor(
     hooks: TurnHooks,
@@ -103,7 +109,8 @@ def workbench_auditor(
                 # Replay turns (served from ``pending``) are deterministic and
                 # I/O-free — burn through ungated. First live turn onward:
                 # hand control to the hooks (which may block on the desk gate).
-                if not tape.pending:
+                live = not tape.pending
+                if live:
                     state.messages.extend(await hooks.pre_turn())
 
                 input_msgs, c_msg = await compact.compact_input(state.messages)
@@ -136,6 +143,11 @@ def workbench_auditor(
                             source=TURN_END_SOURCE,
                         )
                     )
+
+                # Live turns only: replay re-emits the parent's target
+                # messages verbatim, so re-scoring them is wasted judge calls.
+                if live:
+                    hooks.post_turn()
 
             return state
 

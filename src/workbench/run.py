@@ -31,10 +31,11 @@ import json
 import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import anyio
+from inspect_ai.event import InfoEvent
 from inspect_ai.log._transcript import init_transcript
 from inspect_ai.model import (
     ChatMessage,
@@ -57,6 +58,7 @@ from inspect_petri.target import (
 from shortuuid import uuid
 
 from workbench.auditor import workbench_auditor
+from workbench.m1.wire import TurnScorePayload, finite
 from workbench.sources import GEN_SOURCE, TARGET_GEN_SOURCE
 from workbench.step import StepGated
 from workbench.view import Role, Status
@@ -82,6 +84,10 @@ class BranchMeta:
     # Provider kwargs (e.g. mockllm `custom_outputs` for deterministic tests).
     auditor_model_args: dict | None = None
     target_model_args: dict | None = None
+    #: P1.8(c) — scanner/group names to fire on each live target reply.
+    #: Resolved via ``m1.scanners.resolve`` per turn; scores land as
+    #: ``turn_score`` ``InfoEvent``s on the branch's target column.
+    live_scanners: list[str] = field(default_factory=list)
     #: Resample-N batch this branch belongs to (RESAMPLE-N.md), or ``None``
     #: for a normal fork. Not inherited on `Branch.fork()`.
     batch: str | None = None
@@ -316,6 +322,7 @@ class Branch(StepGated):
         target_config: dict | None = None,
         auditor_model_args: dict | None = None,
         target_model_args: dict | None = None,
+        live_scanners: list[str] | None = None,
         batch: str | None = None,
         trajectory: Trajectory | None = None,
     ) -> None:
@@ -329,6 +336,7 @@ class Branch(StepGated):
             target_config=target_config,
             auditor_model_args=auditor_model_args,
             target_model_args=target_model_args,
+            live_scanners=list(live_scanners or []),
             batch=batch,
         )
 
@@ -369,6 +377,11 @@ class Branch(StepGated):
 
         # user-injected messages awaiting the next turn boundary (STREAMING.md §B).
         self.queued: dict[Role, list[ChatMessage]] = {"auditor": [], "target": []}
+        # P1.8(c): target anchors already fired at live scanners (a turn with
+        # no ``resume`` produces no new target step; a turn with several does)
+        # + strong refs to the fire-and-forget score tasks so they aren't GC'd.
+        self._scored_anchors: set[str] = set()
+        self._score_tasks: set[asyncio.Task] = set()
         self.status: Status = "idle"
         self.generating: Role | None = None
 
@@ -455,6 +468,94 @@ class Branch(StepGated):
     def post_generate(self) -> None:
         self.generating = None
         self.rearm()
+
+    def post_turn(self) -> None:
+        """P1.8(c): fire each ``meta.live_scanners`` on any target reply that
+        landed this turn. Fire-and-forget — a slow judge must not block the
+        turn loop — with a pending placeholder emitted synchronously so the
+        Bubble chip renders a spinner until the score arrives."""
+        if not self.meta.live_scanners:
+            return
+        from workbench.m1.scanners import resolve
+
+        try:
+            scanners = resolve(self.meta.live_scanners)
+        except Exception as exc:  # noqa: BLE001 — unknown name / bad user file
+            logger.warning("live_scanners resolve failed: %s", exc)
+            return
+        for s in self.audit_tape.log:
+            if (
+                s.source != TARGET_GEN_SOURCE
+                or not isinstance(s.value, ModelOutput)
+                or s.anchor_id is None
+                or s.anchor_id in self._scored_anchors
+            ):
+                continue
+            self._scored_anchors.add(s.anchor_id)
+            msg = s.value.message
+            for name, scanner in scanners.items():
+                self._emit_turn_score(s.anchor_id, name, score=None)
+                t = asyncio.create_task(
+                    self._score_turn(msg, s.anchor_id, name, scanner)
+                )
+                self._score_tasks.add(t)
+                t.add_done_callback(self._score_tasks.discard)
+
+    async def _score_turn(
+        self, msg: ChatMessage, turn_uuid: str, name: str, scanner: Any
+    ) -> None:
+        """Run one scanner on one target reply; emit the resolved score.
+
+        Wraps the reply in a scout ``Transcript`` (the universal scanner input
+        — ``ChatMessage``-granularity scanners read ``t.messages[-1]``). A
+        scanner returning ``list[Result]`` scores the first; non-numeric
+        ``value`` yields ``score=None`` with the value stringified into
+        ``explanation``."""
+        from inspect_scout import Transcript
+
+        try:
+            t = Transcript(transcript_id=turn_uuid, messages=[msg])
+            res = await scanner(t)
+            if isinstance(res, list):
+                res = res[0] if res else None
+            value = getattr(res, "value", None)
+            score = float(value) if isinstance(value, (int, float, bool)) else None
+            expl = getattr(res, "explanation", None) or (
+                "" if score is not None else repr(value)
+            )
+            self._emit_turn_score(turn_uuid, name, score=score, explanation=expl)
+        except Exception as exc:  # surface as chip error, not fatal
+            logger.exception("live scanner %r failed on %s", name, turn_uuid)
+            self._emit_turn_score(turn_uuid, name, score=None, error=str(exc))
+
+    def _emit_turn_score(
+        self,
+        turn_uuid: str,
+        scanner: str,
+        *,
+        score: float | None,
+        explanation: str = "",
+        error: str | None = None,
+    ) -> None:
+        """Ship a ``turn_score`` ``InfoEvent`` on this branch's target column.
+
+        ``uuid`` is stable per (turn, scanner) so the resolved emit lands as
+        a ``{"t":"update"}`` replacing the pending placeholder in place;
+        ``span_id`` is set explicitly (the fire-and-forget task runs outside
+        any span) so ``_on_event`` routes it to ``(branch, "target")``."""
+        payload: TurnScorePayload = {
+            "kind": "turn_score",
+            "turn_uuid": turn_uuid,
+            "scanner": scanner,
+            "score": finite(score),
+            "explanation": explanation,
+            "error": error,
+        }
+        ie = InfoEvent(
+            source="turn_score", data=dict(payload), span_id=self.target_span_id
+        )
+        ie.uuid = f"ts:{self.branch_id}:{turn_uuid}:{scanner}"
+        self.session.emit(ie)
 
     # -- run ------------------------------------------------------------------
 
@@ -574,6 +675,7 @@ class Branch(StepGated):
             target_config=m.target_config,
             auditor_model_args=m.auditor_model_args,
             target_model_args=m.target_model_args,
+            live_scanners=m.live_scanners,
             batch=batch,
             trajectory=traj,
         )

@@ -192,6 +192,19 @@ export type RewindMarkerPayload = {
   to_turn: number;
 };
 
+/** P1.8(c) — one live-scanner score for one target turn. Carried in
+ *  `InfoEvent.data` directly; routed to `byRole[branch].target` via
+ *  `span_id`. `score === null` with no `error` is the pending placeholder
+ *  (spinner chip); the resolved emit replaces it in place by stable uuid. */
+export type TurnScorePayload = {
+  kind: "turn_score";
+  turn_uuid: string;
+  scanner: string;
+  score: number | null;
+  explanation: string;
+  error: string | null;
+};
+
 // -- union --------------------------------------------------------------------
 
 /**
@@ -212,7 +225,8 @@ export type WbPayload =
   | TracebackPayload
   | CellDonePayload
   | BgDonePayload
-  | RewindMarkerPayload;
+  | RewindMarkerPayload
+  | TurnScorePayload;
 
 // -- wire wrappers ------------------------------------------------------------
 

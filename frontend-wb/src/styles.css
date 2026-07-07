@@ -463,6 +463,30 @@ body {
 .turn-head { margin: var(--sp-1) 0 var(--sp-1); }
 .model-event-row:first-child .turn-head { margin-top: 0; }
 
+/* P1.8(c) — live-scanner score chips under a target assistant reply. */
+.turn-score-row {
+  display: flex; flex-wrap: wrap; gap: var(--sp-1);
+  margin: var(--sp-1) 0 0;
+}
+.turn-score-chip {
+  font: var(--fs-xs) / 1.4 var(--mono);
+  padding: 1px 7px; border-radius: var(--r-pill);
+  background: var(--bg-200); color: var(--ink-dim);
+  border: 1px solid var(--border); cursor: default;
+}
+.turn-score-chip.pending {
+  color: var(--ink-faint);
+  animation: turn-score-pulse 1.1s ease-in-out infinite;
+}
+.turn-score-chip.error {
+  color: var(--danger); border-color: var(--danger);
+}
+@keyframes turn-score-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.9; }
+}
+.start-live-scanners { margin-top: var(--sp-2); }
+
 /* Hover-reveal icon row under each assistant turn (claude.ai style): bare
    icons, no separators or underline — just `gap: 12px`, faint → mid on hover.
    Stays visible when it contains a `.branch-nav` chip so fork points are

@@ -289,6 +289,26 @@ class RewindMarkerPayload(TypedDict, total=False):
     to_turn: int
 
 
+class TurnScorePayload(TypedDict, total=False):
+    """P1.8(c) — one live-scanner score for one target turn.
+
+    Carried in ``InfoEvent.data`` directly (like ``rewind_marker``): the
+    emitting task sets ``span_id = branch.target_span_id`` so ``_on_event``
+    routes it into ``by_role[(branch, "target")]`` alongside the
+    ``ModelEvent`` it scores. ``turn_uuid`` is that ``ModelEvent``'s
+    assistant-message id (== its L2 anchor). ``score is None`` with no
+    ``error`` is the pending placeholder — the chip renders a spinner until
+    the fire-and-forget judge task re-emits with the same ``uuid``.
+    """
+
+    kind: Literal["turn_score"]
+    turn_uuid: str
+    scanner: str
+    score: float | None
+    explanation: str
+    error: str | None
+
+
 # -- union + builder ----------------------------------------------------------
 
 
@@ -305,6 +325,7 @@ WbPayload = (
     | CellDonePayload
     | BgDonePayload
     | RewindMarkerPayload
+    | TurnScorePayload
 )
 
 
@@ -322,8 +343,12 @@ def _kind_literals() -> set[str]:
     return out
 
 
-#: Every ``kind`` literal that may appear in ``bundle[WB_MIME]`` (i.e.
-#: ``WbPayload`` minus ``rewind_marker``, which rides ``InfoEvent.data``).
-#: Asserted against in ``_smoke_m1_kernel`` — an unregistered kind is a
-#: forgotten TypedDict + missing ``types.ts`` mirror.
-WB_KINDS: frozenset[str] = frozenset(_kind_literals() - {"rewind_marker"})
+#: ``kind`` literals carried in ``InfoEvent.data`` directly (M0 event pipe),
+#: not under ``bundle[WB_MIME]``. Excluded from ``WB_KINDS`` since the
+#: kernel-emit assertion in ``_smoke_m1_kernel`` covers MIME bundles only.
+_INFO_DATA_KINDS = {"rewind_marker", "turn_score"}
+
+#: Every ``kind`` literal that may appear in ``bundle[WB_MIME]``. Asserted
+#: against in ``_smoke_m1_kernel`` — an unregistered kind is a forgotten
+#: TypedDict + missing ``types.ts`` mirror.
+WB_KINDS: frozenset[str] = frozenset(_kind_literals() - _INFO_DATA_KINDS)
