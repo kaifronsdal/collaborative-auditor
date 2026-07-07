@@ -140,6 +140,53 @@ into the prompt), auto-approve toggle.
 a modal from the sidebar. Prompt template reads thresholds from
 settings at `start_orchestrator` time. **M**.
 
+### P1.8 Scanner integration (sonde-style library + M0 manual + live per-turn)
+
+`wb.scan` today takes raw `Scanner` objects only — no named
+groups, no M0 surface, no per-turn granularity. Scout already
+ships the naming/grouping machinery; we don't use it.
+
+**(a) Scanner library + named groups** — `STORE_DIR/scanners/`
+holds user `*.py` files with `@scanner`-decorated factories
+(loaded via scout's `scanners_from_file`, same pattern as sonde's
+`project_scanners()`) + `groups.yaml` (`{name: [scanner, …]}`).
+`wb.scan(logs, scanner=…)` accepts, in addition to raw `Scanner`
+objects: a registry name (`scanner_create(name)`), a group name
+(resolved from `groups.yaml`), or a `ScanJobConfig` path.
+`wb.SCANNERS`/`wb.SCANNER_GROUPS` seeded in `user_ns`; prompt
+lists available groups. Settings panel: `scanner_dir` path.
+`GET /scanners` for the frontend. **S-M** — mostly wiring scout's
+existing `scanner_create`/`ProjectConfig`.
+
+**(b) Manual scan in M0 collaborative auditor** — new WS
+`{t:"scan_branch", branch_id, scanner: name|group, scope:
+"transcript"|{"turn": N}}` → server materialises the branch's
+messages as a scout `Transcript` (or single-`ChatMessage` slice
+for `scope.turn`), runs the scanner(s), emits result as an event
+on the branch. UI: a "Scan" dropdown in the target-column head
+(whole transcript) + a per-bubble hover chip (this turn only) →
+scanner/group picker → result renders as a `ScanHandle`-style
+card inline (transcript scope) or a score badge on the bubble
+(turn scope). Reuses `ProgressCard`'s scan variant. **M**.
+
+**(c) Live per-turn scanners in M0** — `Branch.meta.live_scanners:
+list[str]` (settable on `StartView` + toggleable mid-run via a
+chip row under the target-column head). `TurnHooks.post_turn`
+(`auditor.py` — the seam already exists) fires each named scanner
+on the latest target `ChatMessage` (scout's `ChatMessage`-
+granularity input type), emits `{kind:"turn_score", turn_id,
+scanner, score, explanation}` → `Bubble` renders a badge chip per
+scanner (hover = explanation). This is the "linter" mode:
+`sycophancy: 0.7` appears on each target reply as it lands.
+Genuinely new — nothing in scout/sonde/petri does this live.
+**M-L** (the hook is easy; the badge UI + not-blocking-the-turn-
+loop-on-a-slow-judge is the work — fire-and-forget with a
+placeholder chip that fills in when the score arrives).
+
+Order: (a) first (foundation, mostly scout reuse), then (b) and
+(c) can proceed in parallel (disjoint: (b) = server + M0 column
+head; (c) = auditor.py + Bubble).
+
 ## P2 — expected conveniences (users will ask on day 2)
 
 - **Session fork / "new session from here"** — branch the
@@ -234,4 +281,6 @@ timeouts, `INSPECT_STREAM_FLUSH_INTERVAL`.
    P1.3 (suggestions endpoint) optional follow-up. ~1 day.
 4. **P1.7** (settings panel). ~1 day.
 5. **P0.4 + P0.5** (gate/subprocess restart edge cases). ~½ day.
-6. P2 batch as capacity allows.
+6. **P1.8** (scanner integration): (a) library+groups → (b) M0
+   manual + (c) live per-turn in parallel. ~2 days.
+7. P2 batch as capacity allows.
