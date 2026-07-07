@@ -252,8 +252,6 @@ head; (c) = auditor.py + Bubble).
   specific transcript+turn. Needs auth story. **L**.
 - **Global search** — full-text over all sessions' transcripts +
   findings. **L**.
-- **Scheduled runs** — "run this audit against the nightly
-  checkpoint at 2am". **L**.
 - **Inline comments** — Deepnote-style threads anchored to a
   transcript turn. **L**.
 - **Export session as `.ipynb`** — orchestrator turns → notebook
