@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
@@ -41,7 +42,9 @@ from inspect_ai.event import InfoEvent
 from inspect_ai.log._transcript import init_transcript
 from inspect_ai.model import (
     ChatMessage,
+    ChatMessageAssistant,
     ChatMessageSystem,
+    ChatMessageTool,
     ChatMessageUser,
     GenerateConfig,
     Model,
@@ -102,6 +105,14 @@ def _wire_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
 KERNEL_RESTART_NOTE = (
     "[kernel restarted — previous Python bindings lost. Eval logs at: "
     "{dirs}. Re-read via wb.attach(log_dir).audits or audits_df(log_dir).]"
+)
+
+#: P0.4 — synthetic tool_result for a tool_call that was mid-flight (gate
+#: pending, subprocess running) when the session was saved. Injected by
+#: ``messages_for_save`` so a resumed ``generate`` doesn't hit the provider's
+#: unpaired-tool_call error; the text tells the agent nothing happened.
+RESTART_TOOL_RESULT = (
+    "[session restarted before this completed — please re-propose if still relevant]"
 )
 
 
@@ -198,6 +209,11 @@ class Orchestrator(StepGated):
         self.state: AgentState | None = None
         #: The detached ``run()`` task; set by ``Session.start_orchestrator``.
         self.task: asyncio.Task[None] | None = None
+        #: P0.5 — every live ``bash`` subprocess (fg + bg). ``bash_tool``
+        #: adds on spawn and discards on ``proc.wait()``; ``close()`` sends
+        #: SIGTERM to each process group so a server restart doesn't orphan
+        #: an ``inspect eval`` that's still burning tokens.
+        self._bash_procs: set[asyncio.subprocess.Process] = set()
 
     @property
     def status(self) -> Status:
@@ -310,7 +326,51 @@ class Orchestrator(StepGated):
             idx = next((i for i, m in enumerate(messages) if m.id == msg_id), None)
             if idx is not None:
                 messages = messages[:idx]
+        # P0.4: a save mid-``execute_tools`` (gate pending, bash running,
+        # server SIGTERM'd) leaves the last assistant's tool_calls without
+        # paired ``ChatMessageTool`` results. The resumed ``generate`` would
+        # 400 on that. Synthesise a placeholder result per unpaired call —
+        # preserves the model's reasoning in the assistant turn and tells it
+        # explicitly that the call never ran.
+        last_a = next(
+            (
+                (i, m)
+                for i, m in reversed(list(enumerate(messages)))
+                if isinstance(m, ChatMessageAssistant)
+            ),
+            None,
+        )
+        if last_a is not None and last_a[1].tool_calls:
+            i, a = last_a
+            paired = {
+                m.tool_call_id
+                for m in messages[i + 1 :]
+                if isinstance(m, ChatMessageTool)
+            }
+            for tc in a.tool_calls:
+                if tc.id not in paired:
+                    messages.append(
+                        ChatMessageTool(
+                            content=RESTART_TOOL_RESULT,
+                            tool_call_id=tc.id,
+                            function=tc.function,
+                        )
+                    )
         return messages
+
+    def close(self) -> None:
+        """Reap every tracked ``bash`` subprocess (P0.5).
+
+        Called from ``Session.close()`` after the ``run()`` task is cancelled
+        (so nothing spawns more). Each proc was started with
+        ``start_new_session=True`` → its pgid == its pid, so ``killpg``
+        reaches the whole subtree (``inspect eval`` → docker sandboxes).
+        """
+        for proc in list(self._bash_procs):
+            if proc.returncode is None:
+                with suppress(ProcessLookupError, PermissionError):
+                    os.killpg(proc.pid, signal.SIGTERM)
+        self._bash_procs.clear()
 
     def _initial_messages(self) -> list[ChatMessage]:
         if self._resume_messages is not None:

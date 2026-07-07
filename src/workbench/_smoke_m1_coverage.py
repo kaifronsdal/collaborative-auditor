@@ -80,6 +80,30 @@ async def _check_bash_background() -> None:
     print(f"✓ bash(background=True): bg-{bg_id} → bg_done card + notify, no orphan")
 
 
+async def _check_bash_reap() -> None:
+    """P0.5: bg bash procs are tracked on orch and killpg'd on ``session.close()``."""
+    async with mock_orch_session([]) as (_session, orch, _conn):
+        (bash, *_) = make_tools(orch)
+        out = await bash(cmd="sleep 30", background=True)
+        m = re.fullmatch(r"\[bg-[0-9a-f]{6} started · pid (\d+)\]", out)
+        assert m, f"bad bg return: {out!r}"
+        pid = int(m.group(1))
+        assert len(orch._bash_procs) == 1, orch._bash_procs
+        os.kill(pid, 0)  # alive pre-close
+    # ``mock_orch_session`` finally → ``session.close()`` → ``orch.close()``
+    # → ``os.killpg(pid, SIGTERM)``. The detached ``_bg`` pump then reads EOF
+    # and ``proc.wait()`` reaps; poll for the pid to leave the process table.
+    def _gone() -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        return False
+
+    await wait_for(_gone, timeout=3.0, tick=0.05)
+    print(f"✓ P0.5: bash bg pid {pid} reaped via killpg on session.close()")
+
+
 # -- 2. read.py: wb.transcript / excerpt / read_transcript -------------------
 
 
@@ -336,6 +360,7 @@ async def _amain() -> None:
     log_file = list_eval_logs(read_dir)[0].name
 
     await _check_bash_background()
+    await _check_bash_reap()
 
     cite_dir = tempfile.mkdtemp(prefix="wb-cov-cite-")
     with OrchestratorKernel() as k:

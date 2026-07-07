@@ -135,6 +135,7 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
         session_dir=session_dir,
         session=SimpleNamespace(session_id=""),
         record_turn=lambda tid: None,
+        _bash_procs=set(),
     )
     (bash, read_file, write_file, edit_file, ask_human, review_seeds, review_finding) = (
         make_tools(orch)

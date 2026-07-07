@@ -276,9 +276,20 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
                 "INSPECT_HOOKS_QUIET": "1",
             }
             with _turn(orch):
+                # ``start_new_session=True`` → proc is its own process-group
+                # leader, so ``Orchestrator.close()`` can ``os.killpg`` the
+                # whole subtree (P0.5). Tracked on ``orch._bash_procs`` from
+                # spawn until ``proc.wait()`` returns; on a cancelled fg
+                # await the proc stays tracked so ``close()`` reaps it.
                 proc = await asyncio.create_subprocess_shell(
-                    cmd, cwd=session_dir, env=env, stdout=PIPE, stderr=STDOUT
+                    cmd,
+                    cwd=session_dir,
+                    env=env,
+                    stdout=PIPE,
+                    stderr=STDOUT,
+                    start_new_session=True,
                 )
+                orch._bash_procs.add(proc)  # noqa: SLF001
                 plain: list[str] = []
                 seen: set[str] = set()
 
@@ -286,22 +297,27 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
                     bg_id = uuid4().hex[:6]
 
                     async def _bg() -> None:
-                        code = await _pump(kernel, evals, proc, plain, seen)
-                        done: BgDonePayload = {
-                            "kind": "bg_done",
-                            "id": bg_id,
-                            "pid": proc.pid,
-                            "exit": code,
-                        }
-                        kernel.emit(
-                            DisplayEvent(
-                                id=uuid4().hex,
-                                bundle=wb_bundle(
-                                    f"[bg-{bg_id} done · exit {code}]", done
-                                ),
+                        try:
+                            code = await _pump(kernel, evals, proc, plain, seen)
+                            done: BgDonePayload = {
+                                "kind": "bg_done",
+                                "id": bg_id,
+                                "pid": proc.pid,
+                                "exit": code,
+                            }
+                            kernel.emit(
+                                DisplayEvent(
+                                    id=uuid4().hex,
+                                    bundle=wb_bundle(
+                                        f"[bg-{bg_id} done · exit {code}]", done
+                                    ),
+                                )
                             )
-                        )
-                        kernel.notify(f"[bg-{bg_id} done · exit {code} · {cmd[:60]!r}]")
+                            kernel.notify(
+                                f"[bg-{bg_id} done · exit {code} · {cmd[:60]!r}]"
+                            )
+                        finally:
+                            orch._bash_procs.discard(proc)  # noqa: SLF001
 
                     # ``_bg`` copies context at creation, so the ``_turn``
                     # contextvar carries into the detached pump even though
@@ -313,9 +329,11 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
                     code = await asyncio.wait_for(
                         _pump(kernel, evals, proc, plain, seen), timeout
                     )
+                    orch._bash_procs.discard(proc)  # noqa: SLF001
                 except TimeoutError:
                     proc.kill()
                     await proc.wait()
+                    orch._bash_procs.discard(proc)  # noqa: SLF001
                     return _tail(plain, f"timeout after {timeout}s")
                 return _tail(plain, code)
 

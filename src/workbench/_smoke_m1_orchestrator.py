@@ -134,6 +134,32 @@ async def _amain() -> None:
         )
         print("✓ pending gate visible in Session.view() and session.events")
 
+        # ---- P0.4: mid-gate save → synthetic tool_result for dangling call ---
+        # The turn-2 assistant's ``python`` tool_call is in ``state.messages``
+        # but ``execute_tools`` is blocked on the gate — no tool result yet.
+        # ``messages_for_save`` must pair it so a resumed generate doesn't 400.
+        mid = orch.messages_for_save()
+        assert mid[-2].role == "assistant" and mid[-2].tool_calls, mid[-2]
+        assert mid[-1].role == "tool", f"no synthetic tool result: {mid[-1].role}"
+        assert mid[-1].tool_call_id == mid[-2].tool_calls[0].id
+        assert "session restarted" in mid[-1].text, mid[-1].text
+        # round-trip via m1/persist: save mid-gate, reload into a fresh
+        # session, resume_messages carries the synthetic result.
+        session.save()
+        from workbench.m1.persist import load_orchestrator
+        mid_meta = load_orchestrator(Session(), d)
+        rm = mid_meta["resume_messages"]
+        assert rm[-1].role == "tool" and "session restarted" in rm[-1].text, rm[-1]
+        assert rm[-1].tool_call_id == rm[-2].tool_calls[0].id
+        # every assistant tool_call in the resumed history is paired — the
+        # invariant a real provider checks.
+        tool_ids = {m.tool_call_id for m in rm if m.role == "tool"}
+        for m in rm:
+            if m.role == "assistant" and m.tool_calls:
+                for tc in m.tool_calls:
+                    assert tc.id in tool_ids, f"unpaired tool_call {tc.id} on resume"
+        print("✓ P0.4: mid-gate save → synthetic tool_result; persist round-trip paired")
+
         # ---- reconnect while gate pending: full state carries display events ---
         conn2 = FakeConn()
         await session.push_full_state(conn2)

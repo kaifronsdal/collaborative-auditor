@@ -184,6 +184,10 @@ class Session:
         if self.orchestrator is not None and self.orchestrator.task is not None:
             tasks.append(self.orchestrator.task)
         await _cancel_all(tasks)
+        # P0.5: reap bash subprocesses AFTER the orch task is cancelled (so it
+        # can't spawn more). ``close()`` killpg's each tracked process group.
+        if self.orchestrator is not None:
+            self.orchestrator.close()
         self._closed.set()
         if self._run_task is not None:
             await self._run_task
