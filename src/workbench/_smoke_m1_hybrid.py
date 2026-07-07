@@ -139,6 +139,8 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
         _bash_evals={},
         _eval_started={},
         run_log_dirs=[],
+        file_hashes={},
+        _broadcast_status_soon=lambda: None,
     )
     (bash, read_file, write_file, edit_file, ask_human, review_seeds, review_finding) = (
         make_tools(orch)
@@ -238,7 +240,7 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
 
     # ---- write / read / edit round-trip ------------------------------------
     w = await write_file(path="t.txt", content="hi")
-    assert "wrote 2 bytes" in w, w
+    assert "2 bytes" in w and "sha " in w, w
     r = await read_file(path="t.txt")
     assert r.strip() == "1\thi", repr(r)
     d = await edit_file(path="t.txt", old="hi", new="bye")
