@@ -45,7 +45,7 @@ from inspect_ai.log import (
 from inspect_ai.model import ChatMessage
 from pydantic import TypeAdapter
 
-from workbench.m1.orchestrator import ORCH_SOURCE
+from workbench.m1.orchestrator import ORCH_SOURCE, _restored_file_hashes
 from workbench.m1.wire import WB_MIME
 
 if TYPE_CHECKING:
@@ -119,6 +119,8 @@ def save_orchestrator(orch: Orchestrator, session: Session, d: Path) -> None:
             "rewound_uuids": rewound_uuids,
             # P2-persist: user messages queued for the next generate.
             "queued": [m.model_dump(mode="json") for m in orch.queued],
+            # P3: ``write_file`` content hashes (prompt/seed versioning).
+            "file_hashes": dict(orch.file_hashes),
         },
     )
     log = EvalLog(
@@ -165,6 +167,10 @@ def load_orchestrator(session: Session, d: Path) -> dict[str, Any]:
         session.events[ev.uuid] = d_ev
         by_role.append(ev.uuid)
     session.version += 1
+
+    # P3: ``file_hashes`` isn't a ``start_orchestrator`` kwarg — hand it to
+    # ``Orchestrator.__init__`` via the module-level map (popped by span_id).
+    _restored_file_hashes[span_id] = dict(md.get("file_hashes") or {})
 
     return {
         "model": md["model"],

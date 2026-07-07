@@ -104,6 +104,8 @@ export type FindingPayload = {
   description?: string;
   signed_at?: string | null;
   session_id?: string;
+  /** P3 — `path` → `sha256[:12]` at cite time (prompt/seed versioning). */
+  file_hashes?: Record<string, string>;
 };
 
 // -- progress cards -----------------------------------------------------------

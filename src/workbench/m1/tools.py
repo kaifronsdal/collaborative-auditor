@@ -18,6 +18,7 @@ Registration on ``orchestrator_agent`` is migration step 4.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -86,7 +87,13 @@ def make_tools(orch: Orchestrator) -> list[Tool]:
             p = _resolve(path)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content)
-            return f"[wrote {len(content.encode())} bytes → {path}]"
+            # P3 prompt/seed versioning — record a content hash so any
+            # ``Finding`` snapped after this write can name the exact
+            # seed/prompt version it was derived from.
+            n = len(content.encode())
+            h = hashlib.sha256(content.encode()).hexdigest()[:12]
+            orch.file_hashes[path] = h
+            return f"[wrote {path} ({n} bytes, sha {h})]"
 
         return execute
 
@@ -186,6 +193,7 @@ def make_tools(orch: Orchestrator) -> list[Tool]:
                     description=description,
                     session_dir=orch.session_dir,
                     session_id=orch.session.session_id or "",
+                    file_hashes=dict(orch.file_hashes),
                 )
             return json.dumps({
                 "signed": finding.signed_by is not None,

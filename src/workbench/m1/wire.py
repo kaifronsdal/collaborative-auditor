@@ -185,6 +185,8 @@ class FindingPayload(TypedDict, total=False):
     description: str
     signed_at: str | None
     session_id: str
+    #: P3 — ``path`` → ``sha256[:12]`` at cite time (prompt/seed versioning).
+    file_hashes: dict[str, str]
 
 
 # -- progress cards -----------------------------------------------------------

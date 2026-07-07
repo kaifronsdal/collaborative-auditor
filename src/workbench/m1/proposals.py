@@ -337,6 +337,10 @@ class Finding:
     description: str = ""
     signed_at: str | None = None
     session_id: str = ""
+    #: P3 prompt/seed versioning — ``path`` → ``sha256[:12]`` of every
+    #: ``write_file`` the orchestrator had done at cite time, so the exported
+    #: finding is anchored to the exact seed/prompt version.
+    file_hashes: dict[str, str] = field(default_factory=dict)
     id: str = field(default_factory=lambda: uuid4().hex)
 
     def _repr_mimebundle_(
@@ -352,6 +356,7 @@ class Finding:
             "description": self.description,
             "signed_at": self.signed_at,
             "session_id": self.session_id,
+            "file_hashes": dict(self.file_hashes),
         }
         return wb_bundle(f"<Finding {self.id[:6]} · {self.claim!r} · {state}>", payload)
 
@@ -381,6 +386,7 @@ def load_findings(session_dir: str | Path) -> list[Finding]:
                 description=d.get("description", ""),
                 signed_at=d.get("signed_at"),
                 session_id=d.get("session_id", ""),
+                file_hashes=dict(d.get("file_hashes") or {}),
                 id=d.get("id") or uuid4().hex,
             )
         )
@@ -440,6 +446,7 @@ async def cite(
     description: str,
     session_dir: str | Path | None = None,
     session_id: str = "",
+    file_hashes: dict[str, str] | None = None,
 ) -> Finding:
     """Propose a finding, block on the human's signature, return it.
 
@@ -470,6 +477,7 @@ async def cite(
         description=prop.description,
         signed_at=datetime.now(UTC).isoformat() if signed_by else None,
         session_id=session_id,
+        file_hashes=dict(file_hashes or {}),
     )
     if signed_by and session_dir is not None:
         _persist_finding(finding, session_dir)

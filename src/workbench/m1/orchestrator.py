@@ -123,6 +123,14 @@ FORK_NOTE = (
 #: ``session_dir`` (top-level only — ``runs/`` is a directory and skipped).
 _FORK_COPY_SUFFIXES = frozenset({".json", ".yaml", ".txt", ".py", ".md"})
 
+#: P3 prompt/seed versioning — ``span_id`` → ``file_hashes`` carried from
+#: :func:`~workbench.m1.persist.load_orchestrator` to the ``Orchestrator``
+#: it seeds. ``session.start_orchestrator`` takes explicit kwargs (and is
+#: out of scope here), so the restored dict can't ride in the returned meta;
+#: ``__init__`` pops it below by ``span_id`` — same handoff shape as
+#: ``queued`` in ``workbench.persist``.
+_restored_file_hashes: dict[str, dict[str, str]] = {}
+
 #: P0.4 — synthetic tool_result for a tool_call that was mid-flight (gate
 #: pending, subprocess running) when the session was saved. Injected by
 #: ``messages_for_save`` so a resumed ``generate`` doesn't hit the provider's
@@ -176,6 +184,14 @@ class Orchestrator(StepGated):
         #: and any ``eval_run`` log dirs the pre-save turns produced.
         self._resume_messages = resume_messages
         self.run_log_dirs: list[str] = list(run_log_dirs or [])
+        #: P3 prompt/seed versioning — ``path`` → ``sha256(content)[:12]``
+        #: for every ``write_file`` this orchestrator has done. Snapshotted
+        #: onto each ``Finding`` at ``review_finding`` time so a signed claim
+        #: names the exact seed/prompt version it was derived from. Restored
+        #: from ``orchestrator.eval`` metadata via ``_restored_file_hashes``.
+        self.file_hashes: dict[str, str] = _restored_file_hashes.pop(
+            span_id or "", {}
+        )
         #: P2 session fork — when this orchestrator was seeded from a
         #: ``fork_seed()``, ``_initial_messages`` swaps ``KERNEL_RESTART_NOTE``
         #: for ``FORK_NOTE`` and ``_seed_user_ns`` exposes the (absolutized)

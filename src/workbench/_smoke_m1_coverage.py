@@ -10,6 +10,7 @@ Run:  ``uv run python -m workbench._smoke_m1_coverage``
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ import tempfile
 import anyio
 import pandas as pd
 
+from workbench.m1 import proposals
 from workbench.m1._fixtures import (
     AUDIT_TASK,
     TurnSpec,
@@ -32,7 +34,7 @@ from workbench.m1._fixtures import (
 from workbench.m1.attach import AttachedRun
 from workbench.m1.kernel import OrchestratorKernel
 from workbench.m1.orchestrator import _prewarm
-from workbench.m1.proposals import FINDINGS_JSONL, Finding, Gate
+from workbench.m1.proposals import FINDINGS_JSONL, Finding, Gate, load_findings
 from workbench.m1.tools import make_tools
 from workbench.m1.wb import Workbench
 from workbench.m1.wire import STREAM_MIME, WB_MIME
@@ -273,49 +275,88 @@ async def _check_acp_and_handlers(read_dir: str) -> None:
 # -- 6. wb.cite (in-cell) ----------------------------------------------------
 
 
-async def _check_wb_cite(k: OrchestratorKernel, gate: Gate, session_dir: str) -> None:
-    # e2e-v7: quote arrives without ``log`` (the tool schema doesn't ask for
-    # it); ``cite()`` must resolve it from ``session_dir/**/*.eval``. The
-    # caller has already copied a fixture ``.eval`` (containing ``s0``) under
-    # ``session_dir/runs/``.
-    turn = asyncio.create_task(
-        k.run_turn(
-            "f = await wb.cite('leaks prompt', "
-            "[{'sample_id':'s0','at':3,'role':'target','text':'…'}], "
-            "description='see t3')\nf"
+async def _check_wb_cite(log_file: str) -> None:
+    # Runs under ``mock_orch_session`` (own kernel entered via ``orch.run()``)
+    # so we have a real ``orch.file_hashes`` for the P3 versioning check.
+    async with mock_orch_session([]) as (_session, orch, _conn):
+        await wait_for(lambda: orch.state is not None)
+        k, gate, session_dir = orch.kernel, orch.gate, str(orch.session_dir)
+        # e2e-v7: quote arrives without ``log`` (the tool schema doesn't ask
+        # for it); ``cite()`` must resolve it from ``session_dir/**/*.eval``.
+        os.makedirs(os.path.join(session_dir, "runs", "r0"))
+        shutil.copy(
+            log_file.removeprefix("file://"), os.path.join(session_dir, "runs", "r0")
         )
-    )
-    await wait_for(lambda: gate.pending)
-    (pid,) = gate.pending
-    # pending card is a cite_proposal
-    pending_ev = next(ev for ev in k.outputs[k._turn_counter] if ev.id == pid)
-    assert pending_ev.bundle[WB_MIME]["kind"] == "cite_proposal"
-    gate.resolve(pid, {"signed": True, "by": "tester"})
-    r = await turn
-    assert r.success, r.text
-    f = k.shell.user_ns["f"]
-    assert isinstance(f, Finding) and f.signed_by == "tester", f
-    assert f.quotes[0].sample_id == "s0"
-    assert f.quotes[0].log, f"Quote.log not resolved: {f.quotes[0]!r}"
-    assert f.quotes[0].log.endswith(".eval"), f.quotes[0].log
-    assert f.description == "see t3" and f.signed_at, f
-    # last-expr Finding card emitted separately from the proposal
-    assert any(
-        ev.bundle.get(WB_MIME, {}).get("kind") == "finding" for ev in r.outputs
-    ), "no Finding card in outputs"
-    # P0.6: signed finding persisted to findings.jsonl; wb.findings() reads it back
-    jsonl = os.path.join(session_dir, FINDINGS_JSONL)
-    assert os.path.exists(jsonl), f"{jsonl} not written on approve"
-    wb = k.shell.user_ns["wb"]
-    stored = wb.findings()
-    assert len(stored) == 1, f"expected 1 finding, got {len(stored)}"
-    assert stored[0].id == f.id and stored[0].claim == "leaks prompt", stored[0]
-    assert stored[0].quotes[0].log == f.quotes[0].log, "resolved log not persisted"
-    # idempotent: a second approve on the same id must not duplicate the line
-    from workbench.m1.proposals import _persist_finding
-    _persist_finding(f, session_dir)
-    assert len(wb.findings()) == 1, "re-persist duplicated a line"
+
+        # P3 versioning: write_file records sha256[:12] on orch.file_hashes
+        # and echoes it in the tool result.
+        (_bash, _read, write_file, *_rest) = make_tools(orch)
+        content = "seed a\nseed b\n"
+        out = await write_file(path="seeds.txt", content=content)
+        h = hashlib.sha256(content.encode()).hexdigest()[:12]
+        assert out == f"[wrote seeds.txt ({len(content.encode())} bytes, sha {h})]", out
+        assert orch.file_hashes == {"seeds.txt": h}, orch.file_hashes
+
+        turn = asyncio.create_task(
+            k.run_turn(
+                "f = await wb.cite('leaks prompt', "
+                "[{'sample_id':'s0','at':3,'role':'target','text':'…'}], "
+                "description='see t3')\nf"
+            )
+        )
+        await wait_for(lambda: gate.pending)
+        (pid,) = gate.pending
+        # pending card is a cite_proposal
+        pending_ev = next(ev for ev in k.outputs[k._turn_counter] if ev.id == pid)
+        assert pending_ev.bundle[WB_MIME]["kind"] == "cite_proposal"
+        gate.resolve(pid, {"signed": True, "by": "tester"})
+        r = await turn
+        assert r.success, r.text
+        f = k.shell.user_ns["f"]
+        assert isinstance(f, Finding) and f.signed_by == "tester", f
+        assert f.quotes[0].sample_id == "s0"
+        assert f.quotes[0].log, f"Quote.log not resolved: {f.quotes[0]!r}"
+        assert f.quotes[0].log.endswith(".eval"), f.quotes[0].log
+        assert f.description == "see t3" and f.signed_at, f
+        # last-expr Finding card emitted separately from the proposal
+        assert any(
+            ev.bundle.get(WB_MIME, {}).get("kind") == "finding" for ev in r.outputs
+        ), "no Finding card in outputs"
+        # P0.6: signed finding persisted to findings.jsonl; wb.findings() reads it back
+        jsonl = os.path.join(session_dir, FINDINGS_JSONL)
+        assert os.path.exists(jsonl), f"{jsonl} not written on approve"
+        wb = k.shell.user_ns["wb"]
+        stored = wb.findings()
+        assert len(stored) == 1, f"expected 1 finding, got {len(stored)}"
+        assert stored[0].id == f.id and stored[0].claim == "leaks prompt", stored[0]
+        assert stored[0].quotes[0].log == f.quotes[0].log, "resolved log not persisted"
+        # idempotent: a second approve on the same id must not duplicate the line
+        proposals._persist_finding(f, session_dir)
+        assert len(wb.findings()) == 1, "re-persist duplicated a line"
+
+        # P3: file_hashes threaded through cite() → Finding → findings.jsonl.
+        cite_task = asyncio.create_task(
+            proposals.cite(
+                gate,
+                "prompt drift",
+                [{"sample_id": "s0", "at": 1, "role": "target", "text": "…"}],
+                description="v-check",
+                session_dir=session_dir,
+                session_id="cov",
+                file_hashes=dict(orch.file_hashes),
+            )
+        )
+        await wait_for(lambda: gate.pending)
+        gate.resolve(next(iter(gate.pending)), {"signed": True, "by": "tester"})
+        f2 = await cite_task
+        assert f2.file_hashes == {"seeds.txt": h}, f2.file_hashes
+        stored = load_findings(session_dir)
+        assert len(stored) == 2 and stored[1].file_hashes == {"seeds.txt": h}, (
+            f"file_hashes not persisted/round-tripped: {stored[1].file_hashes}"
+        )
+    shutil.rmtree(session_dir, ignore_errors=True)
     print("✓ wb.cite (in-cell): gate → signed Finding in user_ns + findings.jsonl")
+    print(f"✓ P3 versioning: write_file → orch.file_hashes → Finding ({h})")
 
 
 # -- 7. plots.py -------------------------------------------------------------
@@ -368,15 +409,14 @@ async def _amain() -> None:
     await _check_bash_background()
     await _check_bash_reap()
 
-    cite_dir = tempfile.mkdtemp(prefix="wb-cov-cite-")
-    os.makedirs(os.path.join(cite_dir, "runs", "r0"))
-    shutil.copy(log_file.removeprefix("file://"), os.path.join(cite_dir, "runs", "r0"))
+    read_wb_dir = tempfile.mkdtemp(prefix="wb-cov-read-wb-")
     with OrchestratorKernel() as k:
         gate = Gate()
-        k.shell.user_ns["wb"] = Workbench(gate, session_dir=cite_dir, session_id="cov")
+        k.shell.user_ns["wb"] = Workbench(gate, session_dir=read_wb_dir, session_id="cov")
         await _check_read(k, log_file)
-        await _check_wb_cite(k, gate, cite_dir)
-    shutil.rmtree(cite_dir, ignore_errors=True)
+    shutil.rmtree(read_wb_dir, ignore_errors=True)
+
+    await _check_wb_cite(log_file)
 
     await _check_wb_display_error()
     await _check_attach_empty_dir()

@@ -79,6 +79,18 @@ def _finding_md(f: Finding) -> str:
     )
     if meta:
         lines += [f"*{meta}*", ""]
+    if f.file_hashes:
+        # P3 — anchor the finding to the exact seed/prompt version that
+        # produced it: one ``path: sha`` line per ``write_file`` at cite time.
+        rows = "\n".join(f"- `{p}`: `{h}`" for p, h in sorted(f.file_hashes.items()))
+        lines += [
+            "<details><summary>versions</summary>",
+            "",
+            rows,
+            "",
+            "</details>",
+            "",
+        ]
     return "\n".join(lines)
 
 
