@@ -100,9 +100,15 @@
   font: 10.5px var(--mono); color: var(--ink-faint); flex-shrink: 0;
   min-width: 44px; text-align: right;
 }
+/* Fixed-width cancel slot — always rendered (empty when not cancellable) so
+   `.hjp-elapsed` keeps a straight right edge across bash/eval rows. */
+.hjp-cancel-slot {
+  width: 18px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+}
 .hjp-cancel {
   border: none; background: none; padding: 0 2px; cursor: pointer;
-  color: var(--ink-faint); font-size: 11px; line-height: 1; flex-shrink: 0;
+  color: var(--ink-faint); font-size: 11px; line-height: 1;
 }
 .hjp-cancel:hover { color: var(--danger); }
 /* `attached` = resumed run dir with no live status — same neutral grey as

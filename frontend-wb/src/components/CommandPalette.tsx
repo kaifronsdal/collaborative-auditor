@@ -218,8 +218,11 @@ export function CommandPalette({
         )}
       </div>
       <div className="cmd-palette-foot">
-        <span><kbd>↑</kbd><kbd>↓</kbd> select</span>
-        <span><kbd>↵</kbd> run</span>
+        <span>
+          <kbd><i className="bi bi-arrow-up" /></kbd>
+          <kbd><i className="bi bi-arrow-down" /></kbd> select
+        </span>
+        <span><kbd><i className="bi bi-arrow-return-left" /></kbd> run</span>
         <span><kbd>esc</kbd> close</span>
       </div>
     </Modal>

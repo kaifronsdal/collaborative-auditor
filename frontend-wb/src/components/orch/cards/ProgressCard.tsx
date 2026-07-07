@@ -371,7 +371,14 @@ function RunRow({
   // `stopping…` overrides while the row is still `running` locally.
   const status = stopping ? (
     <span className="ar-status stopping">stopping…</span>
-  ) : row.status === "done" ? null : row.status === "running" ? (
+  ) : row.status === "done" ? (
+    // Empty spacers so the flex skeleton keeps the header's status/turns
+    // column widths — without them the score column drifts right on done rows.
+    <>
+      <span className="ar-status" />
+      <span className="ar-turns" />
+    </>
+  ) : row.status === "running" ? (
     <span className="ar-turns">t{row.turns ?? "…"}</span>
   ) : row.status === "error" ? (
     <span className="ar-status error">{errClass(row.error)}</span>

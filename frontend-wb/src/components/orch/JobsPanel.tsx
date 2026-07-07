@@ -144,18 +144,20 @@ function JobRow({
       <span className="hjp-elapsed">
         {job.status === "running" ? elapsed(job.started_at, now) : job.status}
       </span>
-      {cancellable && (
-        <button
-          className="hjp-cancel"
-          title="SIGTERM this subprocess"
-          onClick={(e) => {
-            e.stopPropagation();
-            onCancel(job.id);
-          }}
-        >
-          <i className="bi bi-x-lg" />
-        </button>
-      )}
+      <span className="hjp-cancel-slot">
+        {cancellable && (
+          <button
+            className="hjp-cancel"
+            title="SIGTERM this subprocess"
+            onClick={(e) => {
+              e.stopPropagation();
+              onCancel(job.id);
+            }}
+          >
+            <i className="bi bi-x-lg" />
+          </button>
+        )}
+      </span>
     </div>
   );
 }

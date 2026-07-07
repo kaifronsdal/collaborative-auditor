@@ -161,7 +161,7 @@ function OrchStartCard(): JSX.Element {
               <span className="picker-cfg-label">judge_dimensions</span>
               <input
                 type="text"
-                className="picker-cfg-number"
+                className="picker-cfg-text"
                 style={{ width: "100%" }}
                 placeholder="(default)"
                 value={judgeDims}

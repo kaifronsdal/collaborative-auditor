@@ -60,6 +60,7 @@ export function ScannerPicker({ value, onChange, placeholder }: PickerProps): JS
     _scanners ?? { scanners: [], groups: {} }
   );
   const [open, setOpen] = useState(false);
+  const [sel, setSel] = useState(0);
 
   useEffect(() => {
     void fetchScanners().then(setLib);
@@ -75,17 +76,32 @@ export function ScannerPicker({ value, onChange, placeholder }: PickerProps): JS
     ];
   }, [q, groupNames, lib.scanners]);
 
+  // Clamp selection when the filtered list shrinks (mirrors CommandPalette).
+  useEffect(() => {
+    if (sel >= options.length) setSel(Math.max(0, options.length - 1));
+  }, [options.length, sel]);
+
   return (
     <div style={{ position: "relative" }}>
       <input
         type="text"
+        className="grm-search"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setSel(0);
+        }}
         onFocus={() => setOpen(true)}
         onBlur={() => setTimeout(() => setOpen(false), 150)}
         onKeyDown={(e) => {
-          if (e.key === "Enter" && options.length > 0 && q !== "") {
-            onChange(options[0].name);
+          if (e.key === "ArrowDown") {
+            e.preventDefault();
+            setSel((i) => (options.length ? (i + 1) % options.length : 0));
+          } else if (e.key === "ArrowUp") {
+            e.preventDefault();
+            setSel((i) => (options.length ? (i - 1 + options.length) % options.length : 0));
+          } else if (e.key === "Enter" && options.length > 0) {
+            onChange(options[sel].name);
             setOpen(false);
           } else if (e.key === "Escape") {
             setOpen(false);
@@ -104,25 +120,23 @@ export function ScannerPicker({ value, onChange, placeholder }: PickerProps): JS
             zIndex: 20,
             maxHeight: "12rem",
             overflowY: "auto",
-            background: "var(--bg-popover, #fff)",
-            border: "1px solid var(--border, #ccc)",
+            background: "var(--bg-000)",
+            border: "1px solid var(--border)",
             borderRadius: 4,
             fontSize: "0.85em",
           }}
         >
-          {options.map((o) => (
+          {options.map((o, i) => (
             <div
               key={`${o.group ? "g" : "s"}:${o.name}`}
+              className={`scan-opt${i === sel ? " selected" : ""}`}
+              onMouseEnter={() => setSel(i)}
               onMouseDown={(e) => {
                 e.preventDefault();
                 onChange(o.name);
                 setOpen(false);
               }}
-              style={{
-                padding: "3px 8px",
-                cursor: "pointer",
-                fontWeight: o.group ? 600 : 400,
-              }}
+              style={{ fontWeight: o.group ? 600 : 400 }}
               title={o.group ? lib.groups[o.name].join(", ") : undefined}
             >
               {o.name}
@@ -189,10 +203,9 @@ export function ScanControl({ branch }: { branch: BranchId }): JSX.Element {
     <div ref={ref} style={{ position: "absolute", top: 4, right: 8, zIndex: 5 }}>
       <button
         type="button"
-        className="chip"
+        className="scan-trigger"
         onClick={() => setOpen((v) => !v)}
         title="Run a scanner over the target's conversation"
-        style={{ fontSize: "0.75em", textTransform: "none" }}
       >
         scan{scans.length > 0 && ` · ${scans.length}`}
       </button>
@@ -206,8 +219,8 @@ export function ScanControl({ branch }: { branch: BranchId }): JSX.Element {
             maxHeight: "60vh",
             overflowY: "auto",
             padding: "0.6rem",
-            background: "var(--bg-popover, #fff)",
-            border: "1px solid var(--border, #ccc)",
+            background: "var(--bg-000)",
+            border: "1px solid var(--border)",
             borderRadius: 6,
             boxShadow: "0 4px 16px rgba(0,0,0,0.15)",
             textTransform: "none",
@@ -217,7 +230,12 @@ export function ScanControl({ branch }: { branch: BranchId }): JSX.Element {
             <div style={{ flex: 1 }}>
               <ScannerPicker value={scanner} onChange={setScanner} />
             </div>
-            <button type="button" onClick={run} disabled={!scanner.trim()}>
+            <button
+              type="button"
+              className="gate-btn primary"
+              onClick={run}
+              disabled={!scanner.trim()}
+            >
               Run
             </button>
           </div>

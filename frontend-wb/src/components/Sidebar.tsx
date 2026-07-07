@@ -246,7 +246,7 @@ export function Sidebar(): JSX.Element {
       </div>
       <div className="side-recents">
         {savedSessions.length === 0 && sessionsList.length === 0 ? (
-          <div className="side-empty">No audits yet</div>
+          <div className="side-empty">No recent sessions</div>
         ) : null}
         {savedSessions.map((s) => {
           const isActive = s.session_id === sessionId;
@@ -292,28 +292,34 @@ export function Sidebar(): JSX.Element {
         <>
           <div className="side-section">Pinned</div>
           <div className="side-pins">
-            {pins.map((p) => (
-              <div
-                key={`${p.log}::${p.sample_id}`}
-                className="side-row"
-                title={p.note ?? `${p.sample_id} · ${p.log}`}
-                onClick={() => importEval(p.log, p.sample_id)}
-              >
-                <button
-                  className="side-row-star"
-                  title="unpin"
-                  aria-label="unpin"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    togglePin(p.log, p.sample_id);
-                  }}
+            {pins.map((p) => {
+              const label = p.note ?? p.sample_id;
+              const base = basename(p.log);
+              return (
+                <div
+                  key={`${p.log}::${p.sample_id}`}
+                  className="side-row"
+                  title={`${label} · ${p.log}`}
+                  onClick={() => importEval(p.log, p.sample_id)}
                 >
-                  <i className="bi bi-star-fill" />
-                </button>
-                <span className="side-row-title">{p.sample_id}</span>
-                <span className="side-row-time">{basename(p.log)}</span>
-              </div>
-            ))}
+                  <button
+                    className="side-row-star"
+                    title="unpin"
+                    aria-label="unpin"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      togglePin(p.log, p.sample_id);
+                    }}
+                  >
+                    <i className="bi bi-star-fill" />
+                  </button>
+                  <span className="side-row-title">{label}</span>
+                  <span className="side-row-time">
+                    {base.length > 12 ? `…${base.slice(-12)}` : base}
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </>
       )}
