@@ -191,8 +191,23 @@ head; (c) = auditor.py + Bubble).
 
 - **Session fork / "new session from here"** — branch the
   orchestrator conversation to try an alternate analysis.
-  `Orchestrator` copy with `messages_for_save()[:N]` as the seed.
-  **M**.
+  Design: `{t:"fork_orchestrator", at_turn: int}` → **new
+  `Session`** with a fresh `Orchestrator` seeded from the parent:
+  `resume_messages = parent.messages_for_save()` truncated to
+  `at_turn` (via `_turn_msg[at_turn]` index), same `model_name`/
+  `generate_config`/`audit_defaults`/`model_args`. Fresh `span_id`
+  → **own `session_dir`**; copy top-level files from
+  `parent.session_dir` (`*.json`/`*.yaml`/`*.txt`/`*.py` — seeds
+  the model wrote) but NOT `runs/`. Seed `run_log_dirs` with the
+  parent's entries **absolutized** (`parent.session_dir / d` for
+  relative ones) so `wb.attach()` on old runs still resolves; new
+  `bash("… --log-dir runs/X")` writes to the fork's own dir.
+  Fresh (empty) `findings.jsonl`. Prepend a `[forked from session
+  {parent} at turn {N} — kernel is fresh; parent runs re-attached
+  via absolute paths in wb.DEFAULTS.parent_runs]` note (reuse the
+  `KERNEL_RESTART_NOTE` mechanism). Server returns the new
+  `session_id`; frontend navigates (`?session=`). UI: "fork here"
+  in each turn's block-actions row (next to rewind). **M**.
 - **Background job panel** — list every `bash(background=True)` +
   every `AttachedRun` across the session with status/cancel.
   Data already in `orch.bg_tasks` + `run_log_dirs`. **M**.
