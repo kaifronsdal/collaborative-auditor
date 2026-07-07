@@ -635,6 +635,7 @@ async def _h_start(session: Session, data: dict) -> None:
         target_config=data.get("target_config") or None,
         auditor_model_args=data.get("auditor_model_args") or None,
         target_model_args=data.get("target_model_args") or None,
+        live_scanners=data.get("live_scanners") or None,
     )
     # the branch registered its span ids in `session.span_role`;
     # `_register_and_spawn` re-broadcasts `state` so clients learn

@@ -204,6 +204,7 @@ export type SessionState = {
     target_config?: Partial<GenerateConfigDict>;
     auditor_model_args?: Record<string, unknown>;
     target_model_args?: Record<string, unknown>;
+    live_scanners?: string[];
   }) => void;
   /** Update the sidebar's editable next-audit config. */
   setNextConfig: (patch: Partial<NextConfig>) => void;
@@ -745,6 +746,9 @@ export const useSession = create<SessionState>((set, get) => ({
         : {}),
       ...(params.target_model_args
         ? { target_model_args: params.target_model_args }
+        : {}),
+      ...(params.live_scanners && params.live_scanners.length > 0
+        ? { live_scanners: params.live_scanners }
         : {}),
     });
   },

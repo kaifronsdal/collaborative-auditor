@@ -234,7 +234,10 @@ async def scan_messages(
             continue
         # ``list[Result]`` collapses to the first entry for the card; the
         # full list is what a per-turn (P1.8c) badge would iterate.
-        out[name] = r[0] if isinstance(r, list) and r else r
+        if isinstance(r, list):
+            out[name] = r[0] if r else RuntimeError(f"{name}: empty result")
+        else:
+            out[name] = r
     return out
 
 

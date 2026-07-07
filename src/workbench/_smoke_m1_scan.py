@@ -20,6 +20,7 @@ from __future__ import annotations
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import anyio
 from inspect_ai import Task, eval_async
@@ -264,6 +265,7 @@ async def _run_branch_scan() -> None:
             session,
             {"branch_id": base.branch_id, "scanner": "has_u1", "scope": {"turn": 0}},
         )
+        done: list[dict[str, Any]] = []
         for _ in range(50):
             done = [
                 e["data"]["bundle"][WB_MIME]

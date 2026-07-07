@@ -141,6 +141,7 @@ export type Up =
       target_config?: Record<string, unknown>;
       auditor_model_args?: Record<string, unknown>;
       target_model_args?: Record<string, unknown>;
+      live_scanners?: string[];
     }
   // `target`: branch id, "orch" for the orchestrator, or omitted → `current`.
   | { t: "step"; target?: string }
