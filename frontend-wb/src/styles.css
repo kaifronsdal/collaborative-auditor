@@ -346,6 +346,10 @@ body {
 .start-defaults-pickers {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
+/* Widen the label column here — `judge_dimensions` clips at the default
+   80px (0706 screenshot review). Scoped so ModelPicker's own rows keep
+   the tighter 80px. */
+.start-defaults-body .picker-cfg-label { width: 110px; }
 .picker-more-toggle {
   border: none; background: none; cursor: pointer;
   font-size: 11px; color: var(--link); padding: 2px 0; margin-top: 2px;

@@ -255,6 +255,14 @@ async def _amain() -> None:
             await page.wait_for_selector(".start-card .start-btn")
             await _shot(page, "01-orch-start")
 
+            # ── 01b: expand P1.2 "Audit defaults" → 3 role pickers ──────────
+            await page.locator(
+                ".start-card .start-defaults .picker-config-toggle"
+            ).click()
+            await page.wait_for_selector(".start-defaults-body", timeout=5_000)
+            await asyncio.sleep(0.15)
+            await _shot(page, "01b-orch-start-defaults")
+
             # ── connect to the scripted session; orch column mounts ──────────
             await page.goto(f"http://127.0.0.1:{ui_port}/?session={SPAN_ID}")
             await page.wait_for_selector(".orch-col-wrap", timeout=15_000)
