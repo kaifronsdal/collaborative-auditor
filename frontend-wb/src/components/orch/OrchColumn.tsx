@@ -353,28 +353,16 @@ function OrchHeader({
   send: ReturnType<typeof useSession.getState>["send"];
 }): JSX.Element {
   const [hover, setHover] = useState(false);
-  // R1 debounce: display_ids we've already sent an `approve` for. Buttons for
-  // those ids disable until the gate's `pending` flips false and it drops out
-  // of `gates`. Prevents double-approve / approve+deny races on the popover
-  // and on Approve-all (button-audit #12-15).
-  const [sentIds, setSentIds] = useState<ReadonlySet<string>>(() => new Set());
+  // A2 adversarial-review caveat: `approve` is `UNLOCKED` (ack ~1ms) and
+  // server-idempotent (`gate.resolve` returns False on the 2nd call), so a
+  // double-approve is a no-op — the R1 `sentIds` guard is deleted outright.
   const resolve = (id: string, verdict: unknown): void => {
-    if (sentIds.has(id)) return;
-    setSentIds((prev) => new Set(prev).add(id));
     send({ t: "approve", display_id: id, verdict });
   };
   // `ask_human` gates need a value; only `run_proposal`s can be bulk-approved.
   const approvable = gates.filter((g) => g.kind === "run_proposal");
-  const allSent = approvable.length > 0 && approvable.every((g) => sentIds.has(g.id));
   const approveAll = (): void => {
-    const unsent = approvable.filter((g) => !sentIds.has(g.id));
-    if (unsent.length === 0) return;
-    setSentIds((prev) => {
-      const next = new Set(prev);
-      for (const g of unsent) next.add(g.id);
-      return next;
-    });
-    for (const g of unsent) send({ t: "approve", display_id: g.id, verdict: {} });
+    for (const g of approvable) send({ t: "approve", display_id: g.id, verdict: {} });
   };
   const ctxLevel = ctxPct > 90 ? "hi" : ctxPct > 70 ? "mid" : "lo";
 
@@ -418,7 +406,6 @@ function OrchHeader({
                         <button
                           type="button"
                           className="hgp-btn"
-                          disabled={sentIds.has(g.id)}
                           onClick={() => resolve(g.id, {})}
                         >
                           approve
@@ -426,7 +413,6 @@ function OrchHeader({
                         <button
                           type="button"
                           className="hgp-btn deny"
-                          disabled={sentIds.has(g.id)}
                           onClick={() => resolve(g.id, { denied: true })}
                         >
                           deny
@@ -439,7 +425,6 @@ function OrchHeader({
                   <button
                     type="button"
                     className="hgp-all"
-                    disabled={allSent}
                     onClick={approveAll}
                   >
                     Approve all ({approvable.length})

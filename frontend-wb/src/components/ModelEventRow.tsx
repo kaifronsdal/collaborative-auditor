@@ -3,6 +3,7 @@ import type { ChatMessage } from "@tsmono/inspect-common";
 import { useRef, useState, type JSX } from "react";
 
 import { pairToolCalls, type Turn } from "../lib/events";
+import { FORK_KINDS, useIsPending } from "../lib/selectors";
 import { useSession } from "../store/session";
 import { BranchNav } from "./BranchNav";
 import { Bubble, TurnScoreChips, renderContent } from "./Bubble";
@@ -180,7 +181,12 @@ export function ModelEventRow({
   const [showRaw, setShowRaw] = useState(false);
   const [showNPicker, setShowNPicker] = useState(false);
 
-  const disabled = anchorId == null || !!ev.pending;
+  // A2: any fork-shaped command in flight disables every branch/resample/
+  // edit action across all rows — they all repoint `current`, so a second
+  // fork before the first's `{t:"ack"}` would race it (chaos s4). Replaces
+  // the store-level `_pendingChild` sentinel early-return.
+  const forkPending = useIsPending((c) => FORK_KINDS.has(c.t));
+  const disabled = anchorId == null || !!ev.pending || forkPending;
   const kind = auditor ? "auditor" : "target";
   // Open Resample-N batch at this row (parent = the branch being viewed).
   const openBatch =

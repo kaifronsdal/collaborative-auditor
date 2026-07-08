@@ -681,11 +681,22 @@ UNLOCKED = {
 
 
 async def _dispatch(session: Session, data: dict) -> None:
-    if data.get("t") in UNLOCKED:
-        await _dispatch_locked(session, data)
-        return
-    async with session._dispatch_lock:  # noqa: SLF001
-        await _dispatch_locked(session, data)
+    try:
+        if data.get("t") in UNLOCKED:
+            await _dispatch_locked(session, data)
+            return
+        async with session._dispatch_lock:  # noqa: SLF001
+            await _dispatch_locked(session, data)
+    finally:
+        # A2 (ARCHITECTURE-RACES.md): every command carrying a client
+        # `req_id` is acknowledged once its handler returns — the client's
+        # `pending[]` overlay drops the entry and re-enables the button.
+        # Fires for both the locked and `UNLOCKED` paths, and even if the
+        # handler raised (the WS loop's own `except` surfaces the error;
+        # the ack just clears the in-flight guard). R5 already moved slow
+        # waits off the lock, so this is <50ms for every command.
+        if data.get("req_id"):
+            await session.broadcast({"t": "ack", "req_id": data["req_id"]})
 
 
 # -- per-command handlers ------------------------------------------------------

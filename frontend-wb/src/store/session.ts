@@ -32,6 +32,9 @@ import type { GenerateConfigDict } from "../components/ModelPicker";
 /** Local id for a just-initiated branch/resample/edit, before `state` arrives. */
 export const PENDING_BRANCH = "__pending_branch__";
 
+/** A2: an in-flight `Up` command awaiting `{t:"ack"}` from the server. */
+export type PendingCmd = Up & { req_id: string };
+
 /**
  * A "Recents" entry. M0 stub: populated UI-side when an audit starts (the
  * backend has no session-listing endpoint yet — see the deliverable note).
@@ -204,6 +207,14 @@ export type SessionState = {
   ws: WebSocket | null;
   /** Id of the session the current socket is for; guards idempotent connect. */
   sessionId: string | null;
+  /**
+   * A2 (ARCHITECTURE-RACES.md): every `send()` appends `{...msg, req_id}`
+   * here; `case "ack"` filters it. `useIsPending(pred)` reads this — one
+   * hook replaces the nine per-component `useState` guards R1 introduced.
+   * Reset on `connect()` / `case "state"` so a WS drop between send and
+   * ack doesn't leave a button disabled forever.
+   */
+  pending: PendingCmd[];
   /** Branch tree metadata — keyed by branch id, populated from `state` broadcasts. */
   branches: Record<BranchId, BranchMeta>;
   /** Resample-N batches keyed by `batch_id` (RESAMPLE-N.md). */
@@ -512,7 +523,15 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
         // must reset `pending: []`".
         sessionsList: state.sessionsList.filter((s) => s.id !== PENDING_ID),
         prevCurrent: null,
+        pending: [],
       };
+    }
+
+    case "ack": {
+      // A2: the server has finished handling `req_id`; drop it from the
+      // in-flight overlay. `useIsPending` subscribers re-render (boolean
+      // flips) and re-enable their button.
+      return { pending: state.pending.filter((c) => c.req_id !== msg.req_id) };
     }
 
     case "branch_created": {
@@ -804,6 +823,7 @@ export const useSession = create<SessionState>((set, get) => ({
   rewound: new Set(),
   ws: null,
   sessionId: null,
+  pending: [],
   sessionsList: [],
   savedSessions: [],
   branchConfig: {},
@@ -861,7 +881,11 @@ export const useSession = create<SessionState>((set, get) => ({
       // replaced it). Lets a fresh connect re-open cleanly.
       if (get().ws === next) set({ ws: null, sessionId: null });
     };
-    set({ ws: next, sessionId, pins: readStoredPins(sessionId) });
+    // A2 failure-mode caveat: a WS drop between `send()` and the server's
+    // `{t:"ack"}` would strand an entry in `pending` (button disabled
+    // forever). Reset on every (re)connect — commands never survive a
+    // socket, so no in-flight ack is expected on the new one.
+    set({ ws: next, sessionId, pending: [], pins: readStoredPins(sessionId) });
   },
 
   disconnect: () => {
@@ -875,7 +899,11 @@ export const useSession = create<SessionState>((set, get) => ({
 
   send: (msg: Up) => {
     const ws = get().ws;
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
+    const req_id = crypto.randomUUID();
+    set((s) => ({ pending: [...s.pending, { ...msg, req_id }] }));
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ ...msg, req_id }));
+    }
     // PRODUCT-GAPS P2: request desktop-notification permission on the first
     // user-initiated send (browsers require a user gesture on the call stack).
     // One-shot — `permission !== "default"` short-circuits after grant/deny.
@@ -1215,11 +1243,12 @@ function _pendingChild(
 ): void {
   const state = get();
   const current = state.current;
-  // Re-entry guard (RACE-FIXES R1): a fork/start is already in flight — a
-  // second click would clobber `prevCurrent` with the sentinel and send
-  // `branch: "__pending_branch__"` to the server. Drop it; the first
-  // request's `state` broadcast reconciles shortly.
-  if (current == null || current === PENDING_BRANCH || current === PENDING_ID) return;
+  // A2: re-entry is prevented at the button (`disabled={useIsPending(c =>
+  // FORK_KINDS.has(c.t))}`), not here. The old sentinel early-return
+  // (`current === PENDING_BRANCH || PENDING_ID`) is deleted; a click that
+  // reaches this action is a real request. `current == null` stays — no
+  // parent to fork from.
+  if (current == null) return;
   const truncated = _truncateByRole(state, current, anchorId);
   set({
     prevCurrent: current,

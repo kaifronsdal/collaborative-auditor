@@ -195,7 +195,13 @@ export type Down =
       /** `("orch","orch")` registration (adversarial-review caveat #4). */
       span_role_delta: Record<string, [BranchId, Role]>;
     }
-  | { t: "queued_consumed"; v: number; branch: BranchId; ids: string[] };
+  | { t: "queued_consumed"; v: number; branch: BranchId; ids: string[] }
+  // A2 (ARCHITECTURE-RACES.md): `_dispatch`'s `finally` echoes the
+  // client's `req_id` once the handler returns. The reducer drops the
+  // matching entry from `store.pending`; `useIsPending` re-enables the
+  // button. No `v` — this is a per-connection sideband, not a structural
+  // delta (it carries no state and needn't order against the drain queue).
+  | { t: "ack"; req_id: string };
 
 /** P2 — optional per-fork model overrides. Any fork-shaped command
  *  (`branch`/`resample`/`*_auditor`/`edit_*`) may carry these; unset fields
@@ -224,7 +230,11 @@ export type AuditDefaults = {
   judge_dimensions?: string;
 };
 
-export type Up =
+/** A2: every outbound command may carry a client-generated `req_id`; the
+ *  server echoes it as `{t:"ack", req_id}` once the handler returns.
+ *  `store.send()` always attaches one; it's optional on the wire so
+ *  non-store callers (tests, chaos harness) needn't. */
+export type Up = { req_id?: string } & (
   | {
       t: "start";
       seed: string;
@@ -323,7 +333,8 @@ export type Up =
       scanner: string;
       /** Whole conversation, or up to (and including) message index N. */
       scope: "transcript" | { turn: number };
-    };
+    }
+);
 
 /** One entry from `GET /sessions` — a persisted session on disk. */
 export type SavedSession = {

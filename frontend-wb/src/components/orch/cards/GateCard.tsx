@@ -57,15 +57,13 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
   const [denyOpen, setDenyOpen] = useState(false);
   const [denyReason, setDenyReason] = useState("");
   const [modalOpen, setModalOpen] = useState(false);
-  // R1 debounce: once a verdict has been sent for this gate, every button
-  // disables until the backend flips `payload.pending → false` (which swaps
-  // this whole card for the receipt chip). Prevents double-approve /
-  // approve+deny races (button-audit #12-15).
-  const [sent, setSent] = useState(false);
 
+  // A2 adversarial-review caveat: `approve` is `UNLOCKED` — the ack lands
+  // in ~1ms, so a `useIsPending` guard wouldn't cover an 80ms double-click.
+  // But `gate.resolve()` is server-idempotent (returns False on the 2nd),
+  // so the R1 `sent` guard is deleted outright — a double-approve is a
+  // no-op, not a race.
   const resolve = (verdict: unknown): void => {
-    if (sent) return;
-    setSent(true);
     send({ t: "approve", display_id: displayId, verdict });
   };
 
@@ -83,7 +81,7 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
   if (payload.kind === "prompt") {
     return (
       <div className="out gated gate-waiting" data-display-id={displayId}>
-        <PromptBody payload={payload} resolve={resolve} sent={sent} />
+        <PromptBody payload={payload} resolve={resolve} />
       </div>
     );
   }
@@ -121,7 +119,6 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
         <button
           type="button"
           className="gate-btn danger"
-          disabled={sent}
           onClick={() => (denyOpen ? deny() : setDenyOpen(true))}
         >
           deny
@@ -130,7 +127,6 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
         <button
           type="button"
           className="gate-btn primary"
-          disabled={sent}
           onClick={() => resolve(v.buildVerdict())}
         >
           {v.approveLabel}
@@ -142,7 +138,6 @@ export default function GateCard({ payload, displayId, send }: Props): JSX.Eleme
           struck={struck}
           setStruck={setStruck}
           toggle={toggle}
-          sent={sent}
           onClose={() => setModalOpen(false)}
           onApprove={() => {
             setModalOpen(false);
@@ -270,11 +265,9 @@ function Receipt({ payload: p, displayId }: { payload: GatePayload; displayId: s
 function PromptBody({
   payload,
   resolve,
-  sent,
 }: {
   payload: PromptPayload;
   resolve: (v: unknown) => void;
-  sent: boolean;
 }): JSX.Element {
   const [own, setOwn] = useState("");
   // Free-text row: always shown when there are no options; otherwise hidden
@@ -326,7 +319,7 @@ function PromptBody({
       <button
         type="button"
         className="gate-btn primary"
-        disabled={sent || !own.trim()}
+        disabled={!own.trim()}
         onClick={() => own.trim() && answer(own.trim())}
       >
         send
@@ -339,7 +332,6 @@ function PromptBody({
       key={opt}
       type="button"
       className={`gate-btn ${i === 0 ? "primary" : "ghost"}`}
-      disabled={sent}
       onClick={() => answer(opt)}
     >
       {showKeys && <sup className="ask-opt-key">{i + 1}</sup>}
@@ -428,7 +420,6 @@ function ReviewModal({
   struck,
   setStruck,
   toggle,
-  sent,
   onClose,
   onApprove,
 }: {
@@ -436,7 +427,6 @@ function ReviewModal({
   struck: Set<string>;
   setStruck: (s: Set<string>) => void;
   toggle: (k: string) => void;
-  sent: boolean;
   onClose: () => void;
   onApprove: () => void;
 }): JSX.Element {
@@ -462,7 +452,7 @@ function ReviewModal({
             cancel
           </button>
           <span className="gate-spacer" />
-          <button type="button" className="gate-btn primary" disabled={sent} onClick={onApprove}>
+          <button type="button" className="gate-btn primary" onClick={onApprove}>
             {v.approveLabel}
           </button>
         </>

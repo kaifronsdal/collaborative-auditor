@@ -8,6 +8,7 @@ import {
   DEFAULT_TARGET,
   SEED_PRESETS,
 } from "../lib/presets";
+import { useIsPending } from "../lib/selectors";
 import type { AuditDefaults } from "../lib/wire";
 import { useSession } from "../store/session";
 import { ModelPicker, readStoredConfig } from "./ModelPicker";
@@ -61,11 +62,14 @@ function OrchStartCard(): JSX.Element {
   const [judgeDims, setJudgeDims] = useState("");
   const [defaultsOpen, setDefaultsOpen] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState("");
-  const [isStarting, setIsStarting] = useState(false);
+  // A2: replaces the R1 local `isStarting` flag. Either card's launch is
+  // in-flight → both disable (they share one Session).
+  const isStarting = useIsPending(
+    (c) => c.t === "start" || c.t === "start_orchestrator"
+  );
 
   function handleStart(): void {
     if (isStarting) return;
-    setIsStarting(true);
     // Clear the new-audit shield so the incoming `state` broadcast (which
     // carries `orchestrator != null`) flips App into DeskView.
     useSession.setState({ pendingNewAudit: false });
@@ -218,14 +222,15 @@ function DeskStartCard(): JSX.Element {
     }
   }, [nextConfig]);
 
-  // Guard against double-click: prevent sending two `start` messages.
-  const [isStarting, setIsStarting] = useState(false);
+  // A2: replaces the R1 local `isStarting` flag.
+  const isStarting = useIsPending(
+    (c) => c.t === "start" || c.t === "start_orchestrator"
+  );
 
   const canStart = seed.trim().length > 0 && !isStarting;
 
   function handleStart(): void {
     if (!canStart) return;
-    setIsStarting(true);
     const live_scanners = liveScannersRaw
       .split(",")
       .map((s) => s.trim())

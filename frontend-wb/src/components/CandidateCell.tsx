@@ -7,6 +7,7 @@
 import { type JSX, useState } from "react";
 
 import { isModelEvent } from "../lib/events";
+import { useIsPending } from "../lib/selectors";
 import type { BranchId, Role } from "../lib/wire";
 import { useSession } from "../store/session";
 import { CandidateCard } from "./CandidateCard";
@@ -44,10 +45,10 @@ export function CandidateCell({ branch, anchor, kind }: Props): JSX.Element | nu
   const pickCandidate = useSession((s) => s.pickCandidate);
   const dismissCandidates = useSession((s) => s.dismissCandidates);
   const [compare, setCompare] = useState(false);
-  // R1 in-flight flag (button-audit #11): once dismiss is sent the button
-  // disables until the batch's `picked` flips (unmounts this cell). Prevents
-  // a double-click firing two `dismiss_candidates`.
-  const [dismissing, setDismissing] = useState(false);
+  // A2: replaces the R1 local `dismissing` flag.
+  const dismissing = useIsPending(
+    (c) => c.t === "dismiss_candidates" && c.batch === batchId
+  );
 
   if (batchId == null || batch == null) return null;
 
@@ -73,11 +74,7 @@ export function CandidateCell({ branch, anchor, kind }: Props): JSX.Element | nu
         <button
           type="button"
           disabled={dismissing}
-          onClick={() => {
-            if (dismissing) return;
-            setDismissing(true);
-            dismissCandidates(batchId);
-          }}
+          onClick={() => dismissCandidates(batchId)}
           title="keep the original (the row above); cancel all candidates"
         >
           dismiss all

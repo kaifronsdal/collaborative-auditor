@@ -13,7 +13,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 
-import { useEvents } from "../lib/selectors";
+import { useEvents, useIsPending } from "../lib/selectors";
 import type { BranchId } from "../lib/wire";
 import { useSession } from "../store/session";
 import ProgressCard from "./orch/cards/ProgressCard";
@@ -181,12 +181,14 @@ export function ScanControl({ branch }: { branch: BranchId }): JSX.Element {
   const send = useSession((s) => s.send);
   const [open, setOpen] = useState(false);
   const [scanner, setScanner] = useState("");
-  // R1 in-flight flag (StartView's `isStarting` pattern): a `scan_branch` is
-  // out; disable Run until its result InfoEvent lands (button-audit #16).
-  const [running, setRunning] = useState(false);
+  // A2: replaces the R1 local `running` flag + InfoEvent-count effect.
+  // `_h_scan_branch` is `UNLOCKED` and emits the running-card `InfoEvent`
+  // synchronously before spawning the scan task, so the ack lands right
+  // after that card appears — Run re-enables once the placeholder is
+  // visible, which is the point at which a second Run is meaningful.
+  const running = useIsPending((c) => c.t === "scan_branch");
   const ref = useRef<HTMLDivElement>(null);
   const scans = useBranchScans(branch);
-  const prevScanCount = useRef(scans.length);
 
   useEffect(() => {
     if (!open) return;
@@ -197,18 +199,9 @@ export function ScanControl({ branch }: { branch: BranchId }): JSX.Element {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
 
-  // A new `branch_scan` InfoEvent arrived → the in-flight scan resolved.
-  useEffect(() => {
-    if (scans.length !== prevScanCount.current) {
-      prevScanCount.current = scans.length;
-      setRunning(false);
-    }
-  }, [scans.length]);
-
   const run = (): void => {
     const name = scanner.trim();
     if (!name || running) return;
-    setRunning(true);
     send({ t: "scan_branch", branch_id: branch, scanner: name, scope: "transcript" });
   };
 

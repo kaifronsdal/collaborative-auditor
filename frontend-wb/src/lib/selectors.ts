@@ -22,8 +22,36 @@ import {
 } from "@tsmono/inspect-components/transcript/timeline";
 
 import { isModelEvent } from "./events";
-import type { BranchId, Role } from "./wire";
+import type { BranchId, Role, Up } from "./wire";
 import { useSession } from "../store/session";
+
+/** A2 (ARCHITECTURE-RACES.md): the six fork-shaped commands that flow
+ *  through `_pendingChild` → `_fork` → `_register_and_spawn`. Any one
+ *  in-flight means every fork button is disabled (chaos s4 double-branch)
+ *  — they all repoint `current`, so a second fork mid-flight would race
+ *  the first regardless of which button fired it. */
+export const FORK_KINDS: ReadonlySet<Up["t"]> = new Set([
+  "branch",
+  "resample",
+  "branch_auditor",
+  "resample_auditor",
+  "edit_auditor_call",
+  "edit_target_message",
+]);
+
+/**
+ * A2: is any in-flight command matching `pred` awaiting its `{t:"ack"}`?
+ *
+ * One hook replaces R1's nine per-component `useState` guards. The
+ * predicate picks the granularity: `c => c.t === "start"` for the launch
+ * button, `c => FORK_KINDS.has(c.t)` for the branch/resample family,
+ * `c => c.t === "dismiss_candidates" && c.batch === batchId` per-batch.
+ * Returns a boolean, so Zustand's `Object.is` short-circuits on unrelated
+ * `pending` churn.
+ */
+export function useIsPending(pred: (c: Up) => boolean): boolean {
+  return useSession((s) => s.pending.some(pred));
+}
 
 export function useEvents(branch: BranchId, role: Role): Event[] {
   return useSession((s) => s.byRole[branch]?.[role] ?? EMPTY);
