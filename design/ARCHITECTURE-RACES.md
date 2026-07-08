@@ -174,13 +174,103 @@ actually causes staleness is a *container* mutated in place
 (`_bash_procs: dict`, `gate.pending: set`, `state.messages:
 list`); setters don't fire on `.append()`.
 
-## Ordering
+## Adversarial-review caveats (2026-07-08)
 
-**A4** (or its subset R5) first — A2's `ack` needs fast dispatch.
-Then **A3-batch** (small, kills ghost-gap immediately). Then
-**A2** (deletes the reconciliation machinery). Then **A1**
-(orthogonal — rendering source). **A3-typed-deltas** and
-**A4-frontend-fold** can land any time after A3-batch.
+Each refactor was stress-tested against reconnect / resume /
+concurrent-candidates / orch-vs-M0 / pause-interrupt. Findings:
+
+**A1 b-wide is flawed as specified.** `splice()` walks the
+ancestor chain only; if child-L2's L1-root is a *sibling* of
+parent-L2 under an L2 wrapper (the doc's stated nesting), the
+parent's L1 content is never on the ancestor path → `splice()`
+throws `"anchor not found"` at `core.ts:413`. Correct nesting
+requires grafting under the *parent-L1-Trajectory span
+containing the fork anchor* — an extra ~30-50 LOC search, not
+"+10 `defaultKey`". Also: flat `by_role[(bid,"target")]` as span
+content is wrong when L1 rollback exists (chronologically-flat
+across lanes); needs a second span-walk. Real net ~−10 to +5.
+**b-narrow's −40 is accurate; do that instead.**
+
+**A2 — two deletion claims are wrong:**
+- `reconcileQueued` **cannot** be deleted. Post-R4, `pre_turn`
+  copies-not-clears; the frontend's only consumption signal is
+  the id appearing in `ModelEvent.input`. Without mid-session
+  `{t:"state"}` (A3), deleting `reconcileQueued` leaves ghost
+  bubbles forever. Either keep it (~22 LOC) or add
+  `{t:"queued_consumed", branch, ids}` from `post_generate()` —
+  which is really an A3 typed-delta. **Hidden dep: A2 → A3-
+  typed-deltas.**
+- `_truncateByRole` → **selector, not deleted.** Otherwise
+  clicking branch/resample shows nothing until `branch_created`
+  lands (was: instant column truncation at anchor).
+- `useIsPending` is **useless for `UNLOCKED` commands** — ack in
+  ~1ms doesn't cover an 80ms double-click. But those are
+  idempotent server-side (`gate.resolve` returns False on 2nd),
+  so their guards can be *deleted entirely*.
+- **Failure mode:** WS drops after `send()`, before `ack` →
+  `pending[]` retains the entry → button disabled forever.
+  `connect()` must reset `pending: []`.
+- Real net ~−130.
+
+**A3-typed-deltas — 4 undercount/hazards:**
+- `_candidates` **spawns before broadcasting** (`server.py:486`
+  vs `:491`). Under typed-deltas, replay events arrive before
+  `span_role_delta` → `resolveRole` fails → events permanently
+  unbucketed → candidate cards stay empty. **Must reorder to
+  broadcast-before-spawn** (as `_register_and_spawn` already
+  does), or `case "branch_created"` re-scans unbucketed events.
+- **6 sites, not 5** — `dismiss_candidates` missing.
+- `{t:"batch_resolved"}` must carry `ended: [child_ids]` (set by
+  `_stop_running_branches`), else sidebar shows cancelled
+  candidates as still running.
+- `{t:"orch"}` needs `span_role_delta` too (registers
+  `("orch","orch")`).
+- Add `if (msg.v <= state.version) return {}` guard — pre-
+  existing bug that A3 amplifies (each stale frame carries more
+  mutations).
+
+**A4 — two mis-partitions:**
+- `generating` fold **loses the TTFB shimmer** — the gap between
+  `pre_turn()` and first pending `ModelEvent` (0.2-3s on real
+  models) is exactly what `showShimmer = isGenerating &&
+  !lastIsPending` covers. Deriving `isGenerating` from
+  `lastIsPending` reduces `showShimmer` to `false`. **Keep
+  `generating` on `{t:"status"}`** (R3's wire-through), or emit a
+  synthetic pending event before `model.generate()`.
+- `notifications` **mis-partitioned** — `kernel.notifications` is
+  drained every turn, so `{t:"orch"}` wholesale-replace wipes any
+  `{t:"notify"}`-appended chip. Keep on the append-only
+  `{t:"notify"}` path; drop from `{t:"orch"}`.
+- `pendingGates` fold needs lifting to `selectors.ts` (+15-20
+  LOC) for `useKeyboardShortcuts` to reuse.
+- Real net backend ~−10.
+
+## Ordering (revised)
+
+1. **A3-batch** — sound, no caveats, ~50 LOC. Kills ghost-gap.
+   Provides `reduceOne` extraction.
+2. **A1-b-narrow** — sound, orthogonal, −40 real. Defer b-wide
+   until the interleaved L1×L2 tree is designed properly.
+3. **A3-typed-deltas** — with: reorder `_candidates` to
+   broadcast-before-spawn; add `{t:"queued_consumed"}` from
+   `post_generate()`; carry `ended:[…]` on `batch_resolved`;
+   `span_role_delta` on `orch`; version guard in `apply()`.
+4. **A2** — now `reconcileQueued` is deletable (via
+   `queued_consumed`). `_truncateByRole` → selector over
+   `pending`. `connect()` resets `pending: []`. Delete (don't
+   replace) the `UNLOCKED`-command guards.
+5. **A4-partial** — `{t:"orch"}` for `bg_jobs`/`bg_cells`/
+   `model`/`span_id` (fixes `fbc8ab6` bug). Keep `generating` on
+   `{t:"status"}`; keep `notifications` on `{t:"notify"}` only;
+   lift `pendingGates` fold to `selectors.ts`.
+6. **A1-b-wide** — only after designing the L1×L2 graft
+   correctly (child-L2's L1-root under the parent-L1-span
+   containing the fork anchor, not under the L2 wrapper).
+
+R5 already landed → A2's fast-ack prereq is satisfied (the doc's
+"A4 first" was wrong). Remaining slow-under-lock paths
+(`_h_end`, `_h_import_running`) should move off the lock as part
+of step 3.
 
 ## What of R1-R5 becomes obsolete
 
@@ -198,10 +288,11 @@ Then **A3-batch** (small, kills ghost-gap immediately). Then
 R1-R5 land now (chaos test passes); A1-A4 are the follow-up
 refactors that let us *delete* R1/R2/R3-generating/R4-reconcile.
 
-## Estimated net after all four
+## Estimated net after all six steps (revised)
 
-Backend −150, frontend −170, wire +8 message types (`ack`,
+Backend ~−60, frontend ~−130, wire +9 message types (`ack`,
 `batch`, `branch_created`, `current`, `batch_resolved`, `orch`,
-plus keep existing). One `useIsPending` hook; one
-`Orchestrator.dirty()`; both timelines identical; `case "state"`
-connect-only.
+`queued_consumed`, plus keep existing). One `useIsPending` hook;
+one `Orchestrator.dirty()`; b-narrow target timeline `by_role`-
+sourced; `case "state"` connect-only. b-wide (both timelines
+structurally identical) deferred.
