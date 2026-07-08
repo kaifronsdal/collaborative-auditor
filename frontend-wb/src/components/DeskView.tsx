@@ -129,10 +129,19 @@ export function DeskView(): JSX.Element {
 
   // The composer's primary button is context-aware: with text it sends; empty
   // it's the play/pause toggle. One affordance, does the obvious thing.
+  // Pause is an *interrupt* — the backend cancels the in-flight generate, so
+  // the optimistic status flip in `transport("pause")` is honest. If input is
+  // already queued, the branch immediately re-plays with it (interrupt →
+  // redirect); otherwise it parks at the gate.
   const primary = hasText
     ? { Icon: IconSend, title: "Send to auditor", onClick: sendFeedback, mode: "send" as const }
     : isRunning
-      ? { Icon: IconPause, title: "Pause", onClick: () => transport("pause"), mode: "pause" as const }
+      ? {
+          Icon: IconPause,
+          title: "Interrupt & pause (queued input will send)",
+          onClick: () => transport("pause"),
+          mode: "pause" as const,
+        }
       : { Icon: IconPlay, title: "Play", onClick: () => transport("play"), mode: "play" as const };
 
   return (

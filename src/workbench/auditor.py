@@ -28,6 +28,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+import anyio
 from inspect_ai.agent import Agent, AgentState, agent
 from inspect_ai.approval import ApprovalPolicy
 from inspect_ai.event import AnchorEvent, ModelEvent
@@ -60,7 +61,13 @@ class AuditorRefusedError(RuntimeError):
 
 
 class TurnHooks(Protocol):
-    """The two per-turn desk seams — implemented by ``Branch``."""
+    """The per-turn desk seams — implemented by ``Branch``."""
+
+    #: The cancel scope wrapping the current live ``generate()``, or ``None``
+    #: outside one. Set by the loop; ``Branch.pause()`` calls ``.cancel()`` on
+    #: it so the operator's pause interrupts a slow in-flight generate rather
+    #: than waiting for the turn to finish.
+    _gen_scope: anyio.CancelScope | None
 
     async def pre_turn(self) -> list[ChatMessage]:
         """Called before each *live* generate (once ``tape.pending`` is drained).
@@ -129,7 +136,26 @@ def workbench_auditor(
                 # past ``prefix_len``. Inert in batch (``pending`` is always
                 # empty there); stays unconditional so M0 replay works.
                 divergent = bool(tape.pending) and len(tape.log) >= tape.prefix_len
-                state.output = await generate(input=input_msgs, tools=tools)
+                # M0 interrupt: the desk's ``pause()`` cancels this scope so a
+                # slow generate (30-60s reasoning) stops immediately instead
+                # of running to completion. The scope's ``__exit__`` swallows
+                # its own cancellation; a task-level cancel
+                # (``_stop_running_branches``) still propagates to
+                # ``Branch.run()``. Only exposed for *live* turns — replay
+                # serves are I/O-free and must not be dropped mid-prefix.
+                with anyio.CancelScope() as scope:
+                    if live:
+                        hooks._gen_scope = scope  # noqa: SLF001
+                    state.output = await generate(input=input_msgs, tools=tools)
+                hooks._gen_scope = None  # noqa: SLF001
+                if scope.cancel_called:
+                    # Discard: don't append the (partial/absent) output, don't
+                    # record on the tape/compaction, don't run tools. Loop
+                    # back to ``pre_turn`` — which either blocks at the gate
+                    # (plain pause) or passes immediately (``pause`` saw
+                    # queued input and re-``play()``ed).
+                    hooks.post_generate()
+                    continue
                 # Anthropic's ``stop_reason: "refusal"`` (mapped by inspect
                 # to ``content_filter``) returns empty content + no tool
                 # calls — the auditor prompt triggered an API-level safety

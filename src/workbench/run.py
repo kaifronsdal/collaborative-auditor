@@ -377,6 +377,9 @@ class Branch(StepGated):
         # ``pre_turn()`` (which awaits the gate) each live turn and
         # ``post_generate()`` (which re-arms while playing).
         self._init_gate()
+        # Set by ``workbench_auditor`` around each live ``generate()``;
+        # ``pause()`` cancels it so the operator's stop is immediate.
+        self._gen_scope: anyio.CancelScope | None = None
         # Set by `workbench_auditor` once `tape.pending` is drained — i.e. the
         # deterministic prefix (and any appended divergent step) has finished
         # replaying. `_register_and_spawn` awaits this so the dispatch handler
@@ -462,6 +465,27 @@ class Branch(StepGated):
             for s in tape.prefix()
             if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
         )
+
+    # -- transport overrides -------------------------------------------------
+
+    def pause(self) -> None:
+        """Interrupt & pause: cancel the in-flight auditor generate (if any),
+        then stop free-running.
+
+        With slow models (30-60s reasoning) the base ``StepGated.pause()``
+        would flip status to "paused" while output kept streaming until the
+        turn finished. Cancelling ``_gen_scope`` makes the stop immediate —
+        the loop discards the partial output and drops back to the gate.
+
+        If operator input is already queued, immediately ``play()`` again so
+        it reaches the *next* generate: pause-with-queued is "interrupt and
+        redirect", pause-with-nothing is "stop now".
+        """
+        if self._gen_scope is not None:
+            self._gen_scope.cancel()
+        super().pause()
+        if self.queued["auditor"]:
+            self.play()
 
     # -- TurnHooks (auditor.py) ----------------------------------------------
 

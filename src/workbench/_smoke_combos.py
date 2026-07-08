@@ -21,6 +21,7 @@ import sys
 import anyio
 from inspect_ai.model import (
     ChatMessage,
+    ChatMessageUser,
     GenerateConfig,
     ModelOutput,
 )
@@ -29,6 +30,7 @@ from inspect_ai.tool import ToolChoice, ToolInfo
 from workbench._smoke_fixtures import (
     SCRIPT3,
     T0,
+    T1,
     T2_END,
     _auditor_turn,
     _count_trajectories,
@@ -971,6 +973,122 @@ async def c11_live_scanners_post_turn() -> None:
         shutil.rmtree(lib_dir, ignore_errors=True)
 
 
+# ── C12: pause() interrupts mid-generate ───────────────────────────────────
+# `Branch.pause()` cancels `_gen_scope` so a slow generate stops NOW instead
+# of running to completion. The loop discards the (partial) output — nothing
+# lands on the L2 tape or in `state.messages` — and drops back to the gate.
+# Second half: with a message already queued, `pause()` re-`play()`s so the
+# next generate consumes it (interrupt-and-redirect).
+#
+# mockllm's `custom_outputs` supports async callables (awaited if the return
+# is awaitable), so the "slow" generate is `entered.set(); await hang.wait()`
+# — cancelled by the scope, never `set()`.
+
+
+async def c12_pause_interrupts_generate() -> None:
+    entered: list[anyio.Event] = [anyio.Event()]
+    hang = anyio.Event()
+
+    async def slow_auditor(
+        input: list[ChatMessage],  # noqa: A002
+        tools: list[ToolInfo],
+        tool_choice: ToolChoice,
+        config: GenerateConfig,
+    ) -> ModelOutput:
+        del tools, tool_choice, config
+        k = sum(1 for m in input if m.role == "assistant")
+        if k == 1:
+            entered[0].set()
+            await hang.wait()
+        return copy.deepcopy(SCRIPT3[k])
+
+    session = Session()
+    await session.start()
+    try:
+        base = Branch(
+            session,
+            "base",
+            seed="c12",
+            auditor_model="mockllm/model",
+            target_model="mockllm/model",
+            # Each interrupted attempt burns one `for turn in range(max_turns)`
+            # iteration; leave headroom for two interrupts + three real turns.
+            max_turns=8,
+            auditor_model_args={"custom_outputs": slow_auditor},
+            target_model_args={
+                "custom_outputs": target_by_last_user({"u1": "r1", "u2": "r2"})
+            },
+        )
+        session.branches["base"] = base
+        session.current = "base"
+        base.play()
+        task = asyncio.create_task(base.run())
+        session.branch_tasks["base"] = task
+
+        # T0 runs, T1's generate blocks. Snapshot the tape at that point.
+        with anyio.fail_after(5.0):
+            await entered[0].wait()
+        assert base._gen_scope is not None, "loop never exposed _gen_scope"
+        before = normalize(session, "base")
+        assert before == [("auditor", "", T0), ("target", "r1", ())], _diff(
+            before, [("auditor", "", T0), ("target", "r1", ())]
+        )
+
+        # ── plain pause: interrupt, discard, park ──
+        base.pause()
+        assert base.status == "paused", f"status={base.status!r} (want immediate flip)"
+        # Let the branch task process the cancellation and reach the gate.
+        with anyio.fail_after(5.0):
+            while base._gen_scope is not None or base.generating is not None:
+                await anyio.sleep(0.005)
+        assert not task.done(), "pause tore down run() (task-level cancel leaked)"
+        assert base.status == "paused", f"status flipped after cancel: {base.status!r}"
+        after = normalize(session, "base")
+        assert after == before, (
+            "interrupted output leaked onto the tape" + _diff(after, before)
+        )
+
+        # ── pause-with-queued: interrupt-and-redirect ──
+        # Re-arm the hang trap for the retried T1, queue an operator message,
+        # play → hits T1 again → pause() → cancels + immediately re-plays; the
+        # third T1 attempt sees the queued message in its input and completes.
+        entered[0] = anyio.Event()
+        base.play()
+        with anyio.fail_after(5.0):
+            await entered[0].wait()
+
+        base.queued["auditor"].append(ChatMessageUser(id="fb1", content="REDIRECT"))
+        entered[0] = anyio.Event()
+        base.pause()
+        assert base.status == "running", (
+            f"queued pause should re-play; status={base.status!r}"
+        )
+        hang.set()  # let the redirected T1 through (sync — runs before task resumes)
+        with anyio.fail_after(5.0):
+            await task
+        assert base.error is None, base.error
+        assert base.queued["auditor"] == [], (
+            f"queued not drained: {base.queued['auditor']}"
+        )
+
+        actual = normalize(session, "base")
+        expected = [
+            ("auditor", "", T0),
+            ("target", "r1", ()),
+            ("auditor", "", T1),
+            ("target", "r2", ()),
+            ("auditor", "", T2_END),
+        ]
+        assert actual == expected, _diff(actual, expected)
+        # The redirected T1's input carried the queued REDIRECT message —
+        # it's interned in the pool as a user message.
+        assert any(m.role == "user" and m.text == "REDIRECT" for m in session.pool), (
+            "queued REDIRECT never reached a generate input"
+        )
+    finally:
+        await session.close()
+
+
 # ── runner ──────────────────────────────────────────────────────────────────
 
 TESTS = [
@@ -985,6 +1103,7 @@ TESTS = [
     ("C9   two rollbacks in prefix → edit", c9_two_rollbacks_then_edit),
     ("C10  fork frozen parent @ unreached turn", c10_fork_frozen_unreached_turn),
     ("C11  P1.8(c) live per-turn scanners", c11_live_scanners_post_turn),
+    ("C12  pause() interrupts mid-generate", c12_pause_interrupts_generate),
 ]
 
 
