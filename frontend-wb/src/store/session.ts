@@ -458,8 +458,11 @@ function reconcileQueued(queued: QueuedMap, ev: Event): QueuedMap {
   for (const [branch, roles] of Object.entries(queued)) {
     next[branch] = { auditor: [], target: [] };
     for (const role of ["auditor", "target"] as const) {
-      const kept = roles[role].filter((m) => m.id == null || !inputIds.has(m.id));
-      if (kept.length !== roles[role].length) changed = true;
+      // R4 gap #7: backend `Branch.queued` no longer carries a `"target"`
+      // key, so a `{t:"state"}` snapshot may ship `{auditor: […]}` only.
+      const before = roles[role] ?? [];
+      const kept = before.filter((m) => m.id == null || !inputIds.has(m.id));
+      if (kept.length !== before.length) changed = true;
       next[branch][role] = kept;
     }
   }
@@ -677,7 +680,12 @@ export const useSession = create<SessionState>((set, get) => ({
             events,
             byRole: role
               ? assignByRole(state.byRole, role[0], role[1], ev, prev)
-              : state.byRole,            version: msg.v,
+              : state.byRole,
+            // R4 gap #2: the pending ModelEvent's terminal update carries
+            // the resolved `input` (with the injected id) — reconcile here
+            // too, not just on the initial `{t:"event"}`.
+            queued: reconcileQueued(state.queued, ev),
+            version: msg.v,
           };
         }
 

@@ -389,7 +389,15 @@ class Branch(StepGated):
             self._replayed.set()
 
         # user-injected messages awaiting the next turn boundary (STREAMING.md §B).
-        self.queued: dict[Role, list[ChatMessage]] = {"auditor": [], "target": []}
+        # RACE-FIXES R4 gap #7: no `"target"` key — the frontend never sends
+        # `role="target"` (target-side edits go via `edit_target_message`, not
+        # inject), so `_h_inject`'s `queued[role].append` KeyErrors loudly if
+        # one ever arrives instead of silently accepting a message nothing
+        # will drain.
+        self.queued: dict[Role, list[ChatMessage]] = {"auditor": []}
+        # ids `pre_turn` handed to `state.messages` this turn — `post_generate`
+        # clears exactly these from `queued["auditor"]` (R4 gap #6).
+        self._consumed_queued: set[str] = set()
         # P1.8(c): target anchors already fired at live scanners (a turn with
         # no ``resume`` produces no new target step; a turn with several does)
         # + strong refs to the fire-and-forget score tasks so they aren't GC'd.
@@ -504,17 +512,31 @@ class Branch(StepGated):
     # -- TurnHooks (auditor.py) ----------------------------------------------
 
     async def pre_turn(self) -> list[ChatMessage]:
-        """Desk pre-generate: mark replay done, await the step-gate, drain
-        queued operator messages, flip the spinner."""
+        """Desk pre-generate: mark replay done, await the step-gate, hand
+        queued operator messages to the loop, flip the spinner.
+
+        RACE-FIXES R4 gap #6: *copy* `queued["auditor"]`, don't clear it. An
+        interleaved `{t:"state"}` between here and `post_generate()` still
+        ships the queued messages, so the frontend ghost bubble persists
+        until the pending `ModelEvent` renders (at which point
+        `reconcileQueued` on the frontend drops it). The clear happens in
+        `post_generate()` — id-filtered so an inject that raced in during
+        the generate stays for the *next* turn.
+        """
         self._replayed.set()
         await self.await_step()
-        msgs = self.queued["auditor"]
-        self.queued["auditor"] = []
+        msgs = list(self.queued["auditor"])
+        self._consumed_queued = {m.id for m in msgs if m.id is not None}
         self.generating = "auditor"
         return msgs
 
     def post_generate(self) -> None:
         self.generating = None
+        # R4: drop only the entries `pre_turn` handed to `state.messages`.
+        self.queued["auditor"] = [
+            m for m in self.queued["auditor"] if m.id not in self._consumed_queued
+        ]
+        self._consumed_queued = set()
         self.rearm()
 
     def post_turn(self) -> None:

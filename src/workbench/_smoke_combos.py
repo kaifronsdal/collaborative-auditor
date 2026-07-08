@@ -69,7 +69,9 @@ def _rb_send(mid: str, msg: str) -> tuple:
 def _call_id(branch: Branch, turn_index: int, fn: str) -> str:
     step = find_auditor_step(branch.audit_tape.log, turn_index)
     assert isinstance(step.value, ModelOutput)
-    return next(tc.id for tc in (step.value.message.tool_calls or []) if tc.function == fn)
+    return next(
+        tc.id for tc in (step.value.message.tool_calls or []) if tc.function == fn
+    )
 
 
 # ── C1: rollback in shared prefix → user edits the turn after it ───────────
@@ -236,7 +238,11 @@ async def c3_branch_chain_switches() -> None:
         # C: branch (inclusive) at r1.
         await _dispatch(
             session,
-            {"t": "branch", "branch": "base", "at": _nth_target_anchor(base.audit_tape.log, 0)},
+            {
+                "t": "branch",
+                "branch": "base",
+                "at": _nth_target_anchor(base.audit_tape.log, 0),
+            },
         )
         c_id, _ = await run_child(session)
         snap_c = normalize(session, c_id)
@@ -246,7 +252,11 @@ async def c3_branch_chain_switches() -> None:
         assert session.current == "base"
         await _dispatch(
             session,
-            {"t": "branch", "branch": "base", "at": _nth_target_anchor(base.audit_tape.log, 1)},
+            {
+                "t": "branch",
+                "branch": "base",
+                "at": _nth_target_anchor(base.audit_tape.log, 1),
+            },
         )
         d_id, d = await run_child(session)
         snap_d = normalize(session, d_id)
@@ -298,7 +308,9 @@ def _auditor_feedback_aware(script: list[ModelOutput]) -> object:
         k = sum(1 for m in input if m.role == "assistant")
         if any(m.role == "user" and m.text == "FEEDBACK" for m in input):
             return copy.deepcopy(
-                _auditor_turn(_tc("send_message", message=f"u{k + 1}-FB"), _tc("resume"))
+                _auditor_turn(
+                    _tc("send_message", message=f"u{k + 1}-FB"), _tc("resume")
+                )
             )
         return copy.deepcopy(script[k])
 
@@ -356,7 +368,12 @@ async def c4_inject_during_paused_replay() -> None:
         assert len(child.queued["auditor"]) == 2
         await _dispatch(
             session,
-            {"t": "unqueue", "branch": child_id, "role": "auditor", "message_id": "fb2"},
+            {
+                "t": "unqueue",
+                "branch": child_id,
+                "role": "auditor",
+                "message_id": "fb2",
+            },
         )
         assert len(child.queued["auditor"]) == 1, (
             f"unqueue left {len(child.queued['auditor'])}: {child.queued['auditor']}"
@@ -838,7 +855,11 @@ async def c10_fork_frozen_unreached_turn() -> None:
         # Fork once (cancels base) — child C runs fine.
         await _dispatch(
             session,
-            {"t": "resample", "branch": "base", "at": _nth_target_anchor(base.audit_tape.log, 0)},
+            {
+                "t": "resample",
+                "branch": "base",
+                "at": _nth_target_anchor(base.audit_tape.log, 0),
+            },
         )
         assert task.done() and base.status == "ended"
         c_id, _ = await run_child(session)
@@ -1067,8 +1088,8 @@ async def c12_pause_interrupts_generate() -> None:
         assert not task.done(), "pause tore down run() (task-level cancel leaked)"
         assert base.status == "paused", f"status flipped after cancel: {base.status!r}"
         after = normalize(session, "base")
-        assert after == before, (
-            "interrupted output leaked onto the tape" + _diff(after, before)
+        assert after == before, "interrupted output leaked onto the tape" + _diff(
+            after, before
         )
         # R3 (chaos-s1 finding): petri's `replayable` appends
         # `Step(None, GEN_SOURCE)` on cancel; the loop must pop it (a
@@ -1134,6 +1155,124 @@ async def c12_pause_interrupts_generate() -> None:
         await session.close()
 
 
+# ── C13: R4 queued lifecycle — ghost persists through pre_turn ────────────
+# `pre_turn` copies `queued["auditor"]` (does NOT clear); `post_generate`
+# clears only the ids it handed to `state.messages`. So an interleaved
+# `session.view()` between the two still ships the queued message (the
+# frontend ghost bubble survives until the `ModelEvent` renders it), and an
+# inject that races in *during* the generate stays for the next turn.
+
+
+async def c13_queued_lifecycle_pre_turn_no_clear() -> None:
+    entered = anyio.Event()
+    release = anyio.Event()
+
+    async def slow_t1(
+        input: list[ChatMessage],  # noqa: A002
+        tools: list[ToolInfo],
+        tool_choice: ToolChoice,
+        config: GenerateConfig,
+    ) -> ModelOutput:
+        del tools, tool_choice, config
+        k = sum(1 for m in input if m.role == "assistant")
+        if k == 1:
+            entered.set()
+            await release.wait()
+        return copy.deepcopy(SCRIPT3[k])
+
+    session = Session()
+    await session.start()
+    try:
+        base = Branch(
+            session,
+            "base",
+            seed="c13",
+            auditor_model="mockllm/model",
+            target_model="mockllm/model",
+            max_turns=3,
+            auditor_model_args={"custom_outputs": slow_t1},
+            target_model_args={
+                "custom_outputs": target_by_last_user({"u1": "r1", "u2": "r2"})
+            },
+        )
+        session.branches["base"] = base
+        session.current = "base"
+        task = asyncio.create_task(base.run())
+        session.branch_tasks["base"] = task
+        # T0 → r1; loop parks at T1's `await_step` (gate consumed, not
+        # free-running). Once r1 is on the tape T0's `await_step` has
+        # definitely run, so the second `step()` below releases T1 not T0.
+        base.step()
+        with anyio.fail_after(5.0):
+            while not any(
+                s.source == TARGET_GEN_SOURCE and isinstance(s.value, ModelOutput)
+                for s in base.audit_tape.log
+            ):
+                await anyio.sleep(0.005)
+
+        # Inject fb1; `view()` (a `{t:"state"}` body) ships it.
+        await _dispatch(
+            session,
+            {
+                "t": "inject",
+                "branch": "base",
+                "role": "auditor",
+                "message": {"role": "user", "content": "GHOST", "id": "fb1"},
+            },
+        )
+        q0 = session.view()["queued"]["base"]["auditor"]
+        assert [m["id"] for m in q0] == ["fb1"], q0
+        # R4 gap #7: `Branch.queued` no longer has a `"target"` key.
+        assert "target" not in session.view()["queued"]["base"], session.view()[
+            "queued"
+        ]["base"].keys()
+
+        # Release T1: `pre_turn` copies (queued still holds fb1) → generate
+        # blocks. An interleaved `view()` STILL ships fb1 — this is the fix.
+        base.step()
+        with anyio.fail_after(5.0):
+            await entered.wait()
+        assert base.generating == "auditor", base.generating
+        q1 = session.view()["queued"]["base"]["auditor"]
+        assert [m["id"] for m in q1] == ["fb1"], (
+            f"ghost dropped between pre_turn and post_generate: {q1}"
+        )
+
+        # Race in a second inject *during* the generate — it must survive
+        # `post_generate`'s id-filtered clear (fb1 goes, fb2 stays).
+        await _dispatch(
+            session,
+            {
+                "t": "inject",
+                "branch": "base",
+                "role": "auditor",
+                "message": {"role": "user", "content": "LATE", "id": "fb2"},
+            },
+        )
+        release.set()
+        with anyio.fail_after(5.0):
+            while any(m.id == "fb1" for m in base.queued["auditor"]):
+                await anyio.sleep(0.005)
+        q2 = session.view()["queued"]["base"]["auditor"]
+        assert [m["id"] for m in q2] == ["fb2"], (
+            f"post_generate cleared wrong entries (want only fb2 left): {q2}"
+        )
+        # fb1 reached `state.messages` → interned in the pool.
+        assert any(m.role == "user" and m.text == "GHOST" for m in session.pool), (
+            "consumed fb1 never reached a generate input"
+        )
+
+        # T2 (`end_conversation`) drains fb2.
+        base.step()
+        with anyio.fail_after(5.0):
+            await task
+        assert base.error is None, base.error
+        assert base.queued["auditor"] == [], base.queued["auditor"]
+        assert any(m.role == "user" and m.text == "LATE" for m in session.pool)
+    finally:
+        await session.close()
+
+
 # ── runner ──────────────────────────────────────────────────────────────────
 
 TESTS = [
@@ -1149,6 +1288,10 @@ TESTS = [
     ("C10  fork frozen parent @ unreached turn", c10_fork_frozen_unreached_turn),
     ("C11  P1.8(c) live per-turn scanners", c11_live_scanners_post_turn),
     ("C12  pause() interrupts mid-generate", c12_pause_interrupts_generate),
+    (
+        "C13  R4 queued lifecycle (pre_turn no-clear)",
+        c13_queued_lifecycle_pre_turn_no_clear,
+    ),
 ]
 
 

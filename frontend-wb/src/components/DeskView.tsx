@@ -137,6 +137,11 @@ export function DeskView(): JSX.Element {
     // Composer only ever talks to the auditor — target messages go via the
     // auditor's `send_message` tool or per-bubble edit actions, never typed raw.
     injectMsg(branch, "auditor", message);
+    // R4 gap #9: sending while paused should *do something now*, not just
+    // queue-and-wait for a separate Play click. Fire one step so the
+    // injected message reaches the next generate; while running the loop
+    // will pick it up at the next turn boundary anyway.
+    if (status !== "running") transport("step");
     setFeedback("");
   }
 
