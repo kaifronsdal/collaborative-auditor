@@ -58,34 +58,41 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   const status = useSession((s) => s.status);
   const generating = useSession((s) => s.generating);
   const switchBranch = useSession((s) => s.switchBranch);
+  const branches = useSession((s) => s.branches);
   const isAuditor = role === "auditor";
 
-  // Selected lane key. For the target column, default to the deepest (latest)
-  // branch row — "what the target is currently seeing". For the auditor
-  // column, the swimlane is the workbench-branch tree and the selected lane
-  // *is* the current branch — find the row whose span id is `branch`.
+  // A1-b-wide: both timelines are session-wide. Auditor rows are workbench
+  // branches (span id == branch id); target rows are L1-trajectory spans
+  // owned by whichever branch's `l1_spans` contains them. Default lane =
+  // the deepest row belonging to `branch` (falls back to the last row when
+  // `branch` has no live L1 span yet — a just-forked child before its first
+  // target turn shows the parent's tip).
+  const l1Set = useMemo(
+    () => new Set(branches[branch]?.l1_spans ?? []),
+    [branches, branch]
+  );
   const defaultKey = useMemo(() => {
     if (rows.length === 0) return null;
-    if (isAuditor) {
-      const r = rows.find((r) => rowSpan(r).id === branch);
-      if (r) return r.key;
-    }
-    return rows[rows.length - 1].key;
-  }, [rows, isAuditor, branch]);
+    const mine = isAuditor
+      ? rows.find((r) => rowSpan(r).id === branch)
+      : [...rows].reverse().find((r) => l1Set.has(rowSpan(r).id));
+    return mine?.key ?? rows[rows.length - 1].key;
+  }, [rows, isAuditor, branch, l1Set]);
   const [selectedKey, setSelectedKey] = useState<string | null>(defaultKey);
   useEffect(() => {
     // Follow the live tip when new branch rows appear (rollback) and the user
-    // hasn't picked a lane explicitly, or their selection no longer exists.
-    // The auditor lane is *derived* from `branch`, so it always tracks
-    // `defaultKey`.
-    if (
-      isAuditor ||
-      selectedKey == null ||
-      !rows.some((r) => r.key === selectedKey)
-    ) {
+    // hasn't picked a lane explicitly, or their selection no longer exists /
+    // belongs to a different branch (post-`switchBranch`). The auditor lane
+    // is *derived* from `branch`, so it always tracks `defaultKey`.
+    const own = rows.find(
+      (r) =>
+        r.key === selectedKey &&
+        (isAuditor || l1Set.size === 0 || l1Set.has(rowSpan(r).id))
+    );
+    if (isAuditor || selectedKey == null || own == null) {
       setSelectedKey(defaultKey);
     }
-  }, [defaultKey, rows, selectedKey, isAuditor]);
+  }, [defaultKey, rows, selectedKey, isAuditor, l1Set]);
 
   // Resolve the selected row's TimelineSpan and its full event lineage.
   const selected = rows.find((r) => r.key === selectedKey) ?? rows[0];
@@ -112,16 +119,32 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
     () => computeForks(rows, selected?.key ?? null),
     [rows, selected?.key]
   );
+  // Reverse `l1_spans` map: L1 span id → owning branch id. Lets a click on
+  // a *foreign* target lane resolve which workbench branch to switch to.
+  const l1Owner = useMemo(() => {
+    const m = new Map<string, BranchId>();
+    for (const [bid, meta] of Object.entries(branches)) {
+      for (const sid of meta.l1_spans ?? []) m.set(sid, bid);
+    }
+    return m;
+  }, [branches]);
+
   const selectLane = (key: string | null): void => {
+    const r = key != null ? rows.find((r) => r.key === key) : undefined;
+    const sid = r ? rowSpan(r).id : null;
     if (isAuditor) {
-      // Auditor lanes are workbench branches — switching one switches the
-      // whole desk. Dispatch `switch`; the resulting `state` broadcast
-      // updates `current`, DeskView re-renders with the new `branch` prop,
-      // and `defaultKey` follows.
-      const r = key != null ? rows.find((r) => r.key === key) : undefined;
-      const id = r ? rowSpan(r).id : null;
-      if (id != null && id !== branch) switchBranch(id);
+      // Auditor lanes ARE workbench branches — switching one switches the
+      // whole desk. `defaultKey` follows via the `branch` prop re-render.
+      if (sid != null && sid !== branch) switchBranch(sid);
     } else {
+      // Target: if the picked span is a *foreign* branch's L1, switch to
+      // its owner so `current`/queued/status track it — mirrors the
+      // auditor-lane behaviour. Local `selectedKey` is set regardless so
+      // the specific lane (not just the owner's default) is shown.
+      if (sid != null && !l1Set.has(sid)) {
+        const owner = l1Owner.get(sid);
+        if (owner != null && owner !== branch) switchBranch(owner);
+      }
       setSelectedKey(key ?? defaultKey);
     }
   };

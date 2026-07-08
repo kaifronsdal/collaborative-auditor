@@ -28,7 +28,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from fastapi import WebSocketDisconnect
-from inspect_ai.event import AnchorEvent, BranchEvent, Event, ModelEvent, SpanBeginEvent
+from inspect_ai.event import BranchEvent, Event, ModelEvent, SpanBeginEvent
 from inspect_ai.event._pool_index import (
     CallPoolIndex,
     MessagePoolIndex,
@@ -39,7 +39,7 @@ from inspect_ai.model import ChatMessage
 from inspect_petri.target import History
 from shortuuid import uuid
 
-from workbench.timeline import build_auditor_timeline, build_target_timeline
+from workbench.timeline import _walk, build_auditor_timeline, build_target_timeline
 from workbench.view import Role
 
 if TYPE_CHECKING:
@@ -121,12 +121,6 @@ class Session:
         # for `build_auditor_timeline` (cheaper than re-scanning `events` on
         # every rebuild).
         self.by_role: dict[tuple[str, Role], list[str]] = {}
-        # assistant-message-id → [ModelEvent uuid, …]. `build_target_timeline`
-        # uses this to borrow a *different* L2 `Branch`'s target `ModelEvent`
-        # for a turn that was L2-served (a serve emits the `AnchorEvent` but
-        # no `ModelEvent`). Not a lag band-aid — content is `by_role`-sourced
-        # (ARCHITECTURE-RACES.md A1-b-narrow).
-        self._by_anchor: dict[str, list[str]] = {}
 
         self.version: int = 0
         self.connections: list[Connection] = []
@@ -290,61 +284,37 @@ class Session:
         self.events[ev.uuid] = dumped
         if not is_update and resolved is not None:
             self.by_role.setdefault(resolved, []).append(ev.uuid)
-        self._index_anchor(ev, dumped)
         ops.append({"t": "update" if is_update else "event", "event": dumped})
 
-        # Rebuild + ship a column's timeline when its structure or content
-        # changes: on BranchEvent (new trajectory) and on each new ModelEvent
-        # (new turn — not streaming updates). Target additionally rebuilds on
-        # AnchorEvent so a forked child's replayed prefix — served without
-        # `ModelEvent`s — reaches the wire before the first live turn
-        # (RACE-FIXES.md R2 / chaos s4).
+        # A1-b-wide: both timelines are session-wide; rebuild the affected
+        # role on `BranchEvent` (new trajectory) or new `ModelEvent` (new
+        # turn — not streaming updates) and key to `self.current` so the
+        # frontend's session-scoped slot refreshes regardless of which
+        # background branch emitted.
         if (
             not is_update
             and resolved is not None
-            and (branch := self.branches.get(resolved[0])) is not None
+            and isinstance(ev, (BranchEvent, ModelEvent))
         ):
             role = resolved[1]
-            if isinstance(ev, (BranchEvent, ModelEvent)) or (
-                role == "target" and isinstance(ev, AnchorEvent)
-            ):
-                timeline = (
-                    self._target_timeline(branch)
-                    if role == "target"
-                    else self._auditor_timeline()
-                )
-                # RACE-FIXES.md R2 gap #10: the auditor timeline is
-                # session-wide; key it to the *viewed* branch so a background
-                # candidate's emit refreshes the foreground column instead of
-                # its own (unwatched) slot.
-                key = (
-                    branch.branch_id
-                    if role == "target"
-                    else (self.current or branch.branch_id)
-                )
-                ops.append(
-                    {"t": "timeline", "branch": key, "role": role, "timeline": timeline}
-                )
+            timeline = (
+                self._target_timeline()
+                if role == "target"
+                else self._auditor_timeline()
+            )
+            ops.append(
+                {
+                    "t": "timeline",
+                    "branch": self.current or resolved[0],
+                    "role": role,
+                    "timeline": timeline,
+                }
+            )
 
         self.version += 1
         for op in ops:
             op["v"] = self.version
         self._enqueue({"t": "batch", "v": self.version, "ops": ops})
-
-    def _index_anchor(self, ev: Event, dumped: dict[str, Any]) -> None:
-        """Maintain `_by_anchor`: assistant ``message.id`` → `ModelEvent` uuid.
-
-        Keyed once ``choices`` arrive (the first streaming update). Read only
-        by `build_target_timeline`'s cross-L2 borrow — a forked child's
-        L2-served turn emits an `AnchorEvent` at that id but no `ModelEvent`,
-        so the child looks up the parent branch's event here.
-        """
-        assert ev.uuid is not None
-        if isinstance(ev, ModelEvent):
-            choices = (dumped.get("output") or {}).get("choices") or []
-            mid = choices[0].get("message", {}).get("id") if choices else None
-            if mid and ev.uuid not in (bucket := self._by_anchor.setdefault(mid, [])):
-                bucket.insert(0, ev.uuid)
 
     def _resolve(self, span_id: str | None) -> tuple[str, Role] | None:
         """Walk `span_id → parent → …` to the nearest registered role span."""
@@ -356,8 +326,8 @@ class Session:
             cur = self.span_parent.get(cur)
         return None
 
-    def _target_timeline(self, branch: Branch) -> dict[str, Any]:
-        return build_target_timeline(self, branch)
+    def _target_timeline(self) -> dict[str, Any]:
+        return build_target_timeline(self)
 
     def _auditor_timeline(self) -> dict[str, Any]:
         return build_auditor_timeline(self)
@@ -421,14 +391,21 @@ class Session:
             "generating": b.generating,
             "seed": b.meta.seed[:80],
             "batch": b.meta.batch,
+            # A1-b-wide: this branch's L1 span-id set — the target
+            # `SwimlaneColumn` picks its default lane by matching against
+            # this (the session-wide tree carries every branch's L1 spans).
+            "l1_spans": [t.span_id for t in _walk(b.history.root)],
         }
 
     def view(self) -> dict[str, Any]:
         """The full session snapshot (STREAMING.md §C `state` message body)."""
+        # A1-b-wide: both timelines are session-wide — one tree per role,
+        # replicated across every branch key so the frontend's per-branch
+        # `useSwimlanes` lookup resolves the same tree from any `current`.
+        target_tl = self._target_timeline() if self.branches else None
         auditor_tl = self._auditor_timeline() if self.branches else None
         timelines = {
-            bid: {"target": self._target_timeline(b), "auditor": auditor_tl}
-            for bid, b in self.branches.items()
+            bid: {"target": target_tl, "auditor": auditor_tl} for bid in self.branches
         }
         queued = {
             bid: {

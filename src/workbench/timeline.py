@@ -12,6 +12,7 @@ is appended to any tape) — ARCHITECTURE-RACES.md A1.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from inspect_petri.target import Trajectory
@@ -20,8 +21,19 @@ from workbench.run import _tape_prefix
 from workbench.sources import GEN_SOURCE
 
 if TYPE_CHECKING:
-    from workbench.run import Branch
     from workbench.session import Session
+
+
+def _walk(t: Trajectory) -> Iterator[Trajectory]:
+    yield t
+    for c in t.children:
+        yield from _walk(c)
+
+
+def _msg_id(d: dict[str, Any]) -> str | None:
+    """Assistant ``message.id`` from a dumped `ModelEvent`, once ``choices`` land."""
+    choices = (d.get("output") or {}).get("choices") or []
+    return choices[0].get("message", {}).get("id") if choices else None
 
 
 def build_auditor_timeline(session: Session) -> dict[str, Any]:
@@ -106,83 +118,102 @@ def build_auditor_timeline(session: Session) -> dict[str, Any]:
     }
 
 
-def build_target_timeline(session: Session, branch: Branch) -> dict[str, Any]:
-    """Per-`Branch` target `Timeline`, `by_role`-sourced (A1-b-narrow).
+def build_target_timeline(session: Session) -> dict[str, Any]:
+    """The session-wide target `Timeline` (A1-b-wide, event-sourced graft).
 
-    Tree shape from `branch.history` (the L1 target trajectory tree — set at
-    `Trajectory` construction, never lags). Content from
-    `by_role[(bid, "target")]`, bucketed to each L1 trajectory by walking
-    `session.span_parent` to the nearest trajectory span. Unlike petri's
-    `build_history_timeline` this never reads `tape.log`, so a target
-    `ModelEvent` (emitted before `replayable` appends its step) is present
-    the instant it lands — no lag, no R2 tail-append.
+    One flat tree of L1-trajectory spans across *every* `Branch`, structurally
+    identical to the auditor timeline so both columns take the same
+    ``convertServerTimeline → computeFlatSwimlaneRows → splice()`` path.
+    Purely event-sourced — never reads any `Tape`.
 
-    Each non-root trajectory's L1-replayed prefix anchors are dropped
-    (`splice()` reconstructs them from the parent span). For each remaining
-    anchor, `session._by_anchor` resolves its `ModelEvent` uuid: on a live
-    turn the event is already in the bucket (dedup no-ops), but on a forked
-    L2 `Branch`'s *served* prefix — where no target `ModelEvent` is emitted —
-    it borrows the parent-L2 branch's event so the child's replayed turns
-    render before the first live one (chaos s4).
+    **Invariant `splice()` needs:** every non-root span's `branchedFrom` is a
+    target anchor that appears as an `AnchorEvent` in its `.branches`-parent's
+    `content`. So each L1 span is grafted under whichever L1 span, anywhere in
+    the session, *generated* the fork's last shared target turn live — not
+    under an L2 wrapper, and not under its `history.children` parent when that
+    parent never went live (an L2 replay re-executing an L1 rollback).
+
+    Four passes over `by_role` (ARCHITECTURE-RACES.md §A1-b-wide): (1) collect
+    L1 span ids across all branches; (2) bucket target events per L1 span via
+    `span_parent`; (3) split each bucket at its first `ModelEvent` — the
+    pre-live/live boundary that covers *both* L1-replayed and L2-served
+    prefixes uniformly — and index `anchor_owner[msg_id] = sid` from live
+    `ModelEvent`s; (4) for each span with live content, `branchedFrom` = last
+    `AnchorEvent.anchor_id` in its pre-live prefix, graft parent =
+    `anchor_owner.get(branchedFrom)` (or the wrapper root). Spans with no live
+    content are dropped — the child grafts directly under the ancestor that
+    owns the anchor.
     """
-    bid = branch.branch_id
-    root = branch.history.root
+    l1_of: dict[str, str] = {}
+    for bid, b in session.branches.items():
+        for t in _walk(b.history.root):
+            l1_of[t.span_id] = bid
 
-    traj_of: dict[str, Trajectory] = {}
+    def owner(sid: str | None) -> str | None:
+        while sid is not None and sid not in l1_of:
+            sid = session.span_parent.get(sid)
+        return sid
 
-    def collect(t: Trajectory) -> None:
-        traj_of[t.span_id] = t
-        for c in t.children:
-            collect(c)
+    buckets: dict[str, list[str]] = {sid: [] for sid in l1_of}
+    for bid in session.branches:
+        for u in session.by_role.get((bid, "target"), []):
+            if (d := session.events.get(u)) and (o := owner(d["span_id"])):
+                buckets[o].append(u)
 
-    collect(root)
-
-    def owner(span_id: str | None) -> str | None:
-        while span_id is not None and span_id not in traj_of:
-            span_id = session.span_parent.get(span_id)
-        return span_id
-
-    buckets: dict[str, list[str]] = {sid: [] for sid in traj_of}
-    for u in session.by_role.get((bid, "target"), []):
-        if (d := session.events.get(u)) is not None and (o := owner(d["span_id"])):
-            buckets[o].append(u)
-
-    def content_for(t: Trajectory) -> list[dict[str, Any]]:
-        prefix = {s.anchor_id for s in _tape_prefix(t.tape) if s.anchor_id}
-        out: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for u in buckets[t.span_id]:
+    pre: dict[str, list[str]] = {}
+    live: dict[str, list[str]] = {}
+    anchor_owner: dict[str, str] = {}
+    for sid, uuids in buckets.items():
+        i = next(
+            (i for i, u in enumerate(uuids) if session.events[u]["event"] == "model"),
+            len(uuids),
+        )
+        pre[sid], live[sid] = uuids[:i], uuids[i:]
+        for u in live[sid]:
             d = session.events[u]
-            if d["event"] == "anchor":
-                if d["anchor_id"] in prefix:
-                    continue
-                # Cross-L2 borrow: pull this anchor's `ModelEvent` uuid from
-                # `_by_anchor` — the parent-L2 branch's event when this turn
-                # was L2-served (no local emit); already `seen` when live.
-                for r in session._by_anchor.get(d["anchor_id"], ()):  # noqa: SLF001
-                    if r not in seen:
-                        out.append({"type": "event", "event": r})
-                        seen.add(r)
-            if u not in seen:
-                out.append({"type": "event", "event": u})
-                seen.add(u)
-        return out
+            if d["event"] == "model" and (mid := _msg_id(d)):
+                anchor_owner[mid] = sid
 
     counter = itertools.count(1)
 
-    def to_span(t: Trajectory) -> dict[str, Any]:
+    def to_span(sid: str) -> tuple[dict[str, Any], str | None]:
+        # `branchedFrom` = last target-*generate* anchor in the pre-live
+        # prefix — NOT `Branch.branched_at` (may be an auditor/`Stage`
+        # anchor), and NOT a staging (`Channel.next_command`) anchor. The
+        # `anchor_owner` filter guarantees `bf` is an assistant message.id
+        # some span emitted a live `ModelEvent` for, so its `AnchorEvent`
+        # (which fires *after* the `ModelEvent`) is in that span's `live`
+        # content and `splice()` will find it.
+        bf = next(
+            (
+                d["anchor_id"]
+                for u in reversed(pre[sid])
+                if (d := session.events[u])["event"] == "anchor"
+                and d["anchor_id"] in anchor_owner
+            ),
+            None,
+        )
         return {
             "type": "span",
-            "id": t.span_id,
+            "id": sid,
             "name": f"branch {next(counter)}",
             "span_type": "branch",
-            "branched_from": t.branched_from,
-            "content": content_for(t),
-            "branches": [to_span(c) for c in t.children],
-        }
+            "branched_from": bf,
+            "content": [{"type": "event", "event": u} for u in live[sid]],
+            "branches": [],
+        }, anchor_owner.get(bf)
 
-    return {
-        "name": f"{bid}:target",
-        "description": "Target conversation tree",
-        "root": to_span(root),
+    spans = {sid: to_span(sid) for sid in l1_of if live[sid]}
+    root: dict[str, Any] = {
+        "type": "span",
+        "id": "target-root",
+        "name": "target",
+        "span_type": "branch",
+        "branched_from": None,
+        "content": [],
+        "branches": [],
     }
+    for span, parent_sid in spans.values():
+        (spans[parent_sid][0] if parent_sid in spans else root)["branches"].append(span)
+
+    return {"name": "target", "description": "Target conversation tree", "root": root}

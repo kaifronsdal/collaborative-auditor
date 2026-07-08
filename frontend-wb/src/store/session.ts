@@ -560,6 +560,13 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
         spanRole,
         byRole: byRoleRest,
         branches: { ...branches, [msg.id]: msg.meta },
+        // A1-b-wide: point the new branch's slot at the session-wide tree
+        // so its `SwimlaneColumn` renders the shared target prefix before
+        // the first `{t:"timeline"}` for it lands (chaos s4).
+        timelines: {
+          ...state.timelines,
+          [msg.id]: Object.values(state.timelines)[0] ?? {},
+        },
         current: msg.current,
         prevCurrent: null,
         pendingNewAudit: false,
@@ -774,13 +781,17 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
     }
 
     case "timeline": {
-      return {
-        timelines: {
-          ...state.timelines,
-          [msg.branch]: { ...state.timelines[msg.branch], [msg.role]: msg.timeline },
-        },
-        version: msg.v,
+      // A1-b-wide: both auditor and target timelines are session-wide
+      // trees. Every branch key points to the same slot object so
+      // `useSwimlanes(anyBranch, role)` resolves the identical tree
+      // (session-scoped storage without touching `selectors.ts`).
+      const slot = {
+        ...(Object.values(state.timelines)[0] ?? {}),
+        [msg.role]: msg.timeline,
       };
+      const timelines: TimelineMap = { [msg.branch]: slot };
+      for (const bid of Object.keys(state.branches)) timelines[bid] = slot;
+      return { timelines, version: msg.v };
     }
 
     case "forked": {

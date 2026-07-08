@@ -73,6 +73,11 @@ export type BranchMeta = {
   seed: string;
   /** Resample-N batch this branch belongs to, or null for a normal fork. */
   batch?: string | null;
+  /** A1-b-wide: this branch's L1 (target-`History`) trajectory span ids.
+   *  The target column's session-wide swimlane picks its default lane by
+   *  matching row span ids against this set; picking a foreign lane resolves
+   *  its owning branch via the reverse map for `switchBranch`. */
+  l1_spans?: string[];
   /** Per-rubric scores (M2's `grade()` worker; unset until then). */
   grades?: Record<string, number>;
 };
