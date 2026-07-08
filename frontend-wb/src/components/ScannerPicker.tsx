@@ -181,8 +181,12 @@ export function ScanControl({ branch }: { branch: BranchId }): JSX.Element {
   const send = useSession((s) => s.send);
   const [open, setOpen] = useState(false);
   const [scanner, setScanner] = useState("");
+  // R1 in-flight flag (StartView's `isStarting` pattern): a `scan_branch` is
+  // out; disable Run until its result InfoEvent lands (button-audit #16).
+  const [running, setRunning] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const scans = useBranchScans(branch);
+  const prevScanCount = useRef(scans.length);
 
   useEffect(() => {
     if (!open) return;
@@ -193,9 +197,18 @@ export function ScanControl({ branch }: { branch: BranchId }): JSX.Element {
     return () => document.removeEventListener("mousedown", onDoc);
   }, [open]);
 
+  // A new `branch_scan` InfoEvent arrived → the in-flight scan resolved.
+  useEffect(() => {
+    if (scans.length !== prevScanCount.current) {
+      prevScanCount.current = scans.length;
+      setRunning(false);
+    }
+  }, [scans.length]);
+
   const run = (): void => {
     const name = scanner.trim();
-    if (!name) return;
+    if (!name || running) return;
+    setRunning(true);
     send({ t: "scan_branch", branch_id: branch, scanner: name, scope: "transcript" });
   };
 
@@ -234,9 +247,9 @@ export function ScanControl({ branch }: { branch: BranchId }): JSX.Element {
               type="button"
               className="gate-btn primary"
               onClick={run}
-              disabled={!scanner.trim()}
+              disabled={running || !scanner.trim()}
             >
-              Run
+              {running ? "…" : "Run"}
             </button>
           </div>
           {scans.map((p) => (

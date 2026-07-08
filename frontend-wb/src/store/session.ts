@@ -1083,17 +1083,23 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   transport: (cmd) => {
-    const statusMap: Record<"play" | "pause" | "step" | "end", Status> = {
-      play: "running",
-      pause: "paused",
-      step: "running",
-      end: "ended",
-    };
-    set({ status: statusMap[cmd] });
+    // Optimistic status flip for play/step/end so the primary button responds
+    // instantly. NOT for pause (RACE-FIXES R1 / chaos s1): flipping to
+    // "paused" locally morphs the button into Play, so a double-click sends
+    // pause→play and the branch never stops. `Branch.pause()` now cancels its
+    // scope synchronously, so the backend `{t:"status"}` lands fast enough to
+    // drive the button without an optimistic flip.
+    if (cmd !== "pause") {
+      set({ status: cmd === "end" ? "ended" : "running" });
+    }
     get().send({ t: cmd });
   },
 
   inject: (branch, role, message) => {
+    // R1 / WS-race #12: while a fork/start is in flight `current` is a
+    // sentinel; an inject keyed to it never reaches a real branch and the
+    // message is silently lost server-side. Drop it.
+    if (branch === PENDING_BRANCH || branch === PENDING_ID) return;
     set((state) => {
       const queued: QueuedMap = structuredClone(state.queued);
       const roles = (queued[branch] ??= { auditor: [], target: [] });
@@ -1132,7 +1138,11 @@ function _pendingChild(
 ): void {
   const state = get();
   const current = state.current;
-  if (current == null) return;
+  // Re-entry guard (RACE-FIXES R1): a fork/start is already in flight — a
+  // second click would clobber `prevCurrent` with the sentinel and send
+  // `branch: "__pending_branch__"` to the server. Drop it; the first
+  // request's `state` broadcast reconciles shortly.
+  if (current == null || current === PENDING_BRANCH || current === PENDING_ID) return;
   const truncated = _truncateByRole(state, current, anchorId);
   set({
     prevCurrent: current,
@@ -1150,7 +1160,12 @@ function _pendingChild(
       },
     },
   });
-  get().send(cmd);
+  // Pin `branch:` to the id captured at click time. The server otherwise
+  // falls back to its own `session.current`, which can drift if a background
+  // op (candidate pick, switch) repoints it before this lands (WS-race #3,4).
+  // The backend accepts `branch` on every fork op; `wire.ts` only declares it
+  // on some — hence the cast.
+  get().send({ ...cmd, branch: current } as Up);
 }
 
 /**

@@ -118,6 +118,19 @@ export function DeskView(): JSX.Element {
   const isEnded = status === "ended";
 
   const hasText = feedback.trim().length > 0;
+  // R1 debounce (button-audit #5,6; chaos s1): the primary button morphs
+  // Send→Play (after clearing text) and Pause→Play (once the backend acks the
+  // pause). A double-click's second tap must not fire an accidental `play`.
+  // `justSent` arms for 250ms after any Send or Pause and suppresses *only*
+  // `play` — pause-after-send stays allowed (legitimate "queue then interrupt";
+  // s5 exercises it).
+  const [justSent, setJustSent] = useState(false);
+  const justSentTimer = useRef<number | undefined>(undefined);
+  const armJustSent = (): void => {
+    setJustSent(true);
+    window.clearTimeout(justSentTimer.current);
+    justSentTimer.current = window.setTimeout(() => setJustSent(false), 250);
+  };
 
   function sendFeedback(): void {
     const message: ChatMessageUser = { id: uuid(), role: "user", content: feedback };
@@ -143,6 +156,14 @@ export function DeskView(): JSX.Element {
           mode: "pause" as const,
         }
       : { Icon: IconPlay, title: "Play", onClick: () => transport("play"), mode: "play" as const };
+
+  const onPrimary = (): void => {
+    if (justSent && primary.mode === "play") return;
+    primary.onClick();
+    // Arm on send + pause (both morph the button toward Play). Not on play —
+    // an immediate pause after play is harmless and sometimes intended.
+    if (primary.mode !== "play") armJustSent();
+  };
 
   return (
     <>
@@ -176,7 +197,7 @@ export function DeskView(): JSX.Element {
                 value={feedback}
                 setValue={setFeedback}
                 onEnter={() => {
-                  if (!isEnded || hasText) primary.onClick();
+                  if (!isEnded || hasText) onPrimary();
                 }}
                 placeholder="Steer the auditor…"
               />
@@ -184,8 +205,8 @@ export function DeskView(): JSX.Element {
                 <span className="composer-hint">enter to send · shift+enter newline</span>
                 <button
                   className={`primary primary-${primary.mode}`}
-                  onClick={primary.onClick}
-                  disabled={!hasText && isEnded}
+                  onClick={onPrimary}
+                  disabled={(justSent && primary.mode === "play") || (!hasText && isEnded)}
                   title={hasText ? primary.title : `${primary.title} (Enter)`}
                 >
                   <primary.Icon size={16} />
