@@ -17,7 +17,6 @@ import { create } from "zustand";
 import {
   assignByRole,
   buildByRole,
-  emptyRoles,
   isModelEvent,
   resolveRole,
   type EventsByRole,
@@ -28,9 +27,6 @@ import type {
 } from "../lib/wire";
 import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
 import type { GenerateConfigDict } from "../components/ModelPicker";
-
-/** Local id for a just-initiated branch/resample/edit, before `state` arrives. */
-export const PENDING_BRANCH = "__pending_branch__";
 
 /** A2: an in-flight `Up` command awaiting `{t:"ack"}` from the server. */
 export type PendingCmd = Up & { req_id: string };
@@ -147,15 +143,6 @@ function persistPins(sid: string | null, pins: Pin[]): { pins: Pin[] } {
   return { pins };
 }
 
-/** Local id for the just-started Recents stub, before `current` arrives. */
-const PENDING_ID = "__pending__";
-
-/** Truncate seed text into a Recents-row title. */
-function titleFromSeed(seed: string): string {
-  const trimmed = seed.trim().replace(/\s+/g, " ");
-  return trimmed.length > 42 ? `${trimmed.slice(0, 42)}…` : trimmed || "untitled audit";
-}
-
 /** Config editable in the sidebar for the next audit (or to override current). */
 export type NextConfig = {
   auditor_model: string;
@@ -227,8 +214,10 @@ export type SessionState = {
   sessionsList: SessionSummary[];
   /** Persisted sessions from `GET /sessions` (sidebar Recents). */
   savedSessions: SavedSession[];
-  /** Per-branch config captured at `start`, keyed by branch id (PENDING_ID
-   *  until reconciled). Read by the sidebar config card. */
+  /** Per-branch config captured at `start`, keyed by branch id. Read by the
+   *  sidebar config card. F3: currently unpopulated — the PENDING_ID re-key
+   *  path is gone and `branch_created` doesn't yet write it; `DeskView`
+   *  falls back to `branches[current].seed` from `msg.meta`. */
   branchConfig: Record<string, BranchConfig>;
   /** Editable config for the next audit (pre-populates StartView pickers). */
   nextConfig: NextConfig;
@@ -239,13 +228,6 @@ export type SessionState = {
   /** P2 pin/bookmark: starred sample rows (most-recent first). Loaded from
    *  `localStorage["workbench.pins.{sessionId}"]` on `connect()`. */
   pins: Pin[];
-
-  /**
-   * Stash of the real branch id before we set `current = PENDING_BRANCH`.
-   * Used by the error rollback to restore `current` when a branch/resample/edit
-   * fails on the backend.
-   */
-  prevCurrent: string | null;
 
   error: string | null;
   apply: (msg: Down) => void;
@@ -296,16 +278,11 @@ export type SessionState = {
   /** Import a `.eval` sample as a new root branch in the current session. */
   importEval: (path: string, sampleId?: string) => void;
 
-  /**
-   * Optimistically branch at `anchorId`: truncate columns to events up to the
-   * clicked row, set `current = PENDING_BRANCH`, send `{t:"branch", at}`.
-   */
+  /** Send `{t:"branch", at}`. F3: overlay-only — `useTruncatedEvents` derives
+   *  the visual cut from `pending[]`; `current`/`byRole` are untouched. */
   branchAt: (anchorId: string) => void;
 
-  /**
-   * Optimistically resample at `anchorId`: same truncation as `branchAt`, but
-   * sends `{t:"resample", at}`.
-   */
+  /** Send `{t:"resample", at}`. Same overlay-only truncation as `branchAt`. */
   resampleAt: (anchorId: string) => void;
 
   /**
@@ -484,9 +461,8 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
       // spawn`, `_candidates`, `pick_candidate`, `dismiss_candidates`,
       // `switch`, `start_orchestrator`) ship narrow typed deltas instead.
       // On connect there is no optimistic client state to reconcile, so
-      // the `pendingNewAudit` / `reconcileStatus` / `STATUS_RANK` /
-      // `PENDING_ID`-re-key guards that used to protect optimistic writes
-      // from mid-session clobber are dead here and have been deleted.
+      // the mid-session-clobber guards (`pendingNewAudit`/`reconcileStatus`
+      // /`STATUS_RANK`/sentinel re-key) that used to live here are gone.
       const pool = msg.pool;
       const events = new Map<string, Event>();
       for (const ev of expandEvents(msg.events, { messages: pool, calls: [] })) {
@@ -518,11 +494,8 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
         // Full snapshot supersedes the live rewound-uuid set — the backend
         // now carries per-event `data.rewound` flags for the same effect.
         rewound: new Set(),
-        // Connect-time reset: any client-side pending sentinel from before
-        // the (re)connect is stale — same principle as A2's "`connect()`
-        // must reset `pending: []`".
-        sessionsList: state.sessionsList.filter((s) => s.id !== PENDING_ID),
-        prevCurrent: null,
+        // Connect-time reset — same principle as A2's "`connect()` must
+        // reset `pending: []`" (a pre-reconnect in-flight cmd is stale).
         pending: [],
       };
     }
@@ -550,16 +523,10 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
         const hit = ev.span_id != null ? msg.span_role_delta[ev.span_id] : undefined;
         if (hit) byRole = assignByRole(byRole, hit[0], hit[1], ev, undefined);
       }
-      // Drop the optimistic PENDING_* sentinels (installed by `start()` /
-      // `_pendingChild`) — the real branch id has arrived. This is not the
-      // full A2 `pending[]` machinery; just enough that the sidebar tree
-      // (`state.branches`) matches the backend post-fork (chaos s4).
-      const { [PENDING_BRANCH]: _b, [PENDING_ID]: _i, ...branches } = state.branches;
-      const { [PENDING_BRANCH]: _br, [PENDING_ID]: _ir, ...byRoleRest } = byRole;
       return {
         spanRole,
-        byRole: byRoleRest,
-        branches: { ...branches, [msg.id]: msg.meta },
+        byRole,
+        branches: { ...state.branches, [msg.id]: msg.meta },
         // A1-b-wide: point the new branch's slot at the session-wide tree
         // so its `SwimlaneColumn` renders the shared target prefix before
         // the first `{t:"timeline"}` for it lands (chaos s4).
@@ -568,7 +535,6 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
           [msg.id]: Object.values(state.timelines)[0] ?? {},
         },
         current: msg.current,
-        prevCurrent: null,
         pendingNewAudit: false,
         version: msg.v,
       };
@@ -655,15 +621,10 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
     }
 
     case "status": {
-      // Don't clobber an optimistic "paused" or "running" status set by
-      // start()/transport() with a stale null from the backend if a
-      // pending operation is in flight.
-      const isPendingOp =
-        state.current === PENDING_ID || state.current === PENDING_BRANCH;
-      const resolvedStatus =
-        isPendingOp && msg.status == null ? state.status : msg.status;
+      // F3: the stale-null guard is gone — `start()`/`_pendingChild` no
+      // longer set an optimistic status for it to clobber.
       return {
-        status: resolvedStatus,
+        status: msg.status,
         generating: msg.generating,
         version: msg.v,
         // Orchestrator status piggybacks on the same broadcast; keep the
@@ -826,22 +787,8 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
     }
 
     case "error": {
-      // Roll back any optimistic branch/resample/edit: drop PENDING_BRANCH
-      // from byRole and restore `current` to the previous real id.
-      const hadPending =
-        state.current === PENDING_BRANCH || state.byRole[PENDING_BRANCH] != null;
-      if (hadPending) {
-        const { [PENDING_BRANCH]: _dropped, ...byRoleWithout } = state.byRole;
-        const { [PENDING_BRANCH]: _droppedB, ...branchesWithout } = state.branches;
-        return {
-          error: msg.message,
-          version: msg.v,
-          current: state.prevCurrent,
-          prevCurrent: null,
-          byRole: byRoleWithout,
-          branches: branchesWithout,
-        };
-      }
+      // F3: no optimistic `current`/`byRole` mutation to roll back — the
+      // fork overlay is derived from `pending[]` and clears on `{t:"ack"}`.
       return { error: msg.message, version: msg.v };
     }
   }
@@ -873,7 +820,6 @@ export const useSession = create<SessionState>((set, get) => ({
   nextConfig: readStoredNextConfig(),
   mode: readStoredMode(),
   pins: [],
-  prevCurrent: null,
   error: null,
   rewriteDrafts: {},
   composerDraft: null,
@@ -956,47 +902,13 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   start: (params) => {
-    // Record a pending Recents entry and capture the branch config.
-    // The `state` broadcast that follows carries the real branch id and
-    // reconciles `PENDING_ID` to it (both in sessionsList and branchConfig).
-    const pendingConfig: BranchConfig = {
-      seed: params.seed,
-      auditor_model: params.auditor_model,
-      target_model: params.target_model,
-      auditor_config: params.auditor_config,
-      target_config: params.target_config,
-    };
-    set((state) => ({
-      pendingNewAudit: false,
-      current: PENDING_ID,
-      status: "paused",
-      // Empty columns for the pending branch — the DeskView skeleton is visible
-      // immediately with no spinner. The real `state` broadcast re-keys to the
-      // actual branch id and populates events.
-      byRole: { ...state.byRole, [PENDING_ID]: emptyRoles() },
-      branches: {
-        ...state.branches,
-        [PENDING_ID]: {
-          parent: null,
-          branched_at: null,
-          branched_at_turn: null,
-          status: "paused" as const,
-          seed: params.seed,
-        },
-      },
-      sessionsList: [
-        { id: PENDING_ID, title: titleFromSeed(params.seed), updatedAt: Date.now() },
-        // a single pending stub at a time — drop any stale one.
-        ...state.sessionsList.filter((s) => s.id !== PENDING_ID),
-      ],
-      branchConfig: {
-        // drop any stale pending entry, then add the new one
-        ...Object.fromEntries(
-          Object.entries(state.branchConfig).filter(([k]) => k !== PENDING_ID)
-        ),
-        [PENDING_ID]: pendingConfig,
-      },
-    }));
+    // F3: overlay-only. `send()` appends to `pending[]` → StartView's
+    // `useIsPending(c => c.t === "start")` disables the launch button;
+    // A3's `{t:"branch_created"}` echo carries the real id (`current` /
+    // `branches[id]` / seed via `msg.meta`) fast enough post-R5 that no
+    // PENDING_ID skeleton is needed. The old `sessionsList`/`branchConfig`
+    // PENDING_ID entries were never re-keyed post-A3 (dead) and are gone.
+    set({ pendingNewAudit: false });
     get().send({
       t: "start",
       seed: params.seed,
@@ -1083,15 +995,9 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   importEval: (path, sampleId) => {
-    // Optimistic pending-branch — the `state` broadcast that follows the
-    // import's `_register_and_spawn` re-keys it to the real id.
-    set((state) => ({
-      pendingNewAudit: false,
-      prevCurrent: state.current,
-      current: PENDING_BRANCH,
-      status: "paused",
-      byRole: { ...state.byRole, [PENDING_BRANCH]: emptyRoles() },
-    }));
+    // F3: overlay-only. `{t:"branch_created"}` carries the real id;
+    // `current`/`byRole` are untouched until it lands.
+    set({ pendingNewAudit: false });
     get().send({
       t: "import",
       path,
@@ -1242,10 +1148,9 @@ export const useSession = create<SessionState>((set, get) => ({
   },
 
   inject: (branch, role, message) => {
-    // R1 / WS-race #12: while a fork/start is in flight `current` is a
-    // sentinel; an inject keyed to it never reaches a real branch and the
-    // message is silently lost server-side. Drop it.
-    if (branch === PENDING_BRANCH || branch === PENDING_ID) return;
+    // F3: `current` is never a sentinel now, so `branch` (its caller-side
+    // capture) is always real. The composer disables via `useIsPending`
+    // during a fork, so the R1 sentinel guard is unreachable and gone.
     set((state) => {
       const queued: QueuedMap = structuredClone(state.queued);
       const roles = (queued[branch] ??= { auditor: [], target: [] });
@@ -1272,86 +1177,28 @@ export const useSession = create<SessionState>((set, get) => ({
 }));
 
 /**
- * Shared body for `branchAt` / `resampleAt` / edit ops: optimistically install
- * a `PENDING_BRANCH` snapshot truncated at `anchorId`, then send `cmd`. The
- * backend's `state` broadcast replaces the pending entry with the real branch.
+ * Shared body for `branchAt` / `resampleAt` / edit ops.
+ *
+ * F3: overlay-only — `send()` appends `{...cmd, at: anchorId}` to `pending[]`
+ * and `useTruncatedEvents` / `usePendingForkAnchor` derive the visual cut
+ * from that. `current`/`byRole`/`branches` are NOT mutated, so `case "error"`
+ * has nothing to roll back and `prevCurrent` is gone. Re-entry is prevented
+ * at the button (`disabled={useIsPending(c => FORK_KINDS.has(c.t))}`).
  */
 function _pendingChild(
-  set: (partial: Partial<SessionState>) => void,
+  _set: (partial: Partial<SessionState>) => void,
   get: () => SessionState,
   anchorId: string,
   cmd: Up
 ): void {
-  const state = get();
-  const current = state.current;
-  // A2: re-entry is prevented at the button (`disabled={useIsPending(c =>
-  // FORK_KINDS.has(c.t))}`), not here. The old sentinel early-return
-  // (`current === PENDING_BRANCH || PENDING_ID`) is deleted; a click that
-  // reaches this action is a real request. `current == null` stays — no
-  // parent to fork from.
+  const current = get().current;
   if (current == null) return;
-  const truncated = _truncateByRole(state, current, anchorId);
-  set({
-    prevCurrent: current,
-    current: PENDING_BRANCH,
-    status: "paused",
-    byRole: { ...state.byRole, [PENDING_BRANCH]: truncated },
-    branches: {
-      ...state.branches,
-      [PENDING_BRANCH]: {
-        parent: current,
-        branched_at: anchorId,
-        branched_at_turn: null,
-        status: "paused",
-        seed: state.branches[current]?.seed ?? "",
-      },
-    },
-  });
-  // Pin `branch:` to the id captured at click time. The server otherwise
+  // Pin `branch:` to the id captured at click time — the server otherwise
   // falls back to its own `session.current`, which can drift if a background
-  // op (candidate pick, switch) repoints it before this lands (WS-race #3,4).
-  // The backend accepts `branch` on every fork op; `wire.ts` only declares it
-  // on some — hence the cast.
-  get().send({ ...cmd, branch: current } as Up);
-}
-
-/**
- * Build a truncated `{auditor, target}` snapshot of the current branch's
- * events, cut at the event whose output message id is `anchorId`.
- *
- * Strategy: find the anchor event in either role column. For each role, keep
- * all events whose array index is ≤ the anchor event's index in that role's
- * column. If the anchor doesn't appear in a role, keep all events for that
- * role (it was a cross-role anchor).
- */
-function _truncateByRole(
-  state: SessionState,
-  branchId: BranchId,
-  anchorId: string
-): Record<Role, Event[]> {
-  const roleBuckets = state.byRole[branchId] ?? emptyRoles();
-  const roles = ["auditor", "target"] as const;
-
-  // Find the anchor index in each role.
-  const anchorIdx = { auditor: -1, target: -1 };
-  for (const role of roles) {
-    const events = roleBuckets[role];
-    for (let i = 0; i < events.length; i++) {
-      const ev = events[i];
-      if (isModelEvent(ev)) {
-        const msgId = ev.output.choices[0]?.message.id;
-        if (msgId === anchorId) { anchorIdx[role] = i; break; }
-      }
-    }
-  }
-
-  const result = emptyRoles();
-  for (const role of roles) {
-    const events = roleBuckets[role];
-    const cutoff = anchorIdx[role];
-    // If the anchor was found in this role, include up to and including it.
-    // If not found, include all (the anchor lives in the other role).
-    result[role] = cutoff >= 0 ? events.slice(0, cutoff + 1) : events.slice();
-  }
-  return result;
+  // op repoints it before this lands (WS-race #3,4). `at:` rides along
+  // (uniformly, even on variants whose `Up` type lacks it) so the derived
+  // truncation selector can read the anchor from `pending[]`. The backend
+  // ignores extras; `wire.ts` doesn't declare either on every variant —
+  // hence the cast.
+  get().send({ ...cmd, branch: current, at: anchorId } as Up);
 }

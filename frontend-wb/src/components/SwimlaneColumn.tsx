@@ -24,6 +24,7 @@ import { TimelineSwimLanes } from "@tsmono/inspect-components/transcript/timelin
 import { eventsToTurns, isModelEvent } from "../lib/events";
 import {
   computeForks,
+  usePendingForkAnchor,
   useQueued,
   useStagedForTarget,
   useSwimlanes,
@@ -59,6 +60,7 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   const generating = useSession((s) => s.generating);
   const switchBranch = useSession((s) => s.switchBranch);
   const branches = useSession((s) => s.branches);
+  const forkAnchor = usePendingForkAnchor();
   const isAuditor = role === "auditor";
 
   // A1-b-wide: both timelines are session-wide. Auditor rows are workbench
@@ -97,15 +99,23 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   // Resolve the selected row's TimelineSpan and its full event lineage.
   const selected = rows.find((r) => r.key === selectedKey) ?? rows[0];
   const span: TimelineSpan | undefined = selected ? rowSpan(selected) : undefined;
-  const laneEvents = useMemo(
-    () =>
-      span && timeline
-        ? // RACE-FIXES.md R3 / WS-race #15: drop retracted (interrupted)
-          // generates so `eventsToTurns` doesn't misalign on the orphan.
-          lineage(span).filter((e) => (e as { rewound?: boolean }).rewound !== true)
-        : [],
-    [span, timeline, lineage]
-  );
+  const laneEvents = useMemo(() => {
+    if (!span || !timeline) return [];
+    // RACE-FIXES.md R3 / WS-race #15: drop retracted (interrupted)
+    // generates so `eventsToTurns` doesn't misalign on the orphan.
+    const evs = lineage(span).filter(
+      (e) => (e as { rewound?: boolean }).rewound !== true
+    );
+    // F3: derived optimistic truncation at the in-flight fork's anchor —
+    // replaces the imperative `byRole[PENDING_BRANCH]` snapshot. `current`
+    // stays on the parent so this column keeps its swimlane context (vs.
+    // the old drop-to-LinearColumn) while the transcript below cuts.
+    if (forkAnchor == null) return evs;
+    const idx = evs.findIndex(
+      (e) => isModelEvent(e) && e.output.choices[0]?.message.id === forkAnchor
+    );
+    return idx >= 0 ? evs.slice(0, idx + 1) : evs;
+  }, [span, timeline, lineage, forkAnchor]);
   const laneTurns = useMemo(
     () => eventsToTurns(laneEvents, isAuditor),
     [laneEvents, isAuditor]

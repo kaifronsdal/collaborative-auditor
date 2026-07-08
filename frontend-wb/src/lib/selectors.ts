@@ -58,6 +58,42 @@ export function useEvents(branch: BranchId, role: Role): Event[] {
   return useSession((s) => s.byRole[branch]?.[role] ?? EMPTY);
 }
 
+/**
+ * F3: the anchor id of the in-flight fork, or `null`. `_pendingChild` ships
+ * `at:` on every fork cmd (even variants whose `Up` type doesn't declare it)
+ * so this reads uniformly across all six `FORK_KINDS`. Drives the derived
+ * optimistic truncation that replaced the imperative `PENDING_BRANCH`
+ * snapshot in `byRole`.
+ */
+export function usePendingForkAnchor(): string | null {
+  return useSession((s) => {
+    for (const c of s.pending) {
+      if (FORK_KINDS.has(c.t)) return (c as { at?: string }).at ?? null;
+    }
+    return null;
+  });
+}
+
+/**
+ * F3: `useEvents` cut at the in-flight fork's anchor — the derived
+ * replacement for `_truncateByRole`'s imperative `byRole[PENDING_BRANCH]`
+ * snapshot. When no fork is pending (the common case) this is `useEvents`
+ * with one extra `useMemo`. The anchor lives in exactly one role's column;
+ * if it isn't in `events`, the full array is returned unchanged (matches
+ * the old cross-role behaviour).
+ */
+export function useTruncatedEvents(branch: BranchId, role: Role): Event[] {
+  const events = useEvents(branch, role);
+  const anchor = usePendingForkAnchor();
+  return useMemo(() => {
+    if (anchor == null) return events;
+    const idx = events.findIndex(
+      (ev) => isModelEvent(ev) && ev.output.choices[0]?.message.id === anchor
+    );
+    return idx >= 0 ? events.slice(0, idx + 1) : events;
+  }, [events, anchor]);
+}
+
 /** A4-partial: one open orchestrator gate card. */
 export type PendingGate = { id: string; kind: string; desc: string };
 

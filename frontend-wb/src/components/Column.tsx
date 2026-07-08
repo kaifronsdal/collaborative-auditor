@@ -4,10 +4,10 @@ import type { ChatMessage } from "@tsmono/inspect-common";
 
 import { eventsToTurns, isModelEvent } from "../lib/events";
 import {
-  useEvents,
   useQueued,
   useStagedForTarget,
   useSwimlanes,
+  useTruncatedEvents,
 } from "../lib/selectors";
 import type { BranchId, Role } from "../lib/wire";
 import { useSession } from "../store/session";
@@ -57,7 +57,7 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
   { branch, role, linked, onSync },
   ref
 ): JSX.Element {
-  const rawEvents = useEvents(branch, role);
+  const rawEvents = useTruncatedEvents(branch, role);
   const queued = useQueued(branch, role);
   const staged = useStagedForTarget(branch);
   const status = useSession((s) => s.status);
@@ -88,7 +88,7 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
   //     auditor column doesn't shimmer while the *target* is generating.
   //     Fall back to `status === "running"` when the backend didn't send
   //     `generating` (old wire protocol).
-  //  2. Paused with empty column — just-started skeleton (PENDING_ID or PENDING_BRANCH).
+  //  2. Paused with empty column — just-started skeleton.
   const lastEvent = events.length > 0 ? events[events.length - 1] : null;
   const lastIsPending = lastEvent != null && isModelEvent(lastEvent) && !!lastEvent.pending;
   const isGenerating =
