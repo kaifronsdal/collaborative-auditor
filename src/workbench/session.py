@@ -35,13 +35,11 @@ from inspect_ai.event._pool_index import (
     condense_model_event_with_indices,
 )
 from inspect_ai.log import Transcript
-from inspect_ai.log._transcript import init_transcript
 from inspect_ai.model import ChatMessage
-from inspect_petri._auditor import build_history_timeline
 from inspect_petri.target import History
 from shortuuid import uuid
 
-from workbench.timeline import build_auditor_timeline
+from workbench.timeline import build_auditor_timeline, build_target_timeline
 from workbench.view import Role
 
 if TYPE_CHECKING:
@@ -123,9 +121,11 @@ class Session:
         # for `build_auditor_timeline` (cheaper than re-scanning `events` on
         # every rebuild).
         self.by_role: dict[tuple[str, Role], list[str]] = {}
-        # anchor_id → [uuid, …] — incremental mirror of petri's
-        # `_anchor_lookup` over dumped events, so `_target_timeline` can
-        # resolve a just-emitted anchor without a full transcript scan.
+        # assistant-message-id → [ModelEvent uuid, …]. `build_target_timeline`
+        # uses this to borrow a *different* L2 `Branch`'s target `ModelEvent`
+        # for a turn that was L2-served (a serve emits the `AnchorEvent` but
+        # no `ModelEvent`). Not a lag band-aid — content is `by_role`-sourced
+        # (ARCHITECTURE-RACES.md A1-b-narrow).
         self._by_anchor: dict[str, list[str]] = {}
 
         self.version: int = 0
@@ -298,8 +298,7 @@ class Session:
         # (new turn — not streaming updates). Target additionally rebuilds on
         # AnchorEvent so a forked child's replayed prefix — served without
         # `ModelEvent`s — reaches the wire before the first live turn
-        # (RACE-FIXES.md R2 / chaos s4). `_on_event` runs in the branch task's
-        # context, so `build_history_timeline` can read `transcript().events`.
+        # (RACE-FIXES.md R2 / chaos s4).
         if (
             not is_update
             and resolved is not None
@@ -333,11 +332,12 @@ class Session:
         self._enqueue({"t": "batch", "v": self.version, "ops": ops})
 
     def _index_anchor(self, ev: Event, dumped: dict[str, Any]) -> None:
-        """Maintain `_by_anchor` (petri `_anchor_lookup` over dumped uuids).
+        """Maintain `_by_anchor`: assistant ``message.id`` → `ModelEvent` uuid.
 
-        `ModelEvent` is keyed by its assistant ``message.id`` once ``choices``
-        arrive (i.e. on the first streaming update); `AnchorEvent` by its
-        ``anchor_id`` (one kept per anchor — L1/L2 emits are duplicates).
+        Keyed once ``choices`` arrive (the first streaming update). Read only
+        by `build_target_timeline`'s cross-L2 borrow — a forked child's
+        L2-served turn emits an `AnchorEvent` at that id but no `ModelEvent`,
+        so the child looks up the parent branch's event here.
         """
         assert ev.uuid is not None
         if isinstance(ev, ModelEvent):
@@ -345,10 +345,6 @@ class Session:
             mid = choices[0].get("message", {}).get("id") if choices else None
             if mid and ev.uuid not in (bucket := self._by_anchor.setdefault(mid, [])):
                 bucket.insert(0, ev.uuid)
-        elif isinstance(ev, AnchorEvent):
-            bucket = self._by_anchor.setdefault(ev.anchor_id, [])
-            if not any(self.events[u]["event"] == "anchor" for u in bucket):
-                bucket.append(ev.uuid)
 
     def _resolve(self, span_id: str | None) -> tuple[str, Role] | None:
         """Walk `span_id → parent → …` to the nearest registered role span."""
@@ -361,44 +357,7 @@ class Session:
         return None
 
     def _target_timeline(self, branch: Branch) -> dict[str, Any]:
-        """Target-column timeline for ``branch``, with in-flight events appended.
-
-        `build_history_timeline` reads ``tape.log``, so it misses (a) a target
-        `ModelEvent` while ``pending`` (no anchor yet) and (b) the step whose
-        `AnchorEvent` just fired — petri's ``replayable`` emits *before*
-        ``tape.log.append``. Both are already in `by_role`: append the former
-        by uuid and resolve the latter via `_by_anchor`, onto the tip span.
-        Covers target-column streaming and the forked child's replayed prefix,
-        which is all case (b) since a serve emits no `ModelEvent`
-        (RACE-FIXES.md R2 / chaos s4).
-        """
-        tl = build_history_timeline(
-            branch.history, f"{branch.branch_id}:target"
-        ).model_dump(mode="json")
-        seen: set[str] = set()
-
-        def tip(span: dict[str, Any]) -> dict[str, Any]:
-            seen.update(c["event"] for c in span["content"] if c["type"] == "event")
-            t = span
-            for b in span["branches"]:
-                t = tip(b)
-            return t
-
-        t = tip(tl["root"])
-
-        def add(u: str) -> None:
-            if u not in seen:
-                t["content"].append({"type": "event", "event": u})
-                seen.add(u)
-
-        for u in self.by_role.get((branch.branch_id, "target"), []):
-            ev = self.events[u]
-            if ev["event"] == "model":
-                add(u)
-            elif ev["event"] == "anchor":
-                for r in self._by_anchor.get(ev["anchor_id"], []):
-                    add(r)
-        return tl
+        return build_target_timeline(self, branch)
 
     def _auditor_timeline(self) -> dict[str, Any]:
         return build_auditor_timeline(self)
@@ -453,9 +412,6 @@ class Session:
 
     def view(self) -> dict[str, Any]:
         """The full session snapshot (STREAMING.md §C `state` message body)."""
-        # `build_target_timeline` reads `transcript().events`; set the var in
-        # this task's context so it resolves to the session's transcript.
-        init_transcript(self.transcript)
         auditor_tl = self._auditor_timeline() if self.branches else None
         timelines = {
             bid: {"target": self._target_timeline(b), "auditor": auditor_tl}

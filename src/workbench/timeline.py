@@ -1,9 +1,12 @@
-"""Auditor-column `Timeline` construction (STREAMING.md §B, PETRI-L2-HISTORY).
+"""Auditor- and target-column `Timeline` construction (STREAMING.md §B).
 
-Split from `session.py` (M1-REFACTOR Batch I). `build_auditor_timeline` is a
-free function over a `Session` — its only private coupling is the incremental
-`by_role` index, which exists precisely so this rebuild is O(events-in-role)
-rather than a full `session.events` scan.
+Split from `session.py` (M1-REFACTOR Batch I). Both builders are free
+functions over a `Session` whose only private coupling is the incremental
+`by_role` index — kept precisely so a rebuild is O(events-in-role) rather
+than a full `session.events` scan. Both walk a `History` for tree *shape*
+(set-once metadata, never lags) and source `content` from `by_role`
+(populated on emit, so an in-flight `ModelEvent` is present before its step
+is appended to any tape) — ARCHITECTURE-RACES.md A1.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from inspect_petri.target import Trajectory
 from workbench.sources import GEN_SOURCE
 
 if TYPE_CHECKING:
+    from workbench.run import Branch
     from workbench.session import Session
 
 
@@ -94,4 +98,86 @@ def build_auditor_timeline(session: Session) -> dict[str, Any]:
             "content": [],
             "branches": [to_span(c) for c in root.children],
         },
+    }
+
+
+def build_target_timeline(session: Session, branch: Branch) -> dict[str, Any]:
+    """Per-`Branch` target `Timeline`, `by_role`-sourced (A1-b-narrow).
+
+    Tree shape from `branch.history` (the L1 target trajectory tree — set at
+    `Trajectory` construction, never lags). Content from
+    `by_role[(bid, "target")]`, bucketed to each L1 trajectory by walking
+    `session.span_parent` to the nearest trajectory span. Unlike petri's
+    `build_history_timeline` this never reads `tape.log`, so a target
+    `ModelEvent` (emitted before `replayable` appends its step) is present
+    the instant it lands — no lag, no R2 tail-append.
+
+    Each non-root trajectory's L1-replayed prefix anchors are dropped
+    (`splice()` reconstructs them from the parent span). For each remaining
+    anchor, `session._by_anchor` resolves its `ModelEvent` uuid: on a live
+    turn the event is already in the bucket (dedup no-ops), but on a forked
+    L2 `Branch`'s *served* prefix — where no target `ModelEvent` is emitted —
+    it borrows the parent-L2 branch's event so the child's replayed turns
+    render before the first live one (chaos s4).
+    """
+    bid = branch.branch_id
+    root = branch.history.root
+
+    traj_of: dict[str, Trajectory] = {}
+
+    def collect(t: Trajectory) -> None:
+        traj_of[t.span_id] = t
+        for c in t.children:
+            collect(c)
+
+    collect(root)
+
+    def owner(span_id: str | None) -> str | None:
+        while span_id is not None and span_id not in traj_of:
+            span_id = session.span_parent.get(span_id)
+        return span_id
+
+    buckets: dict[str, list[str]] = {sid: [] for sid in traj_of}
+    for u in session.by_role.get((bid, "target"), []):
+        if (d := session.events.get(u)) is not None and (o := owner(d["span_id"])):
+            buckets[o].append(u)
+
+    def content_for(t: Trajectory) -> list[dict[str, Any]]:
+        prefix = {s.anchor_id for s in t.tape.prefix() if s.anchor_id}
+        out: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for u in buckets[t.span_id]:
+            d = session.events[u]
+            if d["event"] == "anchor":
+                if d["anchor_id"] in prefix:
+                    continue
+                # Cross-L2 borrow: pull this anchor's `ModelEvent` uuid from
+                # `_by_anchor` — the parent-L2 branch's event when this turn
+                # was L2-served (no local emit); already `seen` when live.
+                for r in session._by_anchor.get(d["anchor_id"], ()):  # noqa: SLF001
+                    if r not in seen:
+                        out.append({"type": "event", "event": r})
+                        seen.add(r)
+            if u not in seen:
+                out.append({"type": "event", "event": u})
+                seen.add(u)
+        return out
+
+    counter = itertools.count(1)
+
+    def to_span(t: Trajectory) -> dict[str, Any]:
+        return {
+            "type": "span",
+            "id": t.span_id,
+            "name": f"branch {next(counter)}",
+            "span_type": "branch",
+            "branched_from": t.branched_from,
+            "content": content_for(t),
+            "branches": [to_span(c) for c in t.children],
+        }
+
+    return {
+        "name": f"{bid}:target",
+        "description": "Target conversation tree",
+        "root": to_span(root),
     }
