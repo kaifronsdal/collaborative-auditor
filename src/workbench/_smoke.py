@@ -122,6 +122,37 @@ async def _amain(dump_path: Path | None = None) -> None:
     assert "system" in roles, f"no system message in resolved input: {roles}"
     assert "user" in roles, f"no user message in resolved input: {roles}"
 
+    # --- R2: target timeline references the in-flight ModelEvent -------------
+    # `_target_timeline` appends `by_role` ModelEvents onto the tip span, so
+    # the `{t:"timeline"}` shipped in the same `_on_event` tick as the pending
+    # target `ModelEvent` already carries its uuid — the column streams rather
+    # than lagging until the anchor lands (RACE-FIXES.md R2).
+    def _tl_uuids(span: dict) -> set[str]:
+        s = {c["event"] for c in span["content"] if c["type"] == "event"}
+        for b in span["branches"]:
+            s |= _tl_uuids(b)
+        return s
+
+    for i, m in enumerate(conn.sent):
+        if (
+            m["t"] == "event"
+            and m["event"]["event"] == "model"
+            and session._resolve(m["event"]["span_id"]) == ("b0", "target")
+        ):
+            tl = next(
+                x
+                for x in conn.sent[i:]
+                if x["t"] == "timeline" and x["role"] == "target"
+            )
+            assert m["event"]["uuid"] in _tl_uuids(tl["timeline"]["root"]), (
+                f"target timeline shipped with pending ModelEvent "
+                f"{m['event']['uuid']!r} does not reference it — "
+                f"_target_timeline not appending in-flight by_role"
+            )
+            break
+    else:
+        raise AssertionError("no target ModelEvent on the wire")
+
     print(
         f"state={n_state} pool={n_pool} event={n_event} update={n_update}; "
         f"pool_size={len(pool)}; last_target_input_len={len(resolved)}"
