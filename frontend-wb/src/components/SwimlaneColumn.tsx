@@ -56,6 +56,7 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   const queued = useQueued(branch, role);
   const staged = useStagedForTarget(branch);
   const status = useSession((s) => s.status);
+  const generating = useSession((s) => s.generating);
   const switchBranch = useSession((s) => s.switchBranch);
   const isAuditor = role === "auditor";
 
@@ -90,7 +91,12 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   const selected = rows.find((r) => r.key === selectedKey) ?? rows[0];
   const span: TimelineSpan | undefined = selected ? rowSpan(selected) : undefined;
   const laneEvents = useMemo(
-    () => (span && timeline ? lineage(span) : []),
+    () =>
+      span && timeline
+        ? // RACE-FIXES.md R3 / WS-race #15: drop retracted (interrupted)
+          // generates so `eventsToTurns` doesn't misalign on the orphan.
+          lineage(span).filter((e) => (e as { rewound?: boolean }).rewound !== true)
+        : [],
     [span, timeline, lineage]
   );
   const laneTurns = useMemo(
@@ -137,7 +143,12 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   const lastEvent = laneEvents[laneEvents.length - 1];
   const lastIsPending =
     lastEvent != null && isModelEvent(lastEvent) && !!lastEvent.pending;
-  const showShimmer = status === "running" && !lastIsPending;
+  // RACE-FIXES.md R3 gap #3,4: gate on `generating === role`, not
+  // `status === "running"`, so the auditor column doesn't shimmer while
+  // the target is generating. `undefined` = old backend → fall back.
+  const isGenerating =
+    generating === undefined ? status === "running" : generating === role;
+  const showShimmer = isGenerating && !lastIsPending;
 
   return (
     <div className="column swimlane-column" ref={scrollRef} onScroll={onScroll}>

@@ -68,6 +68,8 @@ export type BranchMeta = {
   /** Auditor turn index at the slice — stable sibling key (anchor ids re-mint on edit). */
   branched_at_turn: number | null;
   status: Status;
+  /** Which column (if any) is mid-generate. `null` = neither; absent = old backend. */
+  generating?: "auditor" | "target" | null;
   seed: string;
   /** Resample-N batch this branch belongs to, or null for a normal fork. */
   batch?: string | null;
@@ -94,6 +96,7 @@ export type Down =
       queued: QueuedMap;
       current: string | null;
       status: Status | null;
+      generating?: "auditor" | "target" | null;
       branches: Record<BranchId, BranchMeta>;
       candidate_batches?: Record<string, CandidateBatch>;
       timelines?: TimelineMap;
@@ -102,7 +105,16 @@ export type Down =
   | { t: "pool"; v: number; from: number; entries: ChatMessage[] }
   | { t: "event"; v: number; event: Event }
   | { t: "update"; v: number; event: Event }
-  | { t: "status"; v: number; status: Status | null; orch_status?: Status | null }
+  | {
+      t: "status";
+      v: number;
+      status: Status | null;
+      /** RACE-FIXES.md R3: which column of the current branch is
+       *  mid-generate. `null` = neither; absent = old backend (fall back to
+       *  `status === "running"` for the shimmer gate). */
+      generating?: "auditor" | "target" | null;
+      orch_status?: Status | null;
+    }
   | { t: "notify"; v: number; text: string }
   | {
       t: "queued";

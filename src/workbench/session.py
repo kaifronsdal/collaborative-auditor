@@ -236,6 +236,18 @@ class Session:
 
         resolved = self._resolve(ev.span_id)
 
+        # RACE-FIXES.md R3 / WS-race #15: track the in-flight auditor
+        # generate's uuid so `Branch.pause()` can retract the stuck
+        # `pending=True` bubble on interrupt. Set on the first (pending)
+        # emit, cleared on the terminal (`pending=False`) update.
+        if (
+            isinstance(ev, ModelEvent)
+            and resolved is not None
+            and resolved[1] == "auditor"
+            and (b := self.branches.get(resolved[0])) is not None
+        ):
+            b._pending_gen_uuid = ev.uuid if ev.pending else None  # noqa: SLF001
+
         # Splice model: while a forked branch is replaying its *shared*
         # prefix (`tape.log[:prefix_len]`), drop every auditor-role event —
         # `execute_tools` runs live on the served `ModelOutput`, so its
@@ -462,6 +474,7 @@ class Session:
                 "branched_at": b.branched_at,
                 "branched_at_turn": b.branched_at_turn,
                 "status": b.status,
+                "generating": b.generating,
                 "seed": b.meta.seed[:80],
                 "batch": b.meta.batch,
             }
@@ -475,6 +488,7 @@ class Session:
             "queued": queued,
             "current": self.current,
             "status": self.current_status(),
+            "generating": self.current_generating(),
             "branches": branches_meta,
             "candidate_batches": {
                 bid: asdict(b) for bid, b in self.candidate_batches.items()
@@ -488,6 +502,12 @@ class Session:
             return None
         return self.branches[self.current].status
 
+    def current_generating(self) -> Role | None:
+        """Which role the current branch is mid-generate on, or None."""
+        if self.current is None:
+            return None
+        return self.branches[self.current].generating
+
     async def broadcast_status(self) -> None:
         """Push the current branch's status as a lightweight `status` message."""
         self.version += 1
@@ -496,6 +516,11 @@ class Session:
                 "t": "status",
                 "v": self.version,
                 "status": self.current_status(),
+                # RACE-FIXES.md R3 gap #3,4: which column (if any) is
+                # mid-generate — lets `showShimmer` gate on the actual role
+                # instead of `status === "running"` (which shimmered the
+                # auditor column during a target generate).
+                "generating": self.current_generating(),
                 "orch_status": self.orchestrator.status if self.orchestrator else None,
             }
         )
@@ -635,6 +660,29 @@ class Session:
                 "from_uuid": from_uuid,
             }
         )
+
+    def retract_pending(self, span_id: str, uuid: str) -> None:
+        """Drop a stuck ``pending=True`` `ModelEvent` after a cancelled generate.
+
+        RACE-FIXES.md R3 / WS-race #15: `Branch.pause()` cancels
+        ``_gen_scope`` mid-generate, so the pending event never gets its
+        terminal update — the frontend's spinner would run forever, and the
+        orphan event misaligns `eventsToTurns` on the next real generate.
+        Flip ``pending=False`` + ``rewound=True`` on the stored dict, drop it
+        from ``by_role`` (so `_auditor_timeline` skips it), and ship as
+        ``{"t":"update"}`` so live clients replace it in place. The
+        ``rewound`` flag is what the M0 columns filter on.
+        """
+        ev = self.events.get(uuid)
+        if ev is None:
+            return
+        ev["pending"] = False
+        ev["rewound"] = True
+        key = self.span_role.get(span_id)
+        if key is not None and uuid in (bucket := self.by_role.get(key, [])):
+            bucket.remove(uuid)
+        self.version += 1
+        self._enqueue({"t": "update", "v": self.version, "event": ev})
 
     # -- persistence (#4) -----------------------------------------------------
 

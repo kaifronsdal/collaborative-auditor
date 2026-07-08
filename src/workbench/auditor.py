@@ -154,6 +154,23 @@ def workbench_auditor(
                     # back to ``pre_turn`` — which either blocks at the gate
                     # (plain pause) or passes immediately (``pause`` saw
                     # queued input and re-``play()``ed).
+                    #
+                    # Petri's ``Tape.replayable`` catches ``BaseException``
+                    # and appends ``Step(None, GEN_SOURCE)`` (with the exc in
+                    # ``_errors``) before re-raising into this scope. Left on
+                    # the tape it poisons replay: a fork whose prefix
+                    # includes it serves ``None`` (the child's fresh
+                    # ``_errors`` has no entry → no re-raise) and
+                    # ``state.output.stop_reason`` AttributeErrors; a
+                    # ``persist`` reload's ``rewind()`` re-raises the
+                    # recorded ``CancelledError`` mid-replay. Pop both.
+                    if (
+                        tape.log
+                        and tape.log[-1].value is None
+                        and tape.log[-1].source == GEN_SOURCE
+                    ):
+                        tape.log.pop()
+                        tape._errors.pop(len(tape.log), None)  # noqa: SLF001
                     hooks.post_generate()
                     continue
                 # Anthropic's ``stop_reason: "refusal"`` (mapped by inspect

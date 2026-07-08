@@ -214,6 +214,10 @@ export type SessionState = {
   pendingNewAudit: boolean;
   /** Lifecycle status of the current branch (idle/running/paused/ended). */
   status: Status | null;
+  /** Which column of the current branch is mid-generate (RACE-FIXES.md R3).
+   *  `null` = neither; `undefined` = backend didn't send it (fall back to
+   *  `status === "running"` for the shimmer gate). */
+  generating: "auditor" | "target" | null | undefined;
   /** M1 orchestrator column state (M1-NOTEBOOK.md). Null until
    *  `start_orchestrator` — DeskView keeps its M0 two-column layout. */
   orchestrator: OrchestratorState | null;
@@ -474,6 +478,7 @@ export const useSession = create<SessionState>((set, get) => ({
   current: null,
   pendingNewAudit: false,
   status: null,
+  generating: undefined,
   orchestrator: null,
   rewound: new Set(),
   ws: null,
@@ -564,6 +569,7 @@ export const useSession = create<SessionState>((set, get) => ({
             queued: msg.queued,
             current: resolvedCurrent,
             status: resolvedStatus,
+            generating: msg.generating,
             version: msg.v,
             sessionsList,
             branchConfig,
@@ -587,6 +593,7 @@ export const useSession = create<SessionState>((set, get) => ({
             isPendingOp && msg.status == null ? state.status : msg.status;
           return {
             status: resolvedStatus,
+            generating: msg.generating,
             version: msg.v,
             // Orchestrator status piggybacks on the same broadcast; keep the
             // existing view() snapshot but overlay the fresh status.

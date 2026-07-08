@@ -52,6 +52,7 @@ from workbench._smoke_fixtures import (
 from workbench.run import Branch
 from workbench.server import sessions
 from workbench.session import Session
+from workbench.sources import GEN_SOURCE
 
 SLEEP_S = 3.0  # per slow generate — the race window
 
@@ -236,9 +237,26 @@ async def s1_double_pause(page: Page, ui_port: int) -> str:
         # Let the backend settle (dispatch lock + cancel + broadcast).
         await anyio.sleep(1.5)
         assert b.error is None, f"branch errored: {b.error}"
-        # Expect: no exception, status paused, tape unchanged (the interrupted
-        # generate produced no output).
+        # Expect: no exception, status paused, no new output on the tape.
+        # R3 finding: petri's `replayable` appends `Step(None, GEN_SOURCE)`
+        # on cancel; the loop pops it (a fork whose prefix included it would
+        # serve `None` and crash). So the tape is exactly unchanged and
+        # carries no `Step(None)` cruft — repeated pause can't accumulate.
         assert b.status == "paused", f"status={b.status!r} (want 'paused')"
+        gen_outputs = sum(
+            1
+            for s in b.audit_tape.log
+            if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
+        )
+        assert gen_outputs == 0, (
+            f"interrupted generate leaked {gen_outputs} ModelOutput onto tape"
+        )
+        none_steps = [
+            s for s in b.audit_tape.log if s.value is None and s.source == GEN_SOURCE
+        ]
+        assert not none_steps, (
+            f"{len(none_steps)} Step(None, GEN_SOURCE) left on tape after pause"
+        )
         assert _tape_len(b) == tape_before, (
             f"tape grew {tape_before}→{_tape_len(b)} during double-pause"
         )
@@ -483,6 +501,64 @@ async def s6_resample_two_anchors(page: Page, ui_port: int) -> str:
         await session.close()
 
 
+async def s7_pause_retracts_pending(page: Page, ui_port: int) -> str:
+    """RACE-FIXES.md R3 / WS-race #15: pause mid-generate must retract the
+    stuck ``pending=True`` `ModelEvent` — no lingering spinner bubble."""
+    sid = "chaos-s7"
+    session, b, *_ = await _mk_running(sid, aud_slow_from=0)
+    try:
+        await page.goto(f"http://127.0.0.1:{ui_port}/?session={sid}")
+        await page.wait_for_selector(".runline.status-running", timeout=15_000)
+        # A `pending=True` auditor `ModelEvent` is on the wire (the in-flight
+        # slow generate). Interrupt it via the primary button.
+        aud_key = ("b0", "auditor")
+        pending_before = [
+            u
+            for u in session.by_role.get(aud_key, [])
+            if session.events[u].get("event") == "model"
+            and session.events[u].get("pending")
+        ]
+        assert pending_before, "no pending auditor ModelEvent before pause"
+
+        await page.locator(".composer-lower .primary").click(force=True)
+        await anyio.sleep(1.0)
+
+        assert b.error is None, f"branch errored: {b.error}"
+        assert b.status == "paused", f"status={b.status!r}"
+        assert b._pending_gen_uuid is None, (
+            f"_pending_gen_uuid not cleared: {b._pending_gen_uuid!r}"
+        )
+        # Backend: no `pending=True` ModelEvent left in `by_role[auditor]`;
+        # the retracted event carries `rewound=True`.
+        stuck = [
+            u
+            for u in session.by_role.get(aud_key, [])
+            if session.events[u].get("event") == "model"
+            and session.events[u].get("pending")
+        ]
+        assert not stuck, f"pending ModelEvent still in by_role: {stuck}"
+        retracted = session.events[pending_before[0]]
+        assert retracted.get("rewound") is True and retracted.get("pending") is False, (
+            f"retracted event not marked: pending={retracted.get('pending')!r} "
+            f"rewound={retracted.get('rewound')!r}"
+        )
+        # Frontend: the auditor column has no spinner (`.cursor` is the
+        # pending-generate blink; `.shimmer-bubble` is the tail placeholder).
+        aud_col = page.locator(".columns .col-wrap").first
+        cursors = await aud_col.locator(".cursor").count()
+        shimmers = await aud_col.locator(".shimmer-bubble").count()
+        assert cursors == 0, f"stuck pending cursor in auditor column ({cursors})"
+        assert shimmers == 0, f"tail shimmer still showing after pause ({shimmers})"
+        return (
+            f"retracted={pending_before[0][:8]}… by_role_pending={len(stuck)} "
+            f"cursors={cursors} shimmers={shimmers}"
+        )
+    finally:
+        for t in session.branch_tasks.values():
+            t.cancel()
+        await session.close()
+
+
 # ── driver ──────────────────────────────────────────────────────────────────
 
 SCENARIOS = [
@@ -492,6 +568,7 @@ SCENARIOS = [
     ("s4 double-branch same anchor", s4_double_branch),
     ("s5 inject→pause→inject→play", s5_inject_pause_inject_play),
     ("s6 resample ×2 anchors", s6_resample_two_anchors),
+    ("s7 pause retracts pending bubble", s7_pause_retracts_pending),
 ]
 
 

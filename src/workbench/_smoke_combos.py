@@ -52,7 +52,7 @@ from workbench._smoke_util import FakeConn
 from workbench.run import Branch, find_auditor_step
 from workbench.server import _dispatch
 from workbench.session import Session
-from workbench.sources import TARGET_GEN_SOURCE
+from workbench.sources import GEN_SOURCE, TARGET_GEN_SOURCE
 from workbench.timeline import build_auditor_timeline
 
 # ── shared shapes ───────────────────────────────────────────────────────────
@@ -1035,8 +1035,31 @@ async def c12_pause_interrupts_generate() -> None:
         )
 
         # ── plain pause: interrupt, discard, park ──
+        # R3: a `pending=True` `ModelEvent` was already emitted for the
+        # in-flight generate; `pause()` must retract it so the frontend
+        # spinner doesn't hang.
+        assert base._pending_gen_uuid is not None, (
+            "session._on_event never stamped _pending_gen_uuid"
+        )
+        stuck_uuid = base._pending_gen_uuid
+        tape_len_before = len(base.audit_tape.log)
         base.pause()
         assert base.status == "paused", f"status={base.status!r} (want immediate flip)"
+        assert base._pending_gen_uuid is None, (
+            f"_pending_gen_uuid not cleared: {base._pending_gen_uuid!r}"
+        )
+        # The retracted event is flipped `pending=False` + `rewound=True` and
+        # dropped from `by_role` so it can't misalign `eventsToTurns`.
+        stuck = session.events[stuck_uuid]
+        assert stuck["pending"] is False and stuck["rewound"] is True, stuck
+        assert stuck_uuid not in session.by_role.get(("base", "auditor"), []), (
+            "retracted event still in by_role[auditor]"
+        )
+        assert not any(
+            e.get("event") == "model" and e.get("pending")
+            for u in session.by_role.get(("base", "auditor"), [])
+            if (e := session.events[u])
+        ), "stuck pending ModelEvent still in by_role after pause"
         # Let the branch task process the cancellation and reach the gate.
         with anyio.fail_after(5.0):
             while base._gen_scope is not None or base.generating is not None:
@@ -1047,6 +1070,18 @@ async def c12_pause_interrupts_generate() -> None:
         assert after == before, (
             "interrupted output leaked onto the tape" + _diff(after, before)
         )
+        # R3 (chaos-s1 finding): petri's `replayable` appends
+        # `Step(None, GEN_SOURCE)` on cancel; the loop must pop it (a
+        # fork including it would serve `None` and crash on
+        # `.stop_reason`). Tape length is exactly unchanged, and no
+        # `Step(None)` cruft.
+        assert len(base.audit_tape.log) == tape_len_before, (
+            f"tape grew {tape_len_before}→{len(base.audit_tape.log)} on interrupt "
+            f"(Step(None) not popped)"
+        )
+        assert not any(
+            s.value is None and s.source == GEN_SOURCE for s in base.audit_tape.log
+        ), "Step(None, GEN_SOURCE) left on tape after interrupt"
 
         # ── pause-with-queued: interrupt-and-redirect ──
         # Re-arm the hang trap for the retried T1, queue an operator message,
@@ -1059,10 +1094,20 @@ async def c12_pause_interrupts_generate() -> None:
 
         base.queued["auditor"].append(ChatMessageUser(id="fb1", content="REDIRECT"))
         entered[0] = anyio.Event()
+        conn = FakeConn()
+        session.connections.append(conn)
         base.pause()
         assert base.status == "running", (
             f"queued pause should re-play; status={base.status!r}"
         )
+        # R3 / WS-race #6: pause-with-queued auto-plays; a `{t:"notify"}`
+        # tells the user why status bounced back to running.
+        with anyio.fail_after(2.0):
+            while not any(m["t"] == "notify" for m in conn.sent):
+                await anyio.sleep(0.005)
+        notify = next(m for m in conn.sent if m["t"] == "notify")
+        assert "queued" in notify["text"], notify
+        session.connections.remove(conn)
         hang.set()  # let the redirected T1 through (sync — runs before task resumes)
         with anyio.fail_after(5.0):
             await task

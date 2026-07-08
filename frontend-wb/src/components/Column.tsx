@@ -57,10 +57,20 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
   { branch, role, linked, onSync },
   ref
 ): JSX.Element {
-  const events = useEvents(branch, role);
+  const rawEvents = useEvents(branch, role);
   const queued = useQueued(branch, role);
   const staged = useStagedForTarget(branch);
   const status = useSession((s) => s.status);
+  const generating = useSession((s) => s.generating);
+
+  // RACE-FIXES.md R3 / WS-race #15: drop retracted (interrupted) generates —
+  // the backend flips `rewound: true` on the stuck pending event via
+  // `retract_pending`; leaving it in would misalign `eventsToTurns`
+  // (one extra `models[]` entry with no matching assistant message).
+  const events = useMemo(
+    () => rawEvents.filter((e) => (e as { rewound?: boolean }).rewound !== true),
+    [rawEvents]
+  );
 
   // One Turn per ModelEvent. Auditor has real ToolEvents (`hasToolEvents`),
   // target relies on resolveMessages pairing instead.
@@ -73,12 +83,18 @@ export const LinearColumn = forwardRef<ColumnHandle, Props>(function LinearColum
   );
 
   // Show a shimmer at the column tail in two cases:
-  //  1. Running but no pending (streaming) event yet — a generate is expected.
+  //  1. This column is mid-generate but no pending (streaming) event yet.
+  //     RACE-FIXES.md R3 gap #3,4: gate on `generating === role` so the
+  //     auditor column doesn't shimmer while the *target* is generating.
+  //     Fall back to `status === "running"` when the backend didn't send
+  //     `generating` (old wire protocol).
   //  2. Paused with empty column — just-started skeleton (PENDING_ID or PENDING_BRANCH).
   const lastEvent = events.length > 0 ? events[events.length - 1] : null;
   const lastIsPending = lastEvent != null && isModelEvent(lastEvent) && !!lastEvent.pending;
+  const isGenerating =
+    generating === undefined ? status === "running" : generating === role;
   const showShimmer =
-    (status === "running" && !lastIsPending) ||
+    (isGenerating && !lastIsPending) ||
     (status === "paused" && events.length === 0);
 
   return (

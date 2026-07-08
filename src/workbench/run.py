@@ -184,8 +184,7 @@ def locate_staging_call(
         (
             i
             for i in range(mark_idx - 1, -1, -1)
-            if steps[i].source == GEN_SOURCE
-            and isinstance(steps[i].value, ModelOutput)
+            if steps[i].source == GEN_SOURCE and isinstance(steps[i].value, ModelOutput)
         ),
         None,
     )
@@ -280,13 +279,9 @@ async def generate_rewrite(
 
     step = find_auditor_step(branch.audit_tape.log, turn_index)
     assert isinstance(step.value, ModelOutput)
-    tc = next(
-        (c for c in step.value.message.tool_calls or [] if c.id == call_id), None
-    )
+    tc = next((c for c in step.value.message.tool_calls or [] if c.id == call_id), None)
     if tc is None:
-        raise ValueError(
-            f"call_id {call_id!r} not found in auditor turn {turn_index}"
-        )
+        raise ValueError(f"call_id {call_id!r} not found in auditor turn {turn_index}")
 
     selected_block = (
         f"\nThe researcher selected this span inside the current arguments — "
@@ -380,6 +375,11 @@ class Branch(StepGated):
         # Set by ``workbench_auditor`` around each live ``generate()``;
         # ``pause()`` cancels it so the operator's stop is immediate.
         self._gen_scope: anyio.CancelScope | None = None
+        # RACE-FIXES.md R3 / WS-race #15: uuid of the in-flight auditor
+        # `ModelEvent(pending=True)` — stamped by `Session._on_event`,
+        # cleared on the terminal update. `pause()` retracts it so the
+        # frontend spinner doesn't hang forever after an interrupt.
+        self._pending_gen_uuid: str | None = None
         # Set by `workbench_auditor` once `tape.pending` is drained — i.e. the
         # deterministic prefix (and any appended divergent step) has finished
         # replaying. `_register_and_spawn` awaits this so the dispatch handler
@@ -483,9 +483,23 @@ class Branch(StepGated):
         """
         if self._gen_scope is not None:
             self._gen_scope.cancel()
+            # The generate was interrupted — clear the spinner state now
+            # (the branch task's `post_generate` runs later, after
+            # `broadcast_status` has already shipped). WS-race #15: retract
+            # the orphaned `pending=True` `ModelEvent` so the frontend
+            # bubble doesn't spin forever.
+            self.generating = None
+            if self._pending_gen_uuid is not None:
+                self.session.retract_pending(
+                    self.auditor_span_id, self._pending_gen_uuid
+                )
+                self._pending_gen_uuid = None
         super().pause()
         if self.queued["auditor"]:
             self.play()
+            # WS-race #6: status bounces straight back to running — tell the
+            # user why (their queued input is being sent to the next turn).
+            self.session.notify("interrupted — sending queued input")
 
     # -- TurnHooks (auditor.py) ----------------------------------------------
 
@@ -714,7 +728,9 @@ class Branch(StepGated):
             auditor_model=auditor_model or m.auditor_model,
             target_model=target_model or m.target_model,
             max_turns=m.max_turns,
-            auditor_config=m.auditor_config if auditor_config is None else auditor_config,
+            auditor_config=m.auditor_config
+            if auditor_config is None
+            else auditor_config,
             target_config=m.target_config if target_config is None else target_config,
             auditor_model_args=m.auditor_model_args,
             target_model_args=m.target_model_args,
