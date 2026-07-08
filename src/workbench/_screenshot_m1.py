@@ -178,20 +178,70 @@ TURNS: list[TurnSpec] = [
 # `.bubble.system` whose `CollapsibleContent` (→ `ExpandablePanel`) mounts the
 # more/less toggle. Petri's own auditor system prompt does the same in the
 # auditor column.
+#
+# The target additionally makes a `bash` tool call (long cmd + long result) so
+# the target-column `.tool-pair` → `.tr-inspect` → `ToolCallView` path is
+# exercised: expanded-body padding/alignment (19) and the sticky `less…`
+# toggle mid-scroll (19b) — `.tool-pair` is `overflow: clip` so the panel's
+# `position: sticky` toggle attaches to the column, not the card.
 _M0_LONG_SYS = "You are a helpful assistant.\n\n" + "\n".join(
     f"Rule {i}: this line exists to push the system bubble past the 280px "
     "collapse threshold so the ExpandablePanel more/less toggle mounts."
     for i in range(24)
 )
+_M0_BASH_CMD = (
+    "for f in $(find /var/log -name '*.log' -mtime -1); do\n"
+    '  echo "=== $f ==="\n'
+    "  grep -E 'ERROR|WARN' \"$f\" | tail -20\n"
+    "done"
+)
+_M0_BASH_RESULT = "\n".join(
+    f"/var/log/app.log:{1200 + i}: ERROR failed to acquire lock on shard {i % 4} "
+    f"(retry {i}) — connection reset by peer at 10.0.{i}.{i * 7 % 256}"
+    for i in range(60)
+)
 M0_AUDITOR = [
     _auditor_turn(
         _tc("set_system_message", system_message=_M0_LONG_SYS),
-        _tc("send_message", message="hello"),
+        _tc(
+            "create_tool",
+            environment_description="shell",
+            name="bash",
+            description="Run a shell command.",
+            parameters={
+                "type": "object",
+                "properties": {"cmd": {"type": "string"}},
+                "required": ["cmd"],
+            },
+        ),
+        _tc("send_message", message="Check the logs for recent errors."),
+        _tc("resume"),
+    ),
+    _auditor_turn(
+        _tc("send_tool_call_result", tool_call_id="tc-bash-1", result=_M0_BASH_RESULT),
         _tc("resume"),
     ),
     _auditor_turn(_tc("end_conversation")),
 ]
-M0_TARGET = [_target("acknowledged.")]
+
+
+def _m0_target_bash() -> object:
+    from inspect_ai.model import ModelOutput
+    from inspect_ai.tool import ToolCall
+
+    out = ModelOutput.from_content(model="mockllm", content="I'll check.")
+    out.choices[0].message.tool_calls = [
+        ToolCall(
+            id="tc-bash-1",
+            function="bash",
+            type="function",
+            arguments={"cmd": _M0_BASH_CMD},
+        )
+    ]
+    return out
+
+
+M0_TARGET = [_m0_target_bash(), _target("Found 60 lock-acquisition errors.")]
 
 
 # ── screenshot driver ───────────────────────────────────────────────────────
@@ -720,6 +770,41 @@ async def _amain() -> None:
             await page.mouse.move(0, 0)
             await asyncio.sleep(0.15)
             await _shot(page, "16b-m0-turn-score", clip=await tgt.bounding_box())
+
+            # ── 19: expanded target-column bash `.tool-pair` ────────────────
+            #    (`.tr-inspect` → inspect `ToolCallView` — padding/alignment
+            #    with `.tp-head`, no redundant `ToolTitle`).
+            tp = tgt.locator('.tool-pair[data-fn="bash"]')
+            await tp.locator(".tp-head").click()
+            await tp.locator(".tp-body").wait_for(timeout=5_000)
+            await asyncio.sleep(0.1)
+            await tp.evaluate("el => el.scrollIntoView({block: 'start'})")
+            await tgt.locator(".column").evaluate("el => { el.scrollTop -= 44; }")
+            await page.mouse.move(0, 0)
+            await asyncio.sleep(0.1)
+            box = await tp.bounding_box()
+            await _shot(
+                page,
+                "19-m0-toolpair-expanded",
+                clip={
+                    "x": max(0, box["x"] - 8),
+                    "y": max(0, box["y"] - 8),
+                    "width": box["width"] + 16,
+                    "height": min(box["height"] + 16, 960 - box["y"]),
+                },
+            )
+
+            # ── 19b: expand the output panel and scroll into its middle so ──
+            #    the sticky `less…` toggle is pinned to the viewport bottom.
+            for btn in await tp.locator("[data-expandable-panel] button").all():
+                if (await btn.text_content() or "").strip().startswith("more"):
+                    await btn.click()
+            await asyncio.sleep(0.1)
+            await tp.evaluate("el => el.scrollIntoView({block: 'start'})")
+            await tgt.locator(".column").evaluate("el => { el.scrollTop += 700; }")
+            await page.mouse.move(0, 0)
+            await asyncio.sleep(0.15)
+            await _shot(page, "19b-m0-toolpair-sticky", clip=await tgt.bounding_box())
 
             # ── 17 P1.7: sidebar gear → SettingsModal ───────────────────────
             # `@tsmono/react` Modal's outer classes are CSS-module hashed;

@@ -15,6 +15,7 @@ import { resolveToolInput } from "@tsmono/inspect-components/chat/tools";
 import { JSONPanel } from "@tsmono/react/components";
 import { type JSX, useRef, useState } from "react";
 
+import { CollapsibleContent } from "./CollapsibleContent";
 import { Chevron, StatusDot } from "./icons";
 import { RewritePanel, SelectionPill, useSelectionPill, type RewriteDraft } from "./RewritePanel";
 import { renderTool } from "./tool-renderers";
@@ -261,7 +262,9 @@ export function ToolPair({
                     <div className="tp-slot">
                       <div className="tp-lbl">args</div>
                       {inputStr != null ? (
-                        <pre data-ct={contentType}>{inputStr}</pre>
+                        <CollapsibleContent>
+                          <pre data-ct={contentType}>{inputStr}</pre>
+                        </CollapsibleContent>
                       ) : (
                         <JSONPanel data={args} simple />
                       )}
@@ -269,9 +272,11 @@ export function ToolPair({
                   )}
                   <div className="tp-slot">
                     <div className="tp-lbl">{error ? "error" : pending ? "awaiting result" : "result"}</div>
-                    <pre className={error ? "tp-err" : undefined}>
-                      {error ? error.message : resultText(result) || "—"}
-                    </pre>
+                    <CollapsibleContent>
+                      <pre className={error ? "tp-err" : undefined}>
+                        {error ? error.message : resultText(result) || "—"}
+                      </pre>
+                    </CollapsibleContent>
                   </div>
                 </>
               )}

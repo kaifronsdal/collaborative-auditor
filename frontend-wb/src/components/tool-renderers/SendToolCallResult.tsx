@@ -1,5 +1,6 @@
 import type { JSX } from "react";
 
+import { CollapsibleContent } from "../CollapsibleContent";
 import type { ToolRendererProps } from "./index";
 import { shortId, str } from "./util";
 
@@ -15,7 +16,9 @@ export function SendToolCallResult({ args }: ToolRendererProps): JSX.Element {
         <span className={`tr-pill tr-pill-${status === "error" ? "err" : "ok"}`}>{status}</span>
         <code className="tr-id">{shortId(id)}</code>
       </div>
-      <pre>{result}</pre>
+      <CollapsibleContent>
+        <pre>{result}</pre>
+      </CollapsibleContent>
     </div>
   );
 }

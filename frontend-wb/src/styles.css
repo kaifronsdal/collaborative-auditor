@@ -649,7 +649,12 @@ body {
 .tool-pairs { margin: var(--sp-1) 0 2px; }
 .tool-pair {
   border: 1px solid var(--border-soft); border-radius: var(--r-md);
-  background: var(--bg-000); margin: 0 0 6px; overflow: hidden;
+  background: var(--bg-000); margin: 0 0 6px;
+  /* `clip` (not `hidden`) so the border-radius still trims children but we
+     don't establish a scroll container — `overflow: hidden` traps
+     `position: sticky` descendants (ExpandablePanel's `less…` toggle) so they
+     stick to the card instead of the column's viewport. */
+  overflow: clip;
 }
 .tool-pair:last-child { margin-bottom: 0; }
 .tp-head {
@@ -687,12 +692,28 @@ body {
   font: 10px var(--sans); letter-spacing: .05em; text-transform: uppercase;
   color: var(--ink-faint); margin-bottom: 3px;
 }
+/* Body <pre>s are wrapped in `CollapsibleContent` (ExpandablePanel) for the
+   sticky more/less toggle, so no per-pre `max-height` clamp here — the panel
+   supplies the collapsed height + fade. */
 .tp-slot pre {
   margin: 0; font: 11.5px/1.5 var(--mono); color: var(--ink-mid);
   white-space: pre-wrap; word-break: break-word;
-  max-height: 280px; overflow: auto;
 }
 .tp-slot pre.tp-err { color: var(--danger); }
+
+/* Non-petri target tools (bash / python / …) render via inspect-view's
+   `ToolCallView`. It brings its own ExpandablePanels + Prism highlighting;
+   host it in a `.tp-slot`-shaped container so its content aligns with the
+   header and the generic-fallback slots. `mode="compact"` in the caller
+   drops inspect's own `ToolTitle` (redundant with `.tp-head`). */
+.tr-inspect { padding: 4px var(--sp-2) var(--sp-2); }
+.tr-inspect + .tp-slot { border-top: 1px dashed var(--border-soft); }
+.tr-inspect pre {
+  margin: 0; padding: 0;
+  font: 11.5px/1.5 var(--mono); color: var(--ink-mid);
+  white-space: pre-wrap; word-break: break-word;
+}
+.tr-inspect pre code { font: inherit; }
 
 /* tool-pair inline args editor (auditor column). */
 .tp-edit-textarea {
@@ -784,8 +805,7 @@ body {
 .tr-user { background: var(--bg-200); }
 .tr-system {
   font: 11.5px/1.5 var(--mono); background: var(--bg-100);
-  max-height: 200px; overflow: auto; margin: 0;
-  padding: var(--sp-2); border-top: 1px solid var(--border);
+  margin: 0; padding: var(--sp-2);
 }
 .tr-line { padding: var(--sp-2); font-size: var(--fs-sm); color: var(--ink-dim); }
 .tr-line code, .tr-id { font-family: var(--mono); color: var(--ink-mid); }

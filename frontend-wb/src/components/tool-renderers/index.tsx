@@ -47,10 +47,16 @@ export function renderTool(p: ToolRendererProps): ReactNode | null {
   // (syntax-highlighted bash/python/web_search/etc. via `resolveToolInput`,
   // plus answer/submit/tool_search special-cases). This is the same component
   // `ChatMessageRow` uses for tool calls, so target-side tools look identical
-  // to inspect-view.
+  // to inspect-view. `mode="compact"` drops inspect's `ToolTitle` line —
+  // `.tp-head` already shows `fn` + first-line signature, so a second
+  // `bi-tools` + `bash(...)` row inside the body was redundant.
   return (
     <div className="tr-inspect">
-      <ToolCallView {...toToolCallViewProps(p)} getCustomToolView={getDefaultCustomToolView} />
+      <ToolCallView
+        {...toToolCallViewProps(p)}
+        mode="compact"
+        getCustomToolView={getDefaultCustomToolView}
+      />
     </div>
   );
 }
