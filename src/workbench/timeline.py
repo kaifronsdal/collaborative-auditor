@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from inspect_petri.target import Trajectory
 
+from workbench.run import _tape_prefix
 from workbench.sources import GEN_SOURCE
 
 if TYPE_CHECKING:
@@ -68,7 +69,11 @@ def build_auditor_timeline(session: Session) -> dict[str, Any]:
         # `splice()` must cut there (`t.branched_from` may be a target or
         # `Stage` anchor, which the auditor column never carries).
         return next(
-            (s.anchor_id for s in reversed(t.tape.prefix()) if s.source == GEN_SOURCE),
+            (
+                s.anchor_id
+                for s in reversed(_tape_prefix(t.tape))
+                if s.source == GEN_SOURCE
+            ),
             None,
         )
 
@@ -143,7 +148,7 @@ def build_target_timeline(session: Session, branch: Branch) -> dict[str, Any]:
             buckets[o].append(u)
 
     def content_for(t: Trajectory) -> list[dict[str, Any]]:
-        prefix = {s.anchor_id for s in t.tape.prefix() if s.anchor_id}
+        prefix = {s.anchor_id for s in _tape_prefix(t.tape) if s.anchor_id}
         out: list[dict[str, Any]] = []
         seen: set[str] = set()
         for u in buckets[t.span_id]:

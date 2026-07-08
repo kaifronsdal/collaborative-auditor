@@ -105,7 +105,7 @@ async def load_session(session_id: str, store_dir: Path) -> Session:
     terminated via ``end_conversation`` runs to completion and the spawned
     task exits.
     """
-    from workbench.run import Branch, BranchMeta
+    from workbench.run import Branch, BranchMeta, _tape_rewind
     from workbench.session import CandidateBatch, Session
 
     d = store_dir / session_id
@@ -140,7 +140,7 @@ async def load_session(session_id: str, store_dir: Path) -> Session:
         # they did in the original run; steps past `prefix_len` are
         # served on the divergent path (workbench_auditor emits their
         # `ModelEvent`s inline).
-        traj.tape.rewind()
+        _tape_rewind(traj.tape)
         branch = Branch(sess, trajectory=traj, **asdict(meta))
         branch.status = data["status"]
         for role, msgs in (data.get("queued") or {}).items():

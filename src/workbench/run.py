@@ -30,6 +30,7 @@ import copy
 import json
 import logging
 import re
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -67,6 +68,29 @@ if TYPE_CHECKING:
     from workbench.session import Session
 
 logger = logging.getLogger(__name__)
+
+
+def _tape_prefix(tape: Tape) -> list[Step]:
+    """The replayed-prefix steps regardless of serve state.
+
+    Inlined from the fork's ``Tape.prefix()`` (not in tape-replay-v2 /
+    PR #111). Equivalent to ``log[:prefix_len]`` once ``pending`` is
+    drained; correct mid-replay and after a divergent step is appended
+    past ``prefix_len``.
+    """
+    return (list(tape.log) + list(tape.pending))[: tape.prefix_len]
+
+
+def _tape_rewind(tape: Tape) -> None:
+    """Re-arm a settled tape for replay: move ``log`` back into ``pending``.
+
+    Inlined from the fork's ``Tape.rewind()`` (not in tape-replay-v2 /
+    PR #111). ``prefix_len`` is preserved so the divergent-step boundary
+    stays put. TODO: ``server.py`` ``imported.tape.rewind()`` — switch to
+    this helper (out of scope for the m1-kernel rebase).
+    """
+    tape.pending = deque(tape.log)
+    tape.log = []
 
 
 @dataclass(frozen=True)
@@ -449,20 +473,24 @@ class Branch(StepGated):
     def branched_at(self) -> str | None:
         """The L2 splice anchor — last anchored step in the replayed prefix.
 
-        Derived from `tape.prefix()` (not `trajectory.branched_from`
+        Derived from `_tape_prefix()` (not `trajectory.branched_from`
         directly) so a root branch (petri's `""` restart sentinel) and a
         turn-0 edit (prefix has no anchored step; petri falls back to the
         excluded construction anchor) both map to ``None`` for the wire.
         """
         return next(
-            (s.anchor_id for s in reversed(self.audit_tape.prefix()) if s.anchor_id),
+            (
+                s.anchor_id
+                for s in reversed(_tape_prefix(self.audit_tape))
+                if s.anchor_id
+            ),
             None,
         )
 
     @property
     def branched_at_turn(self) -> int | None:
         """Auditor turn index at the branch point — count of `GEN_SOURCE`
-        steps in the *shared* replayed prefix (`tape.prefix()` — an `edit_*`
+        steps in the *shared* replayed prefix (`_tape_prefix()` — an `edit_*`
         op appends the edited step past `prefix_len`, and that step is
         divergent, not shared). ``None`` for a root branch."""
         tape = self.audit_tape
@@ -470,7 +498,7 @@ class Branch(StepGated):
             return None
         return sum(
             1
-            for s in tape.prefix()
+            for s in _tape_prefix(tape)
             if s.source == GEN_SOURCE and isinstance(s.value, ModelOutput)
         )
 
