@@ -201,6 +201,13 @@ export type Down =
       span_role_delta: Record<string, [BranchId, Role]>;
     }
   | { t: "queued_consumed"; v: number; branch: BranchId; ids: string[] }
+  // F2 (A1-b-wide follow-up): a live L1 rollback (`BranchEvent` on a
+  // target span) grew the branch's L1-`History` tree. `l1_spans` was
+  // otherwise only shipped on `state` / `branch_created`, so
+  // `SwimlaneColumn.defaultKey` would pick the pre-rollback lane until
+  // the next full snapshot. Ships inside the same `{t:"batch"}` as the
+  // `BranchEvent`'s `{t:"timeline"}` op.
+  | { t: "l1_spans"; v: number; branch: BranchId; l1_spans: string[] }
   // A2 (ARCHITECTURE-RACES.md): `_dispatch`'s `finally` echoes the
   // client's `req_id` once the handler returns. The reducer drops the
   // matching entry from `store.pending`; `useIsPending` re-enables the

@@ -310,6 +310,25 @@ class Session:
                     "timeline": timeline,
                 }
             )
+            # F2 (A1-b-wide follow-up): a target-role `BranchEvent` is
+            # petri's L1-rollback marker — `history.branch()` just added a
+            # `Trajectory` to this branch's L1 tree. `l1_spans` (shipped
+            # only on connect / `branch_created`) is now stale, so
+            # `SwimlaneColumn.defaultKey` would pick the pre-rollback lane
+            # until the next full `state`. Ship the refreshed set in the
+            # same batch.
+            if (
+                isinstance(ev, BranchEvent)
+                and role == "target"
+                and (b := self.branches.get(resolved[0])) is not None
+            ):
+                ops.append(
+                    {
+                        "t": "l1_spans",
+                        "branch": resolved[0],
+                        "l1_spans": [t.span_id for t in _walk(b.history.root)],
+                    }
+                )
 
         self.version += 1
         for op in ops:

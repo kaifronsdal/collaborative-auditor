@@ -52,6 +52,7 @@ from workbench._smoke_fixtures import (
     T1,
     T2_END,
     _auditor_turn,
+    _count_trajectories,
     _diff,
     _nth_target_anchor,
     _pool_msg_id,
@@ -67,7 +68,7 @@ from workbench._smoke_fixtures import (
     target_by_last_user,
     target_counted,
 )
-from workbench._smoke_util import FakeConn
+from workbench._smoke_util import FakeConn, flatten
 from workbench.run import find_auditor_step
 from workbench.server import _dispatch
 from workbench.session import Session
@@ -687,6 +688,78 @@ async def w16_fork_running_parent() -> None:
         await session.close()
 
 
+# ── F2: {t:"l1_spans"} on live L1 rollback ──────────────────────────────────
+#
+# Base T2 = rollback(M3)·send(u3)·resume — the auditor's live
+# `rollback_conversation` calls `history.branch()` on the branch's L1 tree,
+# which appends a fresh `Trajectory`. `_on_event` must ship
+# `{t:"l1_spans", branch, l1_spans:[…]}` (inside the `BranchEvent`'s
+# `{t:"batch"}`) with the new trajectory's span_id so
+# `SwimlaneColumn.defaultKey` picks the post-rollback lane before the next
+# full `state`.
+
+SCRIPT_L1_RB: list[ModelOutput] = [
+    _auditor_turn(
+        _tc("set_system_message", system_message="sys"),
+        _tc("send_message", message="u1"),
+        _tc("resume"),
+    ),
+    _auditor_turn(_tc("send_message", message="u2"), _tc("resume")),
+    # M1=sys M2=u1 M3=r1 — roll back to r1 (drops u2/r2), continue on new lane
+    _auditor_turn(
+        _tc("rollback_conversation", message_id="M3"),
+        _tc("send_message", message="u3"),
+        _tc("resume"),
+    ),
+    _auditor_turn(_tc("end_conversation")),
+]
+
+
+async def f2_l1_spans_on_rollback() -> None:
+    session = Session()
+    await session.start()
+    conn = FakeConn()
+    session.connections.append(conn)
+    try:
+        base = await make_base(
+            session,
+            auditor_outputs=auditor_by_turn(SCRIPT_L1_RB),
+            target_outputs=target_by_last_user({"u1": "r1", "u2": "r2", "u3": "r3"}),
+            max_turns=4,
+        )
+        assert _count_trajectories(base.history) == 2, (
+            f"F2: rollback did not fire — L1 tree has "
+            f"{_count_trajectories(base.history)} trajectory"
+        )
+    finally:
+        await session.close()  # flush drain so every `_on_event` batch reaches `conn`
+
+    from workbench.timeline import _walk
+
+    l1 = [t.span_id for t in _walk(base.history.root)]
+    ops = [m for m in flatten(conn.sent) if m["t"] == "l1_spans"]
+    assert ops, (
+        f"F2: no {{t:'l1_spans'}} op reached the wire "
+        f"(kinds: {sorted({m['t'] for m in flatten(conn.sent)})})"
+    )
+    last = ops[-1]
+    assert last["branch"] == "base", f"F2: wrong branch {last['branch']!r}"
+    assert set(last["l1_spans"]) == set(l1), (
+        f"F2: l1_spans mismatch — wire={last['l1_spans']} tree={l1}"
+    )
+    # The post-rollback trajectory (root.children[0]) is what the frontend's
+    # `defaultKey` needs to see.
+    new_span = base.history.root.children[0].span_id
+    assert new_span in last["l1_spans"], (
+        f"F2: post-rollback span {new_span!r} missing from wire l1_spans"
+    )
+    # F2 ships inside the `BranchEvent`'s `{t:"batch"}` (A3-batch atomicity —
+    # same frame as its `{t:"timeline"}`), never as a singleton.
+    assert not any(m["t"] == "l1_spans" for m in conn.sent), (
+        "F2: l1_spans leaked as a singleton frame (should be batched)"
+    )
+
+
 # ── runner ──────────────────────────────────────────────────────────────────
 
 TESTS = [
@@ -704,6 +777,7 @@ TESTS = [
     ("W12b edit_target_message multi-send", w12b_edit_target_multi_send),
     ("W15  switch", w15_switch),
     ("W16  fork while parent running", w16_fork_running_parent),
+    ("F2   l1_spans on live L1 rollback", f2_l1_spans_on_rollback),
 ]
 
 

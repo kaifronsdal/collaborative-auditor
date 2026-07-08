@@ -619,6 +619,22 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
       };
     }
 
+    case "l1_spans": {
+      // F2 (A1-b-wide follow-up): a live L1 rollback grew this branch's
+      // target-`History` tree. Refresh `branches[bid].l1_spans` so
+      // `SwimlaneColumn.defaultKey` picks the post-rollback lane without
+      // waiting for the next full `state`.
+      const meta = state.branches[msg.branch];
+      if (meta == null) return { version: msg.v };
+      return {
+        branches: {
+          ...state.branches,
+          [msg.branch]: { ...meta, l1_spans: msg.l1_spans },
+        },
+        version: msg.v,
+      };
+    }
+
     case "queued_consumed": {
       // Drop the consumed injected-message ids from `queued[branch].
       // auditor` — the backend-authoritative counterpart to
