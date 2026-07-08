@@ -296,3 +296,185 @@ Backend ~−60, frontend ~−130, wire +9 message types (`ack`,
 one `Orchestrator.dirty()`; b-narrow target timeline `by_role`-
 sourced; `case "state"` connect-only. b-wide (both timelines
 structurally identical) deferred.
+
+## A1-b-wide design
+
+Session-wide target `Timeline`, structurally the same as the auditor
+timeline so both columns take the identical `convertServerTimeline →
+computeFlatSwimlaneRows → splice()` path and `_by_anchor` becomes
+deletable. Designed against b-narrow as the base (already landed).
+
+### What `splice()` needs
+
+`splice(root, leaf)` (`core.ts:395`) computes `ancestorChain(root,
+leaf)` by walking `.branches` only, then for each node cuts its
+`.content` at the *next* node's `branchedFrom` (`findIndex` on
+`event === "anchor" && anchor_id === branchedFrom`; inclusive slice).
+`branchedFrom == null` discards everything above. So the tree must
+satisfy, for every parent→child edge:
+
+  child.branchedFrom is null, OR appears exactly once as an
+  AnchorEvent in parent.content.
+
+That is the only invariant the builder has to guarantee.
+
+### Tree structure
+
+One session-wide tree. The wrapper root is the same synthetic empty
+span the auditor tree uses. Under it, one span per **live-recorded
+L1 trajectory** — i.e. the (L2 branch, L1 trajectory) pair at which a
+target step actually hit the provider (neither L1- nor L2-served).
+Every other L1 trajectory in every branch's `history` is a replay
+copy of one of those and is *not* emitted.
+
+    target-root  (wrapper, content=[], bf=null)
+    └─ A.α       ← L2-root branch A's L1 root      (bf=null)
+       ├─ A.β    ← A did an L1 rollback at r        (bf=r)
+       │  └─ B*  ← L2 child B forked on A.β         (bf=t_B)
+       │     └─ B.γ  ← B did its own L1 rollback    (bf=r')
+       └─ C*     ← L2 child C forked on A.α, pre-r  (bf=t_C)
+
+`B*`/`C*` are each branch's **boundary trajectory** — the L1 node
+that was current when that branch's L2 replay ended. Its
+entirely-L2-served L1 ancestors/siblings (B.α, B.β-mirror, …) are
+dropped; its post-live L1 descendants (B.γ) are emitted unchanged.
+
+### Graft algorithm
+
+Walk `session.audit_history` in L2 pre-order (parents before
+children). Maintain `anchor_owner: dict[anchor_id → span]` populated
+as spans are emitted.
+
+    def target_branched_from(b: Branch) -> str | None:
+        # Last *target-side* anchor in the L2 shared prefix — the mirror
+        # of auditor_branched_from(). GEN_SOURCE steps anchor on auditor
+        # message ids, which never appear in target-column content, so
+        # splice() couldn't cut on them.
+        return next(
+            (s.anchor_id for s in reversed(_tape_prefix(b.audit_tape))
+             if s.anchor_id and s.source != GEN_SOURCE),
+            None,
+        )
+
+    def l2_served(b: Branch) -> set[str]:
+        return {s.anchor_id for s in _tape_prefix(b.audit_tape) if s.anchor_id}
+
+    def boundary_traj(b: Branch, served: set[str]) -> Trajectory:
+        # The L1 trajectory current at L2-go-live: descend from the L1
+        # root through children whose *rollback anchor* was L2-served
+        # (⇒ the rollback tool-call itself was replayed ⇒ the child was
+        # created during L2 replay). `children` is creation-ordered, so
+        # the last match is the current lineage.
+        t = b.history.root
+        while (cs := [c for c in t.children if c.branched_from in served]):
+            t = cs[-1]
+        return t
+
+**Graft point** for branch `b`: `anchor_owner[target_branched_from(b)]`
+(or the wrapper root when `None`). Append `to_span(b, boundary_traj(b))`
+to that span's `branches`; recurse into `b`'s L2 children.
+
+**Uniqueness.** Each target anchor is a `ChatMessage.id` /
+`Stage.anchor_id` minted exactly once — at the (L2, L1) pair where
+the call ran live. Every L2 descendant that L2-serves it drops it
+from content (∈ `served`); every L1 descendant that L1-serves it
+never emits an `AnchorEvent` for it (`Tape.replayable` serve path
+emits nothing). So `anchor_owner` has exactly one entry per anchor —
+no search over `parent.history` is needed, and the multi-hop case
+(C's `t_C` was live-recorded by grand-parent A, not immediate parent
+B) falls out for free.
+
+### Span content
+
+`buckets_for(branch)` is b-narrow's grouping unchanged
+(`timeline.py`): walk `by_role[(bid,"target")]`, resolve each
+event's `span_id` up `session.span_parent` to the nearest L1
+`Trajectory.span_id`.
+
+`to_span(b, t, is_boundary)`:
+- **Boundary traj** (`C*`): drop the *prefix* of `buckets[t.span_id]`
+  up to and including the last `AnchorEvent` with
+  `anchor_id ∈ l2_served(b)`. Prefix-cut, not set-filter — L2-served
+  turns emit `ToolEvent`s live (`execute_tools` runs on the served
+  output) which would otherwise double with the parent's copy that
+  `splice()` prepends. `AnchorEvent` is the last emit of a turn, so
+  cutting there is turn-aligned.
+- **Non-boundary L1 descendants**: b-narrow's per-traj rule unchanged.
+- **`C*`'s L1 children with `branched_from ∈ served`** are skipped
+  (entirely-L2-served — dead lanes the parent already covers).
+- Every emitted `AnchorEvent` registers `anchor_owner[aid] = span`.
+- Every emitted span carries `description = b.branch_id` (the L2
+  owner tag — see `defaultKey` below).
+- `C*.branched_from = target_branched_from(b)`.
+
+The `_by_anchor` cross-borrow is gone: `splice()` supplies the
+parent's `ModelEvent`s directly (they precede the cut anchor in the
+parent's bucket, since `ModelEvent` is emitted before `AnchorEvent`).
+
+### L1-rollback / shared-prefix interaction
+
+**Fork on a lane-specific anchor**: `anchor_owner[t_B] = A.β`. Graft
+under A.β. `splice` from B.γ walks `B.γ → B* → A.β → A.α → root`;
+each cut hits.
+
+**Fork on a shared-prefix anchor** (`t_C` in A.α, before A's rollback
+point `r`): only A.α emits its `AnchorEvent` (L1 serve emits nothing),
+so `anchor_owner[t_C] = A.α`. Graft under A.α. No ambiguity.
+
+**Rollback-between-anchor-and-fork** (rare — auditor turn that calls
+`rollback` and nothing else): `boundary_traj` descends past
+`target_branched_from(b)`'s traj into the post-rollback child;
+`splice()` would fail. **Guard (~6 LOC):** when `boundary_traj(b) is
+not history.root` and `target_branched_from(b)` is not in the
+boundary traj's fresh log, graft under
+`anchor_owner[boundary_traj.branched_from]` and set
+`C*.branched_from = boundary_traj.branched_from` instead.
+
+### `defaultKey` / `SwimlaneColumn`
+
+Both timelines are now session-wide. Auditor spans have
+`id === branch_id`; target spans have `id === l1_traj.span_id` and
+carry the L2 owner in `description`.
+
+    const defaultKey = useMemo(() => {
+      if (rows.length === 0) return null;
+      const mine = rows.filter((r) => {
+        const s = rowSpan(r);
+        return s.id === branch || s.description === branch;
+      });
+      return (mine.at(-1) ?? rows.at(-1))!.key;
+    }, [rows, branch]);
+
+The `isAuditor` special-casing in `selectLane` collapses: both
+columns dispatch `switchBranch` when the picked lane's L2 owner ≠
+`branch`, else `setSelectedKey` locally.
+
+**Empty-graft window** (child spawned, no live target step yet):
+`convertServerSpan` filters empty branches, so `C*`'s row is absent
+and `mine` is empty. Fall through to the graft-parent's row via
+`branches_meta[branch].parent` recursion (~5 LOC) — better than
+b-narrow's per-anchor `_by_anchor` fill.
+
+### Cost (from b-narrow)
+
+| file | Δ |
+|---|---|
+| `timeline.py` — `build_target_timeline` → session-wide | ~+10 |
+| `session.py` — `_by_anchor` + `_index_anchor` + key branching | ~−28 |
+| `SwimlaneColumn.tsx` — unified `defaultKey`/`selectLane` | ~+7 |
+| `session.ts` reducer — target keyed as auditor | ~+3 |
+| `selectors.ts` — `useSwimlanes` reads shared target tree | ~+2 |
+
+Net **~−6** (backend −18, frontend +12), ±10 for the guards.
+
+**Note:** uses `_tape_prefix(tape)` — the inlined
+`(list(tape.log)+list(tape.pending))[:tape.prefix_len]` since petri
+#111 deletes `Tape.prefix()`. The petri rebase adds this helper.
+
+### Simpler alternative considered (rejected)
+
+Make *both* timelines per-branch and reconstruct the L2 prefix on
+the frontend by walking `branches_meta[*].parent`. Reintroduces the
+borrow problem frontend-side (~+30) and kills the L2-branch swimlane
+gantt in *both* columns — a real UX loss the sidebar doesn't fully
+replace. Not simpler in LOC and strictly worse in capability.
