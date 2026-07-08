@@ -389,6 +389,21 @@ class Orchestrator(StepGated):
         if self.task is not None:
             asyncio.create_task(self.session.broadcast_status())  # noqa: RUF006
 
+    def dirty(self) -> None:
+        """A4-partial (ARCHITECTURE-RACES.md): enqueue a ``{t:"orch"}`` delta.
+
+        Called at each mutation of process-only state the JobsPanel reads
+        (``_bash_procs`` add/pop, ``run_log_dirs.append``) so ``bg_jobs``
+        refreshes without waiting for the next full ``push_full_state``.
+        Replaces the ``fbc8ab6`` ``_broadcast_status_soon()`` calls at those
+        sites — ``{t:"status"}`` doesn't carry ``bg_jobs``, so the panel
+        never picked up the new proc. Guarded on ``self.task``: before
+        ``run()`` is spawned, ``start_orchestrator``'s :meth:`~workbench
+        .session.Session.broadcast_orch` ships the initial snapshot instead.
+        """
+        if self.task is not None:
+            self.session.broadcast_orch_dirty(self)
+
     # -- run ------------------------------------------------------------------
 
     async def run(self) -> None:
@@ -506,7 +521,7 @@ class Orchestrator(StepGated):
             return False
         with suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, signal.SIGTERM)
-        self._broadcast_status_soon()
+        self.dirty()
         return True
 
     def _initial_messages(self) -> list[ChatMessage]:
@@ -567,11 +582,17 @@ class Orchestrator(StepGated):
 
     def view(self) -> dict[str, Any]:
         messages = self.state.messages if self.state is not None else []
+        # A4-partial: ``pending_gates`` is transcript-derivable (gate cards'
+        # ``bundle[WB_MIME].pending`` flag) — folded on the frontend by
+        # ``usePendingGates()`` instead of shipped here. ``generating`` stays
+        # on ``{t:"status"}`` (adversarial-review mis-partition #1: the fold
+        # would lose the TTFB shimmer). ``notifications`` stays for the
+        # connect-time ``push_full_state``; ``broadcast_orch_dirty`` strips it
+        # so mid-session ``{t:"orch"}`` doesn't clobber ``{t:"notify"}`` chips.
         return {
             "span_id": self.span_id,
             "status": self.status,
             "model": self.model_name,
-            "pending_gates": list(self.gate.pending),
             "bg_cells": sorted(self.kernel.bg),
             "bg_jobs": self._bg_jobs(),
             "notifications": list(self.kernel.notifications),

@@ -21,7 +21,7 @@ import {
 
 import type { ChatMessage, Event } from "@tsmono/inspect-common";
 
-import { useEvents } from "../../lib/selectors";
+import { useEvents, usePendingGates, type PendingGate } from "../../lib/selectors";
 import type { BgJob, Status } from "../../lib/wire";
 import { useSession } from "../../store/session";
 import { ComposerTextarea } from "../ComposerTextarea";
@@ -82,32 +82,9 @@ export function OrchColumn(): JSX.Element {
   const cellRunning = last?.tools.some((t) => t.pending) ?? false;
   const statusText = STATUS_TEXT[status];
 
-  // Header pill: derive pending gates from the live event stream, not
-  // ``orch.pending_gates`` — that field only ships in the full ``{t:"state"}``
-  // push, so it's stale between reconnects. Gate cards land as
-  // ``InfoEvent`` s with ``bundle[WB_MIME].pending === true`` and flip to
-  // ``false`` on ``dh.update()`` when resolved, so scanning ``turns`` is
-  // always current.
-  const gateInfo = useMemo(() => {
-    const out: { id: string; kind: string; desc: string }[] = [];
-    for (const t of turns) {
-      for (const o of t.outputs) {
-        const wb = o.data.bundle[WB_MIME];
-        if (!wb || !("pending" in wb) || !wb.pending) continue;
-        const desc =
-          wb.kind === "prompt"
-            ? wb.question
-            : wb.kind === "run_proposal"
-              ? wb.description
-              : wb.kind === "cite_proposal"
-                ? wb.claim
-                : null;
-        if (desc == null) continue;
-        out.push({ id: o.data.id, kind: wb.kind, desc: desc || o.data.id.slice(0, 8) });
-      }
-    }
-    return out;
-  }, [turns]);
+  // Header pill: A4-partial — pending gates fold lifted to `selectors.ts`
+  // (`usePendingGates`) so `useKeyboardShortcuts` reads the same source.
+  const gateInfo = usePendingGates();
 
   // §C sys-chip → origin-cell badge: parse `notifications` for
   // `cell-{N} … bound: {name}` and thread the settled binding into the turn
@@ -324,8 +301,6 @@ export function OrchColumn(): JSX.Element {
 
 // ── header ──────────────────────────────────────────────────────────────────
 
-type GateInfo = { id: string; kind: string; desc: string };
-
 /** Passive-status header: title (with meta tooltip) + either the bare status
  *  dot or, when gates are pending, a purple pill that absorbs the dot. Hover
  *  the pill for the per-gate popover; click it to jump to the first gate. */
@@ -346,7 +321,7 @@ function OrchHeader({
   dot: string;
   ctxPct: number;
   ctxTitle: string;
-  gates: GateInfo[];
+  gates: PendingGate[];
   jobs: readonly BgJob[];
   turns: readonly OrchTurnData[];
   onJump: (id: string) => void;

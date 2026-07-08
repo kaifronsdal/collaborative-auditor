@@ -182,6 +182,7 @@ def _card(orch: Orchestrator, line: dict[str, Any], seen: set[str]) -> None:
             log_dir = payload.get("log_dir")
             if log_dir and log_dir not in orch.run_log_dirs:
                 orch.run_log_dirs.append(log_dir)
+            orch.dirty()
     else:
         # Non-eval protocol lines (``file``/``ref``) aren't in ``WbPayload``
         # yet — pass through untyped so ``WbFallback`` renders the raw dict.
@@ -313,10 +314,11 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
                     "started_at": time.time(),
                     "background": background,
                 }
-                # ``bg_jobs`` only ships in ``{t:"state"}`` pushes — kick one so
-                # the JobsPanel picks up the new proc without waiting for the
-                # next gate/status change.
-                orch._broadcast_status_soon()  # noqa: SLF001
+                # A4-partial (fixes fbc8ab6): ``bg_jobs`` is process-only
+                # state — ship it via ``{t:"orch"}`` so JobsPanel picks up the
+                # new proc immediately. The old ``_broadcast_status_soon()``
+                # here sent ``{t:"status"}``, which doesn't carry ``bg_jobs``.
+                orch.dirty()
                 plain: list[str] = []
                 seen: set[str] = set()
 
@@ -345,6 +347,7 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
                             )
                         finally:
                             orch._bash_procs.pop(job_id, None)  # noqa: SLF001
+                            orch.dirty()
 
                     # ``_bg`` copies context at creation, so the ``_turn``
                     # contextvar carries into the detached pump even though
@@ -357,10 +360,12 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
                         _pump(orch, proc, plain, seen), timeout
                     )
                     orch._bash_procs.pop(job_id, None)  # noqa: SLF001
+                    orch.dirty()
                 except TimeoutError:
                     proc.kill()
                     await proc.wait()
                     orch._bash_procs.pop(job_id, None)  # noqa: SLF001
+                    orch.dirty()
                     return _tail(plain, f"timeout after {timeout}s")
                 return _tail(plain, code)
 

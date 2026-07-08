@@ -11,6 +11,7 @@
  */
 import { useEffect } from "react";
 
+import { usePendingGates } from "../lib/selectors";
 import { useSession } from "../store/session";
 
 function isTextField(el: EventTarget | null): boolean {
@@ -27,7 +28,10 @@ export function useKeyboardShortcuts({
   setPaletteOpen: (open: boolean) => void;
 }): void {
   const send = useSession((s) => s.send);
-  const firstGate = useSession((s) => s.orchestrator?.pending_gates[0] ?? null);
+  // A4-partial: `orchestrator.pending_gates` was stale (only refreshed on
+  // full `{t:"state"}`) and is now dropped from the wire; fold from the
+  // live event stream instead — same source as `OrchColumn`'s header pill.
+  const firstGate = usePendingGates()[0]?.id ?? null;
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {

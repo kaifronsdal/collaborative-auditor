@@ -591,11 +591,25 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
     case "orch": {
       // adversarial-review caveat #4: orch registers `("orch","orch")` in
       // `span_role` too — merge it so `resolveRole` routes orch events.
+      // A4-partial: `Orchestrator.dirty()` reuses this variant for
+      // process-only deltas (bg_jobs / bg_cells / run_log_dirs) with an
+      // empty `span_role_delta` and `notifications` STRIPPED (it's on the
+      // append-only `{t:"notify"}` path — A4 mis-partition #2). Merge (not
+      // wholesale-replace) so a `dirty()` doesn't wipe those chips; the
+      // initial `start_orchestrator` push carries `notifications: []` and
+      // wins via spread order.
       const spanRole = new Map(state.spanRole);
       for (const [sid, br] of Object.entries(msg.span_role_delta)) {
         spanRole.set(sid, br);
       }
-      return { orchestrator: msg.state, spanRole, version: msg.v };
+      return {
+        orchestrator:
+          state.orchestrator == null
+            ? msg.state
+            : { ...state.orchestrator, ...msg.state },
+        spanRole,
+        version: msg.v,
+      };
     }
 
     case "queued_consumed": {

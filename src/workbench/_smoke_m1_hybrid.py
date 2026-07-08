@@ -141,6 +141,7 @@ async def _run_tools(k: OrchestratorKernel, wire: list[DisplayEvent]) -> None:
         run_log_dirs=[],
         file_hashes={},
         _broadcast_status_soon=lambda: None,
+        dirty=lambda: None,
     )
     (bash, read_file, write_file, edit_file, ask_human, review_seeds, review_finding) = (
         make_tools(orch)

@@ -556,6 +556,28 @@ class Session:
             }
         )
 
+    def broadcast_orch_dirty(self, orch: Orchestrator) -> None:
+        """A4-partial (ARCHITECTURE-RACES.md): process-only orch state changed.
+
+        Same ``{t:"orch"}`` variant as :meth:`broadcast_orch` but with an
+        empty ``span_role_delta`` (the ``("orch","orch")`` span is already
+        registered — this fires from *inside* the running orchestrator on
+        each ``_bash_procs`` / ``run_log_dirs`` mutation) and
+        ``notifications`` stripped from the payload so the client's
+        ``{t:"notify"}``-appended chips aren't wholesale-clobbered (A4
+        adversarial-review mis-partition #2 — ``kernel.notifications`` is
+        drained every turn; the frontend's ``case "orch"`` *merges* so the
+        omitted key survives). Fixes ``fbc8ab6``: those sites called
+        ``_broadcast_status_soon()``, but ``{t:"status"}`` doesn't carry
+        ``bg_jobs`` — the JobsPanel never picked up the new proc.
+        """
+        state = orch.view()
+        state.pop("notifications", None)
+        self.version += 1
+        self._enqueue(
+            {"t": "orch", "v": self.version, "state": state, "span_role_delta": {}}
+        )
+
     def broadcast_queued_consumed(self, branch_id: str, ids: list[str]) -> None:
         """`Branch.post_generate()`: the injected-message ids that reached
         `state.messages` this turn. Post-R4 `pre_turn` copies-not-clears, so

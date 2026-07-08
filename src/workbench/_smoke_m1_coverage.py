@@ -44,7 +44,7 @@ from workbench.server import _dispatch
 
 
 async def _check_bash_background() -> None:
-    async with mock_orch_session([]) as (_session, orch, _conn):
+    async with mock_orch_session([]) as (_session, orch, conn):
         k = orch.kernel
         (bash, *_) = make_tools(orch)
         k.outputs.clear()
@@ -54,6 +54,27 @@ async def _check_bash_background() -> None:
         m = re.fullmatch(r"\[bg-([0-9a-f]{6}) started · pid (\d+)\]", out)
         assert m, f"bad immediate return: {out!r}"
         bg_id, pid = m.group(1), int(m.group(2))
+
+        # A4-partial (fixes fbc8ab6): bg spawn → `{t:"orch"}` with the new
+        # job in `bg_jobs` reaches FakeConn within 500ms. `notifications`
+        # is stripped (mis-partition #2 — it's on `{t:"notify"}` only) so
+        # the frontend's merge doesn't clobber appended chips.
+        def _orch_frame() -> dict | None:
+            return next(
+                (
+                    f for f in conn.sent
+                    if f["t"] == "orch"
+                    and any(j["id"] == bg_id for j in f["state"].get("bg_jobs", []))
+                ),
+                None,
+            )
+        await wait_for(_orch_frame, timeout=0.5)
+        frame = _orch_frame()
+        assert frame is not None
+        assert frame["span_role_delta"] == {}, frame["span_role_delta"]
+        assert "notifications" not in frame["state"], frame["state"].keys()
+        print(f"✓ A4: bash bg spawn → {{t:'orch'}} with bg-{bg_id} in bg_jobs")
+
         # nothing landed yet — the pump is detached
         evs = [ev for turn in k.outputs.values() for ev in turn]
         assert not any(WB_MIME in ev.bundle for ev in evs)

@@ -24,6 +24,7 @@ import {
 import { isModelEvent } from "./events";
 import type { BranchId, Role, Up } from "./wire";
 import { useSession } from "../store/session";
+import { ORCH_SOURCE, WB_MIME, type DisplayInfoEvent } from "../components/orch/types";
 
 /** A2 (ARCHITECTURE-RACES.md): the six fork-shaped commands that flow
  *  through `_pendingChild` → `_fork` → `_register_and_spawn`. Any one
@@ -55,6 +56,49 @@ export function useIsPending(pred: (c: Up) => boolean): boolean {
 
 export function useEvents(branch: BranchId, role: Role): Event[] {
   return useSession((s) => s.byRole[branch]?.[role] ?? EMPTY);
+}
+
+/** A4-partial: one open orchestrator gate card. */
+export type PendingGate = { id: string; kind: string; desc: string };
+
+/**
+ * A4-partial (ARCHITECTURE-RACES.md): the orchestrator's open gate cards,
+ * folded from the live `("orch","orch")` event stream.
+ *
+ * Lifted from `OrchColumn` so `useKeyboardShortcuts` (⌘Enter → approve
+ * first) reads the same source instead of the stale wire-shipped
+ * `orchestrator.pending_gates` — that field only refreshed on full
+ * `{t:"state"}` and is now dropped from `Orchestrator.view()`. Gate cards
+ * land as `InfoEvent`s with `bundle[WB_MIME].pending === true` and flip to
+ * `false` on `dh.update()` when resolved, so the fold is always current.
+ * Rewound turns (§2) are filtered so a gate the user restarted past
+ * doesn't re-appear as approvable.
+ */
+export function usePendingGates(): PendingGate[] {
+  const events = useEvents("orch", "orch");
+  const rewound = useSession((s) => s.rewound);
+  return useMemo(() => {
+    const out: PendingGate[] = [];
+    for (const ev of events) {
+      if (ev.uuid != null && rewound.has(ev.uuid)) continue;
+      if ((ev as { rewound?: unknown }).rewound === true) continue;
+      if (ev.event !== "info" || ev.source !== ORCH_SOURCE) continue;
+      const data = (ev as DisplayInfoEvent).data;
+      const wb = data?.bundle?.[WB_MIME];
+      if (wb == null || !("pending" in wb) || !wb.pending) continue;
+      const desc =
+        wb.kind === "prompt"
+          ? wb.question
+          : wb.kind === "run_proposal"
+            ? wb.description
+            : wb.kind === "cite_proposal"
+              ? wb.claim
+              : null;
+      if (desc == null) continue;
+      out.push({ id: data.id, kind: wb.kind, desc: desc || data.id.slice(0, 8) });
+    }
+    return out;
+  }, [events, rewound]);
 }
 
 export function useQueued(branch: BranchId, role: Role): ChatMessage[] {

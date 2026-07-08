@@ -9,8 +9,9 @@ calls, and asserts the vertical slice:
 - ``dh.update()`` on a stable ``display_id`` ships as ``{"t":"update"}`` with
   the same ``uuid``, and ``session.events[uuid]`` holds the *latest* bundle.
 - The orchestrator span resolves via ``session._resolve`` → ``("orch","orch")``.
-- A pending gate appears in ``Session.view()["orchestrator"]["pending_gates"]``
-  and ``orch.gate.resolve()`` clears it.
+- A pending gate appears in ``orch.gate.pending`` and ``orch.gate.resolve()``
+  clears it (A4-partial: ``pending_gates`` no longer in ``view()`` — folded
+  from the event stream on the frontend).
 - Reconnect: ``push_full_state`` on a fresh connection carries every display
   ``InfoEvent`` (the fix the spike's ``on_display → _enqueue`` shortcut broke).
 
@@ -128,7 +129,11 @@ async def _amain() -> None:
         orch.step()
         await settle()
         view = session.view()
-        gates = view["orchestrator"]["pending_gates"]
+        # A4-partial: ``pending_gates`` is transcript-derivable and no longer
+        # in ``view()``; the frontend folds it from the event stream. Read
+        # ``orch.gate.pending`` directly here (same underlying set).
+        assert "pending_gates" not in view["orchestrator"]
+        gates = list(orch.gate.pending)
         assert len(gates) == 1, gates
         (gid,) = gates
         pending_ev = session.events[gid]
@@ -176,7 +181,7 @@ async def _amain() -> None:
         assert len(reconnect_orch) == len(orch_events(session)), (
             "reconnect dropped orchestrator display events"
         )
-        assert state["orchestrator"]["pending_gates"] == [gid]
+        assert list(orch.gate.pending) == [gid]
         print(
             f"✓ reconnect: push_full_state ships {len(reconnect_orch)} display events + gate"
         )
@@ -191,7 +196,6 @@ async def _amain() -> None:
             is False
         )
         assert not orch.gate.pending
-        assert session.view()["orchestrator"]["pending_gates"] == []
         print("✓ resolve() → update event, gate cleared")
 
         # ---- turn 3: no tool call → parks --------------------------------------
