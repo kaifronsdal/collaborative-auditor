@@ -18,8 +18,11 @@ Cases
    ``ContentReasoning(reasoning=<base64 blob>, redacted=True)``; assert the
    target column renders ``.reasoning-redacted`` with the placeholder text
    and NOT the raw blob.
-4. **pause interrupts** — SKIPPED unless a commit mentioning "interrupt" or
-   "honest pause" has landed (checked at import time via ``git log``).
+4. **pause interrupts** — running branch with a slow (30s) mockllm auditor
+   generate; click ``.primary-pause`` mid-generate, assert
+   ``.runline.status-paused`` and backend ``b.status == 'paused'`` land in
+   <2s (c2004c4: ``Branch.pause()`` cancels ``_gen_scope``). Skipped if the
+   fix commit isn't in ``git log -20``.
 
 Run:  uv run python -m workbench._e2e_m1_ui_fixes
 """
@@ -27,18 +30,23 @@ Run:  uv run python -m workbench._e2e_m1_ui_fixes
 from __future__ import annotations
 
 import asyncio
+import copy
 import subprocess
 import sys
+import time
 import traceback
 from urllib.parse import parse_qs, urlparse
 
 import anyio
 from inspect_ai.model import (
+    ChatMessage,
     ChatMessageAssistant,
     ContentReasoning,
     ContentText,
+    GenerateConfig,
     ModelOutput,
 )
+from inspect_ai.tool import ToolChoice, ToolInfo
 from playwright.async_api import Page, async_playwright, expect
 
 from workbench._smoke_fixtures import (
@@ -254,6 +262,88 @@ async def case_redacted_reasoning(page: Page, ui_port: int) -> None:
         await session.close()
 
 
+async def case_pause_interrupts(page: Page, ui_port: int) -> None:
+    sid = "e2e-pi"
+    # Async mockllm callable: turn 0 announces entry then sleeps 30s — long
+    # enough that a non-interrupting pause would fail the <2s budget by a
+    # wide margin. mockllm ``await``s the coroutine, and ``anyio.sleep`` is
+    # cancellable via ``_gen_scope``.
+    entered = anyio.Event()
+
+    async def slow_auditor(
+        input: list[ChatMessage],  # noqa: A002
+        tools: list[ToolInfo],
+        tool_choice: ToolChoice,
+        config: GenerateConfig,
+    ) -> ModelOutput:
+        del tools, tool_choice, config
+        k = sum(1 for m in input if m.role == "assistant")
+        if k == 0:
+            entered.set()
+            await anyio.sleep(30)
+        return copy.deepcopy(AUDITOR_2[min(k, 1)])
+
+    session = Session()
+    await session.start()
+    sessions[sid] = session
+    b = Branch(
+        session,
+        "b0",
+        seed=f"e2e-{sid}",
+        auditor_model="mockllm/model",
+        target_model="mockllm/model",
+        max_turns=4,
+        auditor_model_args={"custom_outputs": slow_auditor},
+        target_model_args={"custom_outputs": [_target("hi")]},
+    )
+    session.branches["b0"] = b
+    session.current = "b0"
+    b.play()
+    task = asyncio.create_task(b.run())
+    session.branch_tasks["b0"] = task
+    try:
+        # Block until the slow generate is actually in flight (so `.primary-
+        # pause` has something to interrupt) before loading the page.
+        with anyio.fail_after(5.0):
+            await entered.wait()
+        assert b._gen_scope is not None, "loop never exposed _gen_scope"
+
+        await page.goto(f"http://127.0.0.1:{ui_port}/?session={sid}")
+        await page.wait_for_selector(".runline.status-running", timeout=15_000)
+        await page.wait_for_selector(".primary-pause", timeout=5_000)
+
+        t0 = time.monotonic()
+        await page.click(".primary-pause")
+        # Backend: status flips + generate is cancelled well under 2s.
+        for _ in range(200):
+            if b.status == "paused" and b._gen_scope is None:
+                break
+            await anyio.sleep(0.01)
+        dt_backend = time.monotonic() - t0
+        assert b.status == "paused", (
+            f"backend status={b.status!r} after {dt_backend:.2f}s (want 'paused')"
+        )
+        assert b._gen_scope is None, "_gen_scope not cleared after interrupt"
+        assert dt_backend < 2.0, (
+            f"pause took {dt_backend:.2f}s to interrupt — expected <2s "
+            f"(30s sleep should have been cancelled, not awaited)"
+        )
+        assert not task.done(), "branch task exited — interrupt should park, not end"
+        # UI: `.runline` reflects the broadcast status within the same budget.
+        await page.wait_for_selector(
+            ".runline.status-paused",
+            timeout=int(max(100, (2.0 - dt_backend) * 1000)),
+        )
+        dt_ui = time.monotonic() - t0
+        print(
+            f"    interrupted in {dt_backend:.3f}s (backend) / "
+            f"{dt_ui:.3f}s (UI); task alive, _gen_scope cleared"
+        )
+    finally:
+        task.cancel()
+        await session.close()
+
+
 # ── driver ──────────────────────────────────────────────────────────────────
 
 
@@ -268,12 +358,11 @@ async def _amain() -> int:
     ]
     skipped: list[str] = []
     if _pause_fix_landed():
-        # Placeholder — wire up once the pause-interrupt commit lands.
-        skipped.append("pause interrupts (fix landed but case not wired)")
+        cases.append(("pause interrupts mid-generate", case_pause_interrupts))
     else:
         skipped.append(
-            "pause interrupts (fix not landed — no 'interrupt'/'honest pause' "
-            "commit in git log -20)"
+            "pause interrupts mid-generate (fix not landed — no "
+            "'interrupt'/'honest pause' commit in git log -20)"
         )
 
     results: list[tuple[str, str, str]] = []  # (name, status, detail)
