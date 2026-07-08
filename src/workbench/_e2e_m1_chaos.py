@@ -33,6 +33,7 @@ import asyncio
 import copy
 import logging
 import sys
+import time
 import traceback
 from dataclasses import dataclass, field
 
@@ -50,7 +51,7 @@ from workbench._smoke_fixtures import (
     _vite,
 )
 from workbench.run import Branch
-from workbench.server import sessions
+from workbench.server import _dispatch, sessions
 from workbench.session import Session
 from workbench.sources import GEN_SOURCE
 
@@ -479,10 +480,10 @@ async def s6_resample_two_anchors(page: Page, ui_port: int) -> str:
             ".actions button[title='resample — regenerate this response']"
         ).click(force=True)
 
-        # Each ``resample`` dispatch holds ``_dispatch_lock`` while awaiting
-        # ``_replayed`` — for a target-exclusive fork the child's live target
-        # regenerate (``SLEEP_S``) runs *before* ``pre_turn`` sets
-        # ``_replayed``, so budget ≈ 2×SLEEP_S + slack.
+        # Post-R5 both resamples dispatch immediately (lock released before
+        # ``_replayed.wait``); the second's ``_stop_running_branches`` cancels
+        # the first child, so budget ≈ one target regenerate + slack. Kept
+        # generous since this scenario asserts correctness, not latency.
         await anyio.sleep(SLEEP_S * 2 + 2.0)
         errs = [(bid, br.error) for bid, br in session.branches.items() if br.error]
         assert not errs, f"branch errors: {errs}"
@@ -559,6 +560,63 @@ async def s7_pause_retracts_pending(page: Page, ui_port: int) -> str:
         await session.close()
 
 
+async def s8_fork_then_pause_latency(page: Page, ui_port: int) -> str:
+    """RACE-FIXES.md R5: ``_dispatch_lock`` is released immediately after
+    ``_spawn``, not held across ``_replayed.wait()``. A resample's excluded
+    target step regenerates *live* (``SLEEP_S``) before ``pre_turn`` sets
+    ``_replayed``; pre-R5 any follow-up command queued behind the lock for
+    that whole window. Assert a ``pause`` sent 100ms after the fork
+    dispatches in <500ms, and sticks (autoplay is synchronous, so the
+    deferred post-replay task can't un-pause it)."""
+    sid = "chaos-s8"
+    session, *_ = await _mk_running(sid, aud_slow_from=2, tgt_slow_from=0)
+    try:
+        await page.goto(f"http://127.0.0.1:{ui_port}/?session={sid}")
+        await page.wait_for_selector(".runline.status-running", timeout=15_000)
+        row = await _target_row(page, 0)
+        await row.locator(
+            ".actions button[title='resample — regenerate this response']"
+        ).click(force=True)
+
+        # Child is registered synchronously inside the locked section, before
+        # any ``_replayed`` wait — poll for it so we know the fork's dispatch
+        # has actually started before we time the follow-up.
+        with anyio.fail_after(5.0):
+            while len(session.branches) < 2:
+                await anyio.sleep(0.01)
+        child_id = next(bid for bid in session.branches if bid != "b0")
+        child = session.branches[child_id]
+
+        await anyio.sleep(0.1)
+        assert not child._replayed.is_set(), (
+            "replay already drained — slow-fork window missed"
+        )
+
+        t0 = time.monotonic()
+        await _dispatch(session, {"t": "pause", "target": child_id})
+        dt = time.monotonic() - t0
+
+        assert dt < 0.5, (
+            f"pause dispatched in {dt:.2f}s — `_dispatch_lock` held across "
+            f"`_replayed.wait()` (pre-R5 ≈ {SLEEP_S:.0f}s)"
+        )
+        assert child.status == "paused", f"child status={child.status!r} after pause"
+        # Let the deferred post-replay task fire; pause must stick.
+        with anyio.move_on_after(SLEEP_S + 2.0):
+            await child._replayed.wait()
+        await anyio.sleep(0.2)
+        assert child.status == "paused", (
+            f"pause undone after replay: status={child.status!r}"
+        )
+        errs = [(bid, br.error) for bid, br in session.branches.items() if br.error]
+        assert not errs, f"branch errors: {errs}"
+        return f"pause_latency={dt * 1000:.0f}ms child_status={child.status!r}"
+    finally:
+        for t in session.branch_tasks.values():
+            t.cancel()
+        await session.close()
+
+
 # ── driver ──────────────────────────────────────────────────────────────────
 
 SCENARIOS = [
@@ -569,6 +627,7 @@ SCENARIOS = [
     ("s5 inject→pause→inject→play", s5_inject_pause_inject_play),
     ("s6 resample ×2 anchors", s6_resample_two_anchors),
     ("s7 pause retracts pending bubble", s7_pause_retracts_pending),
+    ("s8 fork→pause dispatch latency", s8_fork_then_pause_latency),
 ]
 
 

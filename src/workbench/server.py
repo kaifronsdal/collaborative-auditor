@@ -339,21 +339,32 @@ async def _register_and_spawn(
     session: Session, branch: Branch, *, autoplay: bool
 ) -> None:
     """Common tail for start/branch/resample/edit: stop the previous branch,
-    set `current`, broadcast `state`, spawn `branch.run()`, wait for the
-    replay prefix to drain (so the columns are hot before we return), then
-    optionally release the gate."""
+    set `current`, broadcast `state`, spawn `branch.run()`, optionally
+    release the gate, then return — `_dispatch_lock` is released immediately.
+
+    R5: the `_replayed` wait + trailing `broadcast_status` are deferred to a
+    background task so pause/play/switch during a slow fork now works
+    instantly instead of queueing behind the lock. Cached-prefix replay is
+    <50ms, but a resample/edit's excluded target step regenerates *live*
+    before `pre_turn` sets `_replayed` — that can be seconds on a real
+    model. `play()` fires synchronously (not deferred) so autoplay forks
+    show status="running" from the outset and a pause sent during the
+    replay window isn't undone by a delayed autoplay.
+    """
     await _stop_running_branches(session)
     session.branches[branch.branch_id] = branch
     session.current = branch.branch_id
     await session.broadcast({"t": "state", "v": session.version, **session.view()})
     _spawn(session, branch)
-    # Replay is I/O-free (cached generates, in-process channel rendezvous) so
-    # this is <50ms for realistic prefixes; the timeout guards desync hangs.
-    with anyio.move_on_after(5.0):
-        await branch._replayed.wait()  # noqa: SLF001
     if autoplay:
         branch.play()
-    await session.broadcast_status()
+
+    async def _post_replay() -> None:
+        with anyio.move_on_after(5.0):
+            await branch._replayed.wait()  # noqa: SLF001
+        await session.broadcast_status()
+
+    asyncio.create_task(_post_replay())  # noqa: RUF006
 
 
 async def _stop_running_branches(
@@ -722,6 +733,18 @@ async def _h_inject(session: Session, data: dict) -> None:
     if branch_id not in session.branches:
         logger.warning("inject for unknown branch %r — dropping", branch_id)
         return
+    if role == "target":
+        # R4 drops `Branch.queued["target"]` — no UI path injects to the
+        # target and `run_turn_tools` never drained it. Reject explicitly
+        # rather than KeyError (or silently queue-and-forget).
+        await session.broadcast(
+            {
+                "t": "error",
+                "v": session.version,
+                "message": "target-role inject not supported",
+            }
+        )
+        return
     if session.branches[branch_id].status == "ended":
         logger.warning("inject into ended branch %r — dropping", branch_id)
         await session.broadcast(
@@ -923,7 +946,11 @@ async def _h_scan_branch(session: Session, data: dict) -> None:
     branch = session.branches.get(branch_id)
     if branch is None:
         await session.broadcast(
-            {"t": "error", "v": session.version, "message": f"unknown branch {branch_id!r}"}
+            {
+                "t": "error",
+                "v": session.version,
+                "message": f"unknown branch {branch_id!r}",
+            }
         )
         return
 
@@ -1119,6 +1146,13 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
             if branch_id not in session.branches:
                 logger.warning("switch to unknown branch %r — dropping", branch_id)
                 return
+            # R5 / WS-race #9: pause the outgoing branch so switching away
+            # from a running branch doesn't leave it autoplaying-and-
+            # unreachable behind the new `current`.
+            if session.current is not None and session.current != branch_id:
+                old = session.branches.get(session.current)
+                if old is not None and old.status == "running":
+                    old.pause()
             session.current = branch_id
             await session.broadcast(
                 {"t": "state", "v": session.version, **session.view()}

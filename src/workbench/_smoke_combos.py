@@ -290,11 +290,11 @@ async def c3_branch_chain_switches() -> None:
 
 
 # ── C4: inject while child is paused post-replay → drained at first LIVE ───
-# Fork (autoplay=False) → `_register_and_spawn` awaits `_replayed` so by the
-# time we can dispatch `inject`, replay is done and the child is parked at
-# the gate. Inject feedback; play. The auditor's first live turn must see
-# the feedback in its input — verified by a mockllm callable that returns a
-# marker `send_message` when "FEEDBACK" is present.
+# Fork (autoplay=False); post-R5 `_register_and_spawn` returns before
+# `_replayed`, so wait for it explicitly so the child is parked at the gate.
+# Inject feedback; play. The auditor's first live turn must see the feedback
+# in its input — verified by a mockllm callable that returns a marker
+# `send_message` when "FEEDBACK" is present.
 
 
 def _auditor_feedback_aware(script: list[ModelOutput]) -> object:
@@ -336,7 +336,10 @@ async def c4_inject_during_paused_replay() -> None:
         child_id = session.current
         assert child_id is not None and child_id != "base"
         child = session.branches[child_id]
-        assert child._replayed.is_set(), "replay should be done before inject"
+        # R5: dispatch no longer blocks on `_replayed`; wait ourselves so the
+        # child is parked at the gate before we inject.
+        with anyio.fail_after(2.0):
+            await child._replayed.wait()
         assert child.queued["auditor"] == []
 
         await _dispatch(
