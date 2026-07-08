@@ -339,8 +339,15 @@ async def _register_and_spawn(
     session: Session, branch: Branch, *, autoplay: bool
 ) -> None:
     """Common tail for start/branch/resample/edit: stop the previous branch,
-    set `current`, broadcast `state`, spawn `branch.run()`, optionally
-    release the gate, then return — `_dispatch_lock` is released immediately.
+    set `current`, broadcast `branch_created`, spawn `branch.run()`,
+    optionally release the gate, then return — `_dispatch_lock` is released
+    immediately.
+
+    A3-typed-deltas: `broadcast_branch_created` (a narrow delta carrying the
+    new branch's `span_role` entries + meta + `current`) replaces the full
+    mid-session `{t:"state", …view()}`. Broadcast BEFORE `_spawn` so the
+    client's `spanRole` is populated before any replay event for this
+    branch lands on the wire.
 
     R5: the `_replayed` wait + trailing `broadcast_status` are deferred to a
     background task so pause/play/switch during a slow fork now works
@@ -354,7 +361,7 @@ async def _register_and_spawn(
     await _stop_running_branches(session)
     session.branches[branch.branch_id] = branch
     session.current = branch.branch_id
-    await session.broadcast({"t": "state", "v": session.version, **session.view()})
+    session.broadcast_branch_created(branch)
     _spawn(session, branch)
     if autoplay:
         branch.play()
@@ -369,7 +376,7 @@ async def _register_and_spawn(
 
 async def _stop_running_branches(
     session: Session, only: set[str] | None = None
-) -> None:
+) -> list[str]:
     """Cancel running branch tasks (all, or a subset).
 
     The single-fork commands (`start`/`branch`/`resample`/`edit_*`) call
@@ -395,6 +402,9 @@ async def _stop_running_branches(
         del session.branch_tasks[bid]
         if (b := session.branches.get(bid)) is not None and b.status == "running":
             b.status = "ended"
+    # A3-typed-deltas: return the cancelled ids so callers can ship them as
+    # `ended:[…]` on `{t:"batch_resolved"}` (adversarial-review caveat #3).
+    return list(running)
 
 
 #: `locate(parent, data) -> (anchor, inclusive, edited)` for one fork variant.
@@ -479,16 +489,24 @@ async def _candidates(
     n = int(data["n"])
     batch_id = uuid()
     batch = CandidateBatch(parent=parent.branch_id, anchor=anchor, kind=kind)
+    session.candidate_batches[batch_id] = batch
     for _ in range(n):
         child = Branch.fork(
             session, parent, anchor=anchor, inclusive=inclusive, batch=batch_id
         )
-        _spawn(session, child)
         batch.children.append(child.branch_id)
+        session.branches[child.branch_id] = child
+        # A3-typed-deltas / adversarial-review caveat #1: broadcast BEFORE
+        # `_spawn`. Under the old full-`state` broadcast the ordering was
+        # backwards (spawn → broadcast), which was harmless because `state`
+        # rebuilt `byRole` from scratch. With a narrow delta the client's
+        # `spanRole` must be populated *before* the child's replay events
+        # arrive, otherwise `resolveRole` fails and the events are
+        # permanently unbucketed → candidate cards stay empty.
+        session.broadcast_branch_created(child)
+        _spawn(session, child)
         if step:
             asyncio.create_task(_step_after_replay(child))  # noqa: RUF006
-    session.candidate_batches[batch_id] = batch
-    await session.broadcast({"t": "state", "v": session.version, **session.view()})
 
 
 def _auditor_anchor(parent: Branch, turn_index: int) -> str:
@@ -697,17 +715,28 @@ async def _h_start(session: Session, data: dict) -> None:
 
 
 async def _h_end(session: Session, data: dict) -> None:  # noqa: ARG001
+    """A3-typed-deltas: the slow tail (`end_conversation()` blocks on the
+    channel; `_stop_running_branches` awaits cancelled tasks) is deferred to
+    a background task so `_dispatch_lock` releases immediately — same
+    pattern R5 applied to `_register_and_spawn`'s `_replayed` wait. The
+    lock is re-acquired around `_stop_running_branches` so it can't
+    interleave with a concurrent fork's stop/register."""
     if session.current is None:
         logger.warning("end before start — dropping")
         return
     branch = session.branches[session.current]
     if branch.status == "ended":
         return
-    try:
-        await branch.channel.end_conversation()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("end_conversation raised: %r", exc)
-    await _stop_running_branches(session)
+
+    async def _do_end() -> None:
+        try:
+            await branch.channel.end_conversation()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("end_conversation raised: %r", exc)
+        async with session._dispatch_lock:  # noqa: SLF001
+            await _stop_running_branches(session)
+
+    asyncio.create_task(_do_end())  # noqa: RUF006
 
 
 async def _h_transport(session: Session, data: dict, cmd: str) -> None:
@@ -803,12 +832,16 @@ async def _h_unqueue(session: Session, data: dict) -> None:
 async def _h_pick_candidate(session: Session, data: dict) -> None:
     batch = session.candidate_batches[data["batch"]]
     picked = data["branch"]
-    await _stop_running_branches(
+    ended = await _stop_running_branches(
         session, only={c for c in batch.children if c != picked}
     )
     session.current = picked
     batch.picked = picked
-    await session.broadcast({"t": "state", "v": session.version, **session.view()})
+    # A3-typed-deltas: `batch_resolved` closes the picker (carrying `ended`
+    # so the sidebar flips the cancelled siblings' status dot); `current`
+    # repoints the desk. No full `view()`.
+    session.broadcast_batch_resolved(data["batch"], ended)
+    session.broadcast_current()
     await session.broadcast_status()
 
 
@@ -888,14 +921,32 @@ async def _h_import_running(session: Session, data: dict) -> None:
     If ``interrupt_sample`` returns ``False`` (no ACP server — eval wasn't
     launched with ``--acp-server``, or already exited) the flush poll may
     still succeed if the sample finished on its own; otherwise the timeout
-    surfaces as ``{t:"error"}`` via the outer ``_dispatch`` guard.
+    surfaces as ``{t:"error"}``.
+
+    A3-typed-deltas: the ACP round-trip + recorder-flush poll can take
+    seconds; deferred to a background task so `_dispatch_lock` releases
+    immediately (R5 pattern). `_import` (which mutates `branches`/`current`
+    via `_register_and_spawn`) re-acquires the lock so it can't interleave
+    with a concurrent fork.
     """
     sample_id = str(data["sample_id"])
-    h = await AttachedRun.discover(data["log_dir"])
-    await h.interrupt_sample(sample_id)
-    location = await h.wait_for_sample(sample_id)
-    history, meta = import_eval(location, sample_id)
-    await _import(session, history, meta)
+    log_dir = data["log_dir"]
+
+    async def _do_import() -> None:
+        try:
+            h = await AttachedRun.discover(log_dir)
+            await h.interrupt_sample(sample_id)
+            location = await h.wait_for_sample(sample_id)
+            history, meta = import_eval(location, sample_id)
+            async with session._dispatch_lock:  # noqa: SLF001
+                await _import(session, history, meta)
+        except Exception as exc:
+            logger.exception("import_running failed for %s", sample_id)
+            await session.broadcast(
+                {"t": "error", "v": session.version, "message": str(exc)}
+            )
+
+    asyncio.create_task(_do_import())  # noqa: RUF006
 
 
 async def _h_approve(session: Session, data: dict) -> None:
@@ -1063,11 +1114,9 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
         case "dismiss_candidates":
             # Original = implicit candidate #0: pick the parent.
             batch = session.candidate_batches[data["batch"]]
-            await _stop_running_branches(session, only=set(batch.children))
+            ended = await _stop_running_branches(session, only=set(batch.children))
             batch.picked = batch.parent
-            await session.broadcast(
-                {"t": "state", "v": session.version, **session.view()}
-            )
+            session.broadcast_batch_resolved(data["batch"], ended)
         case "edit_auditor_call":
             await _fork(session, data, locate=_locate_edit_auditor_call, autoplay=True)
         case "edit_target_message":
@@ -1154,9 +1203,7 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
                 if old is not None and old.status == "running":
                     old.pause()
             session.current = branch_id
-            await session.broadcast(
-                {"t": "state", "v": session.version, **session.view()}
-            )
+            session.broadcast_current()
         case other:
             logger.warning("unknown command %r", other)
 

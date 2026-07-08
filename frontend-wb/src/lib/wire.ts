@@ -159,7 +159,43 @@ export type Down =
   // A3-batch (ARCHITECTURE-RACES.md): `_on_event` ships pool + event/update
   // + timeline as one atomic frame so the reducer applies them in a single
   // `set()`. Ops are any non-batch `Down`; `v` is shared across the batch.
-  | { t: "batch"; v: number; ops: Exclude<Down, { t: "batch" }>[] };
+  | { t: "batch"; v: number; ops: Exclude<Down, { t: "batch" }>[] }
+  // -- A3-typed-deltas (ARCHITECTURE-RACES.md) --
+  // Replace mid-session `{t:"state"}` with narrow deltas so `case "state"`
+  // is connect-only. Each carries `v` and goes through the drain queue
+  // (same FIFO as `{t:"batch"}`), so `v` is monotone on the wire.
+  | {
+      t: "branch_created";
+      v: number;
+      id: BranchId;
+      meta: BranchMeta;
+      /** The two `span_role` entries this branch registered — the client
+       *  merges them so events for this branch route via `resolveRole`.
+       *  Sent BEFORE the branch's `run()` spawns (adversarial-review
+       *  caveat #1) so replay events are never unbucketed. */
+      span_role_delta: Record<string, [BranchId, Role]>;
+      /** `session.current` after the fork (repointed for `_register_and_
+       *  spawn`; unchanged — the parent — for `_candidates`). */
+      current: BranchId | null;
+    }
+  | { t: "current"; v: number; branch: BranchId | null }
+  | {
+      t: "batch_resolved";
+      v: number;
+      batch: string;
+      picked: BranchId | null;
+      /** Cancelled sibling ids (adversarial-review caveat #3) — the sidebar
+       *  flips their status dot without a full `view()`. */
+      ended: BranchId[];
+    }
+  | {
+      t: "orch";
+      v: number;
+      state: OrchestratorState;
+      /** `("orch","orch")` registration (adversarial-review caveat #4). */
+      span_role_delta: Record<string, [BranchId, Role]>;
+    }
+  | { t: "queued_consumed"; v: number; branch: BranchId; ids: string[] };
 
 /** P2 — optional per-fork model overrides. Any fork-shaped command
  *  (`branch`/`resample`/`*_auditor`/`edit_*`) may carry these; unset fields

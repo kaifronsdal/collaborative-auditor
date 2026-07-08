@@ -147,31 +147,6 @@ function persistPins(sid: string | null, pins: Pin[]): { pins: Pin[] } {
 /** Local id for the just-started Recents stub, before `current` arrives. */
 const PENDING_ID = "__pending__";
 
-/** Status precedence for optimistic-vs-backend reconciliation. `"waiting"` is
- *  orchestrator-only and never flows through this branch-status path, but the
- *  Record type demands the key. */
-const STATUS_RANK: Record<Status | "null", number> = {
-  null: 0, idle: 1, paused: 2, running: 3, waiting: 3, ended: 4,
-};
-
-/**
- * Reconcile an optimistic local status with an incoming backend status.
- *
- * While a pending start/branch is in flight the backend's first `state` may
- * still read null/"idle" (the branch task hasn't reached "paused" yet). Keep
- * the optimistic status unless the backend's is further along — never regress.
- */
-function reconcileStatus(
-  optimistic: Status | null,
-  incoming: Status | null,
-  hadPendingOp: boolean
-): Status | null {
-  if (!hadPendingOp || optimistic == null) return incoming;
-  return STATUS_RANK[incoming ?? "null"] > STATUS_RANK[optimistic]
-    ? incoming
-    : optimistic;
-}
-
 /** Truncate seed text into a Recents-row title. */
 function titleFromSeed(seed: string): string {
   const trimmed = seed.trim().replace(/\s+/g, " ");
@@ -472,6 +447,18 @@ function reconcileQueued(queued: QueuedMap, ev: Event): QueuedMap {
 /** Any `Down` variant except the `{t:"batch"}` envelope itself. */
 type DownOp = Exclude<Down, { t: "batch" }>;
 
+/** A3 version guard (ARCHITECTURE-RACES.md, adversarial-review caveat #5):
+ *  frame types that carry structural state and must arrive in `v`-order.
+ *  A stale one is dropped. Legacy singleton ops (`event`/`update`/`pool`/
+ *  `timeline`) only reach the wire inside `{t:"batch"}` post-A3 so are
+ *  covered by the batch's `v`; sideband broadcasts (`status`/`error`/
+ *  `notify`/`queued`/…) are idempotent or overlay-only and may
+ *  legitimately race the drain queue. */
+const GUARDED: ReadonlySet<Down["t"]> = new Set([
+  "state", "batch", "branch_created", "current", "batch_resolved", "orch",
+  "queued_consumed",
+]);
+
 /**
  * Pure reducer for a single wire message. Returns the `Partial<SessionState>`
  * patch for `msg`; `apply()` folds a `{t:"batch"}`'s `ops[]` through this so
@@ -481,6 +468,14 @@ type DownOp = Exclude<Down, { t: "batch" }>;
 function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
   switch (msg.t) {
     case "state": {
+      // A3-typed-deltas: `{t:"state"}` is now CONNECT-ONLY (`push_full_
+      // state`). The six mid-session broadcast sites (`_register_and_
+      // spawn`, `_candidates`, `pick_candidate`, `dismiss_candidates`,
+      // `switch`, `start_orchestrator`) ship narrow typed deltas instead.
+      // On connect there is no optimistic client state to reconcile, so
+      // the `pendingNewAudit` / `reconcileStatus` / `STATUS_RANK` /
+      // `PENDING_ID`-re-key guards that used to protect optimistic writes
+      // from mid-session clobber are dead here and have been deleted.
       const pool = msg.pool;
       const events = new Map<string, Event>();
       for (const ev of expandEvents(msg.events, { messages: pool, calls: [] })) {
@@ -494,52 +489,6 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
       for (const ev of msg.events) {
         if (ev.event === "span_begin") spanParent.set(ev.id, ev.parent_id ?? null);
       }
-      // Reconcile the pending Recents stub to the real branch id once the
-      // backend assigns `current`. If the branch isn't listed yet (e.g. a
-      // reconnect to a session that already had a running branch), add it.
-      let sessionsList = state.sessionsList;
-      let branchConfig = state.branchConfig;
-      if (msg.current != null) {
-        const pendingIdx = sessionsList.findIndex((s) => s.id === PENDING_ID);
-        if (pendingIdx !== -1) {
-          sessionsList = sessionsList.slice();
-          sessionsList[pendingIdx] = {
-            ...sessionsList[pendingIdx],
-            id: msg.current,
-          };
-          if (branchConfig[PENDING_ID]) {
-            const { [PENDING_ID]: pending, ...rest } = branchConfig;
-            branchConfig = { ...rest, [msg.current]: pending };
-          }
-        } else if (!sessionsList.some((s) => s.id === msg.current)) {
-          // Only add to Recents if this is a root branch (no parent).
-          // Child branches (branch/resample/edit) live in the Branches tree,
-          // not in the Recents list — adding them here creates phantom entries.
-          const branchMeta = (msg.branches ?? {})[msg.current];
-          const isRootBranch = branchMeta == null || branchMeta.parent == null;
-          if (isRootBranch) {
-            sessionsList = [
-              { id: msg.current, title: "audit", updatedAt: Date.now() },
-              ...sessionsList,
-            ];
-          }
-        }
-      }
-      // If the user clicked "+ New audit" we keep current=null (show
-      // StartView) even if the backend still reports the old branch as
-      // current. The flag is cleared when they send a new `start` or
-      // switch to an existing branch.
-      const resolvedCurrent = state.pendingNewAudit ? null : msg.current;
-
-      const hadPendingOp =
-        state.current === PENDING_ID || state.current === PENDING_BRANCH;
-      const resolvedStatus = state.pendingNewAudit
-        ? null
-        : reconcileStatus(state.status, msg.status, hadPendingOp);
-
-      // The real `state` broadcast naturally supersedes any PENDING_BRANCH
-      // optimistic state — `byRole` and `branches` are rebuilt from the
-      // broadcast, and `prevCurrent` is cleared.
       return {
         pool,
         events,
@@ -548,19 +497,104 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
         spanRole,
         spanParent,
         queued: msg.queued,
-        current: resolvedCurrent,
-        status: resolvedStatus,
+        current: msg.current,
+        status: msg.status,
         generating: msg.generating,
         version: msg.v,
-        sessionsList,
-        branchConfig,
         branches: msg.branches ?? {},
         candidateBatches: msg.candidate_batches ?? {},
         orchestrator: msg.orchestrator ?? null,
         // Full snapshot supersedes the live rewound-uuid set — the backend
         // now carries per-event `data.rewound` flags for the same effect.
         rewound: new Set(),
+        // Connect-time reset: any client-side pending sentinel from before
+        // the (re)connect is stale — same principle as A2's "`connect()`
+        // must reset `pending: []`".
+        sessionsList: state.sessionsList.filter((s) => s.id !== PENDING_ID),
         prevCurrent: null,
+      };
+    }
+
+    case "branch_created": {
+      // A3-typed-deltas: a new `Branch` was registered. Merge its
+      // `span_role` entries and `BranchMeta`; adopt the (possibly-
+      // repointed) `current`. Sent BEFORE the branch's `run()` spawns, so
+      // its events find `spanRole` populated — but re-scan `state.events`
+      // for any that raced in and re-bucket them (defence-in-depth for
+      // adversarial-review caveat #1).
+      const spanRole = new Map(state.spanRole);
+      for (const [sid, br] of Object.entries(msg.span_role_delta)) {
+        spanRole.set(sid, br);
+      }
+      let byRole = state.byRole;
+      for (const ev of state.events.values()) {
+        const hit = ev.span_id != null ? msg.span_role_delta[ev.span_id] : undefined;
+        if (hit) byRole = assignByRole(byRole, hit[0], hit[1], ev, undefined);
+      }
+      // Drop the optimistic PENDING_* sentinels (installed by `start()` /
+      // `_pendingChild`) — the real branch id has arrived. This is not the
+      // full A2 `pending[]` machinery; just enough that the sidebar tree
+      // (`state.branches`) matches the backend post-fork (chaos s4).
+      const { [PENDING_BRANCH]: _b, [PENDING_ID]: _i, ...branches } = state.branches;
+      const { [PENDING_BRANCH]: _br, [PENDING_ID]: _ir, ...byRoleRest } = byRole;
+      return {
+        spanRole,
+        byRole: byRoleRest,
+        branches: { ...branches, [msg.id]: msg.meta },
+        current: msg.current,
+        prevCurrent: null,
+        pendingNewAudit: false,
+        version: msg.v,
+      };
+    }
+
+    case "current": {
+      return { current: msg.branch, version: msg.v };
+    }
+
+    case "batch_resolved": {
+      const prev = state.candidateBatches[msg.batch];
+      const candidateBatches = {
+        ...state.candidateBatches,
+        [msg.batch]: { ...(prev ?? {} as CandidateBatch), picked: msg.picked },
+      };
+      // adversarial-review caveat #3: flip cancelled siblings' status so
+      // the sidebar doesn't show them as still running.
+      let branches = state.branches;
+      for (const id of msg.ended) {
+        if (branches[id]) {
+          branches = { ...branches, [id]: { ...branches[id], status: "ended" } };
+        }
+      }
+      return { candidateBatches, branches, version: msg.v };
+    }
+
+    case "orch": {
+      // adversarial-review caveat #4: orch registers `("orch","orch")` in
+      // `span_role` too — merge it so `resolveRole` routes orch events.
+      const spanRole = new Map(state.spanRole);
+      for (const [sid, br] of Object.entries(msg.span_role_delta)) {
+        spanRole.set(sid, br);
+      }
+      return { orchestrator: msg.state, spanRole, version: msg.v };
+    }
+
+    case "queued_consumed": {
+      // Drop the consumed injected-message ids from `queued[branch].
+      // auditor` — the backend-authoritative counterpart to
+      // `reconcileQueued`'s `ModelEvent.input`-scan (which stays as
+      // belt-and-suspenders until A2 deletes it).
+      const roles = state.queued[msg.branch];
+      if (roles == null) return { version: msg.v };
+      const drop = new Set(msg.ids);
+      const kept = roles.auditor.filter((m) => m.id == null || !drop.has(m.id));
+      if (kept.length === roles.auditor.length) return { version: msg.v };
+      return {
+        queued: {
+          ...state.queued,
+          [msg.branch]: { ...roles, auditor: kept },
+        },
+        version: msg.v,
       };
     }
 
@@ -784,14 +818,22 @@ export const useSession = create<SessionState>((set, get) => ({
   composerDraft: null,
 
   apply: (msg: Down) =>
-    set((state) =>
-      msg.t === "batch"
+    set((state) => {
+      // A3 version guard: drop a stale structural frame. `<` (not `<=`)
+      // so the connect-time `push_full_state` at `v === session.version`
+      // isn't rejected when the store's initial `version` happens to
+      // match. All GUARDED frames go through the backend's single drain
+      // queue and each bumps `version`, so on live traffic `v` is
+      // strictly monotone and the guard only fires on a genuine
+      // reorder/replay.
+      if ("v" in msg && GUARDED.has(msg.t) && msg.v < state.version) return {};
+      return msg.t === "batch"
         ? msg.ops.reduce<SessionState>(
             (s, op) => ({ ...s, ...reduceOne(s, op) }),
             state
           )
-        : { ...state, ...reduceOne(state, msg) }
-    ),
+        : { ...state, ...reduceOne(state, msg) };
+    }),
 
   connect: (sessionId: string) => {
     // Idempotent: React 18 StrictMode mounts effects twice in dev, so guard

@@ -564,6 +564,15 @@ class Branch(StepGated):
         self.queued["auditor"] = [
             m for m in self.queued["auditor"] if m.id not in self._consumed_queued
         ]
+        # A3-typed-deltas: with mid-session `{t:"state"}` gone, the frontend's
+        # only backend-authoritative signal that a queued message was
+        # consumed is this delta (or spotting the id in the next
+        # `ModelEvent.input` via `reconcileQueued` — kept as belt-and-
+        # suspenders until A2 lands and can delete it).
+        if self._consumed_queued:
+            self.session.broadcast_queued_consumed(
+                self.branch_id, list(self._consumed_queued)
+            )
         self._consumed_queued = set()
         self.rearm()
 

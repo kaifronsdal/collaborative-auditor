@@ -410,6 +410,19 @@ class Session:
 
     # -- view / full-state ----------------------------------------------------
 
+    def _branch_meta(self, b: Branch) -> dict[str, Any]:
+        """Wire-shape metadata for one branch (shared by `view()` and
+        `broadcast_branch_created`)."""
+        return {
+            "parent": b.parent_id,
+            "branched_at": b.branched_at,
+            "branched_at_turn": b.branched_at_turn,
+            "status": b.status,
+            "generating": b.generating,
+            "seed": b.meta.seed[:80],
+            "batch": b.meta.batch,
+        }
+
     def view(self) -> dict[str, Any]:
         """The full session snapshot (STREAMING.md §C `state` message body)."""
         auditor_tl = self._auditor_timeline() if self.branches else None
@@ -424,18 +437,7 @@ class Session:
             }
             for bid, b in self.branches.items()
         }
-        branches_meta = {
-            bid: {
-                "parent": b.parent_id,
-                "branched_at": b.branched_at,
-                "branched_at_turn": b.branched_at_turn,
-                "status": b.status,
-                "generating": b.generating,
-                "seed": b.meta.seed[:80],
-                "batch": b.meta.batch,
-            }
-            for bid, b in self.branches.items()
-        }
+        branches_meta = {bid: self._branch_meta(b) for bid, b in self.branches.items()}
         return {
             "pool": [m.model_dump(mode="json") for m in self.pool],
             "events": list(self.events.values()),
@@ -465,9 +467,17 @@ class Session:
         return self.branches[self.current].generating
 
     async def broadcast_status(self) -> None:
-        """Push the current branch's status as a lightweight `status` message."""
+        """Push the current branch's status as a lightweight `status` message.
+
+        A3-typed-deltas: routed through `_enqueue` (not direct `broadcast`) so
+        it's ordered relative to the `_on_event` batches and typed-delta
+        frames on the same drain queue — otherwise a direct-broadcast
+        `status` could overtake a queued `batch`/`branch_created` and the
+        client's version guard would drop the latter as stale. Kept `async`
+        so existing `await broadcast_status()` call-sites are unchanged.
+        """
         self.version += 1
-        await self.broadcast(
+        self._enqueue(
             {
                 "t": "status",
                 "v": self.version,
@@ -478,6 +488,87 @@ class Session:
                 # auditor column during a target generate).
                 "generating": self.current_generating(),
                 "orch_status": self.orchestrator.status if self.orchestrator else None,
+            }
+        )
+
+    # -- A3 typed deltas (ARCHITECTURE-RACES.md) ------------------------------
+    #
+    # Replace the six mid-session `{t:"state", …view()}` broadcasts with
+    # narrow deltas so `case "state"` on the client is connect-only. Each
+    # helper bumps `version` and enqueues onto the drain stream — same FIFO
+    # as `_on_event`'s `{t:"batch"}` frames, so `v` is monotone on the wire
+    # and the client's version guard is sound.
+
+    def broadcast_branch_created(self, branch: Branch) -> None:
+        """Announce a new `Branch`: its meta, the two `span_role` entries it
+        registered, and the (possibly-repointed) `current`. Sent BEFORE the
+        branch's `run()` task is spawned so the client's `spanRole` map is
+        populated before any of the branch's replay events land — otherwise
+        `resolveRole` would fail and those events would be permanently
+        unbucketed (adversarial-review caveat #1)."""
+        self.version += 1
+        self._enqueue(
+            {
+                "t": "branch_created",
+                "v": self.version,
+                "id": branch.branch_id,
+                "meta": self._branch_meta(branch),
+                "span_role_delta": {
+                    branch.auditor_span_id: [branch.branch_id, "auditor"],
+                    branch.target_span_id: [branch.branch_id, "target"],
+                },
+                "current": self.current,
+            }
+        )
+
+    def broadcast_current(self) -> None:
+        """`switch` / `pick_candidate`: `current` changed, nothing else."""
+        self.version += 1
+        self._enqueue({"t": "current", "v": self.version, "branch": self.current})
+
+    def broadcast_batch_resolved(self, batch_id: str, ended: list[str]) -> None:
+        """`pick_candidate` / `dismiss_candidates`: mark the batch closed.
+        `ended` (adversarial-review caveat #3) is the cancelled siblings —
+        the sidebar flips their status dot without a full `view()`."""
+        batch = self.candidate_batches[batch_id]
+        self.version += 1
+        self._enqueue(
+            {
+                "t": "batch_resolved",
+                "v": self.version,
+                "batch": batch_id,
+                "picked": batch.picked,
+                "ended": ended,
+            }
+        )
+
+    def broadcast_orch(self) -> None:
+        """`start_orchestrator`: the orch's `view()` plus its `span_role`
+        registration (adversarial-review caveat #4 — `("orch","orch")`)."""
+        assert self.orchestrator is not None
+        self.version += 1
+        self._enqueue(
+            {
+                "t": "orch",
+                "v": self.version,
+                "state": self.orchestrator.view(),
+                "span_role_delta": {self.orchestrator.span_id: ["orch", "orch"]},
+            }
+        )
+
+    def broadcast_queued_consumed(self, branch_id: str, ids: list[str]) -> None:
+        """`Branch.post_generate()`: the injected-message ids that reached
+        `state.messages` this turn. Post-R4 `pre_turn` copies-not-clears, so
+        without mid-session `{t:"state"}` this is the only signal for the
+        frontend to drop the ghost bubble (A2's `reconcileQueued` covers the
+        same ground via `ModelEvent.input`; this makes A2 able to delete it)."""
+        self.version += 1
+        self._enqueue(
+            {
+                "t": "queued_consumed",
+                "v": self.version,
+                "branch": branch_id,
+                "ids": ids,
             }
         )
 
@@ -521,8 +612,11 @@ class Session:
             fork_at_turn=fork_at_turn,
         )
         self.orchestrator = orch
+        # A3-typed-deltas: announce span_role/orch state BEFORE `run()` is
+        # spawned so orch events (which start immediately) find their
+        # `("orch","orch")` bucket on the client.
+        self.broadcast_orch()
         orch.task = asyncio.create_task(orch.run())
-        await self.broadcast({"t": "state", "v": self.version, **self.view()})
 
     async def fork_orchestrator(self, at_turn: int) -> str:
         """P2 — branch the orchestrator at ``at_turn`` into a **new** `Session`.
