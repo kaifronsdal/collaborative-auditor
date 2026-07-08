@@ -35,6 +35,7 @@ import subprocess
 import sys
 import time
 import traceback
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import anyio
@@ -108,15 +109,17 @@ async def _mk_branch(
     sid: str,
     bid: str,
     *,
-    auditor: list[ModelOutput],
-    target: list[ModelOutput],
+    auditor: Any,
+    target: Any,
     play: bool,
+    max_turns: int = 2,
 ) -> tuple[Session, Branch]:
     """Register a mockllm branch on a fresh session under ``sessions[sid]``.
 
     ``play=True`` runs it to completion before returning; ``play=False``
     spawns the ``run()`` task but leaves the gate closed so the branch parks
-    at ``status='paused'`` with an empty column.
+    at ``status='paused'`` with an empty column. ``auditor``/``target`` may
+    be a ``list[ModelOutput]`` or a mockllm ``custom_outputs`` callable.
     """
     session = Session()
     await session.start()
@@ -127,9 +130,13 @@ async def _mk_branch(
         seed=f"e2e-{sid}",
         auditor_model="mockllm/model",
         target_model="mockllm/model",
-        max_turns=len(auditor),
-        auditor_model_args={"custom_outputs": list(auditor)},
-        target_model_args={"custom_outputs": list(target)},
+        max_turns=len(auditor) if isinstance(auditor, list) else max_turns,
+        auditor_model_args={
+            "custom_outputs": list(auditor) if isinstance(auditor, list) else auditor
+        },
+        target_model_args={
+            "custom_outputs": list(target) if isinstance(target, list) else target
+        },
     )
     session.branches[bid] = b
     session.current = bid
@@ -137,8 +144,11 @@ async def _mk_branch(
     session.branch_tasks[bid] = task
     if play:
         b.play()
-        await task
-        assert b.error is None, f"branch {bid} failed: {b.error}"
+        # Callable custom_outputs (blocking mockllm) → don't await completion;
+        # the caller manages release/cleanup. List → deterministic, run to end.
+        if isinstance(auditor, list):
+            await task
+            assert b.error is None, f"branch {bid} failed: {b.error}"
     else:
         # Let run() flip idle→paused and broadcast before the page connects.
         for _ in range(100):
@@ -198,19 +208,40 @@ async def case_new_audit(page: Page, ui_port: int) -> None:
 
 
 async def case_unqueue(page: Page, ui_port: int) -> None:
+    """Realistic unqueue scenario post-R4: branch is *running* with a
+    blocking generate; inject via composer (no auto-step, since
+    ``status=="running"``) → ghost queues; unqueue before ``pre_turn`` of
+    the *next* turn drains it. Pre-R4 this used a paused branch, but
+    ``sendFeedback`` now auto-steps when paused (gap #9), which would
+    consume the message before the test can unqueue it.
+    """
     sid = "e2e-uq"
+
+    hold = anyio.Event()
+
+    async def slow_aud(*_a: Any, **_k: Any) -> ModelOutput:
+        await hold.wait()
+        return AUDITOR_2[0]
+
     session, b = await _mk_branch(
-        sid, "b0", auditor=AUDITOR_2, target=[_target("hi")], play=False
+        sid, "b0", auditor=slow_aud, target=[_target("hi")], play=True
     )
     try:
+        # Wait until the auditor's first generate is in flight — status is
+        # ``running`` and ``_gen_scope`` is set, so the composer's
+        # ``sendFeedback`` won't auto-step and the inject genuinely queues.
+        for _ in range(200):
+            if b._gen_scope is not None:
+                break
+            await anyio.sleep(0.02)
+        assert b._gen_scope is not None, "generate never started"
+
         await page.goto(f"http://127.0.0.1:{ui_port}/?session={sid}")
         await page.wait_for_selector(".columns .col-wrap", timeout=15_000)
         aud = page.locator(".columns .col-wrap").first
         ghost = aud.locator(".bubble.ghost")
         await expect(ghost).to_have_count(0)
 
-        # Composer → Enter injects into queued[auditor]; branch is paused so
-        # the message stays queued (ghost bubble persists).
         await aud.locator(".composer-input").fill("please try a different tack")
         await aud.locator(".composer-input").press("Enter")
         await expect(ghost).to_have_count(1, timeout=5_000)
@@ -234,7 +265,8 @@ async def case_unqueue(page: Page, ui_port: int) -> None:
         )
         print("    ghost 0→1→0; backend queued drained")
     finally:
-        # Branch is parked on the gate — cancel its run() task.
+        hold.set()  # release the blocking generate
+        b.pause()  # cancel _gen_scope so it doesn't wait on hold
         session.branch_tasks["b0"].cancel()
         await session.close()
 
