@@ -155,7 +155,11 @@ export type Down =
   // P2 session fork: server closed the parent, minted + registered a new
   // Session seeded from `fork_seed(at_turn)`; frontend navigates to it.
   | { t: "forked"; session_id: string }
-  | { t: "error"; v: number; message: string };
+  | { t: "error"; v: number; message: string }
+  // A3-batch (ARCHITECTURE-RACES.md): `_on_event` ships pool + event/update
+  // + timeline as one atomic frame so the reducer applies them in a single
+  // `set()`. Ops are any non-batch `Down`; `v` is shared across the batch.
+  | { t: "batch"; v: number; ops: Exclude<Down, { t: "batch" }>[] };
 
 /** P2 — optional per-fork model overrides. Any fork-shaped command
  *  (`branch`/`resample`/`*_auditor`/`edit_*`) may carry these; unset fields

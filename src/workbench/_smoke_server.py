@@ -66,11 +66,13 @@ async def _amain() -> None:
                     }
                 )
             )
-            ev = await _recv_until(conn_b, lambda m: m["t"] == "event")
+            # A3-batch: `{t:"event"}` now arrives inside a `{t:"batch"}` frame.
+            batch = await _recv_until(conn_b, lambda m: m["t"] == "batch")
+            ev = next(op for op in batch["ops"] if op["t"] == "event")
             assert ev["event"]["uuid"], "S1: event missing uuid"
             print(
                 f"S1 ✓ cross-conn start: first event "
-                f"{ev['event']['event']!r} v={ev['v']}"
+                f"{ev['event']['event']!r} v={batch['v']}"
             )
 
             # leave the branch running for S2
@@ -90,7 +92,7 @@ async def _amain() -> None:
             # further events keep flowing (or the branch ends — either proves
             # the wire is live).
             nxt = await _recv_until(
-                conn_c, lambda m: m["t"] in ("event", "update", "status")
+                conn_c, lambda m: m["t"] in ("batch", "status")
             )
             print(
                 f"S2 ✓ reconnect mid-generate: snapshot had "

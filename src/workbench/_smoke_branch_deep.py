@@ -41,6 +41,7 @@ from inspect_ai.model import ModelOutput
 from workbench._smoke_fixtures import _nth_target_anchor, normalize
 from workbench._smoke_util import (
     FakeConn,
+    flatten,
     resolve_role as _resolve_branch_role,
     wire_events as _events,
 )
@@ -134,13 +135,14 @@ async def scenario_a(dump_path: Path | None) -> None:
         )
 
     # ── A1: every {t:"event"} uuid is globally unique ────────────────────────
-    new_uuids: list[str] = [m["event"]["uuid"] for m in conn.sent if m["t"] == "event"]
+    flat = flatten(conn.sent)
+    new_uuids: list[str] = [m["event"]["uuid"] for m in flat if m["t"] == "event"]
     dup = {u for u in new_uuids if new_uuids.count(u) > 1}
     assert not dup, f"A1: duplicate event uuids on wire: {sorted(dup)[:5]}"
 
     # ── A2: every {t:"update"} uuid was previously introduced ────────────────
     introduced: set[str] = set()
-    for m in conn.sent:
+    for m in flat:
         if m["t"] == "state":
             introduced |= {e["uuid"] for e in m["events"] if e.get("uuid")}
         elif m["t"] == "event":

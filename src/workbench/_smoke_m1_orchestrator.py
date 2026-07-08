@@ -90,7 +90,11 @@ async def _amain() -> None:
         assert stable["data"]["bundle"]["text/plain"] == "'v2'", stable["data"]["bundle"]
 
         # wire: one {"t":"event"} for uuid=="job", ≥1 {"t":"update"} for it
-        job_msgs = [m for m in conn.sent if m.get("event", {}).get("uuid") == "job"]
+        from workbench._smoke_util import flatten
+
+        job_msgs = [
+            m for m in flatten(conn.sent) if m.get("event", {}).get("uuid") == "job"
+        ]
         assert [m["t"] for m in job_msgs] == ["event", "update"], [m["t"] for m in job_msgs]
         assert all("v" in m for m in job_msgs), "display wire messages missing version"
 

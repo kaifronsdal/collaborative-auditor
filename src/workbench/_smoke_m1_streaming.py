@@ -18,6 +18,7 @@ from typing import Any
 import anyio
 from inspect_ai.model import ModelOutput
 
+from workbench._smoke_util import flatten
 from workbench.m1._fixtures import mock_orch_session, settle
 
 PROSE = "The quick brown fox jumps over the lazy dog and keeps on running."
@@ -56,7 +57,9 @@ async def _amain() -> None:
 
         # ---- wire: multiple {"t":"update"} for this uuid, content grows --------
         updates = [
-            m for m in conn.sent if m["t"] == "update" and m["event"]["uuid"] == uuid
+            m
+            for m in flatten(conn.sent)
+            if m["t"] == "update" and m["event"]["uuid"] == uuid
         ]
         assert len(updates) >= 2, (
             f"expected ≥2 streaming updates on the wire, got {len(updates)} "

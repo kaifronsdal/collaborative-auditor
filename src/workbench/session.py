@@ -272,22 +272,26 @@ class Session:
         ):
             return
 
+        # A3-batch (ARCHITECTURE-RACES.md): accumulate pool/event/timeline as
+        # one atomic ``{t:"batch", ops:[…]}`` frame instead of 2-3 separate
+        # frames, so the frontend applies them in one `set()` — closes the
+        # ghost-gap where React could paint between the event landing and the
+        # timeline row appearing.
+        ops: list[dict[str, Any]] = []
+
         dumped = self._condense(ev)
-        if isinstance(ev, ModelEvent) and not is_update:
-            self._emit_pool_delta()
+        if (
+            isinstance(ev, ModelEvent)
+            and not is_update
+            and (delta := self._emit_pool_delta()) is not None
+        ):
+            ops.append(delta)
 
         self.events[ev.uuid] = dumped
         if not is_update and resolved is not None:
             self.by_role.setdefault(resolved, []).append(ev.uuid)
         self._index_anchor(ev, dumped)
-        self.version += 1
-        self._enqueue(
-            {
-                "t": "update" if is_update else "event",
-                "v": self.version,
-                "event": dumped,
-            }
-        )
+        ops.append({"t": "update" if is_update else "event", "event": dumped})
 
         # Rebuild + ship a column's timeline when its structure or content
         # changes: on BranchEvent (new trajectory) and on each new ModelEvent
@@ -319,15 +323,14 @@ class Session:
                     if role == "target"
                     else (self.current or branch.branch_id)
                 )
-                self._enqueue(
-                    {
-                        "t": "timeline",
-                        "v": self.version,
-                        "branch": key,
-                        "role": role,
-                        "timeline": timeline,
-                    }
+                ops.append(
+                    {"t": "timeline", "branch": key, "role": role, "timeline": timeline}
                 )
+
+        self.version += 1
+        for op in ops:
+            op["v"] = self.version
+        self._enqueue({"t": "batch", "v": self.version, "ops": ops})
 
     def _index_anchor(self, ev: Event, dumped: dict[str, Any]) -> None:
         """Maintain `_by_anchor` (petri `_anchor_lookup` over dumped uuids).
@@ -415,21 +418,18 @@ class Session:
 
     # -- wire emission (enqueue only; drain() owns the socket) ----------------
 
-    def _emit_pool_delta(self) -> None:
-        """Ship pool entries appended since the last delta (STREAMING.md §C)."""
+    def _emit_pool_delta(self) -> dict[str, Any] | None:
+        """Build a ``{t:"pool"}`` op for entries appended since the last delta.
+
+        Returns the op dict (no ``v`` — the caller stamps it as part of the
+        enclosing batch) or ``None`` if the pool hasn't grown. STREAMING.md §C.
+        """
         if len(self.pool) <= self.pool_sent:
-            return
+            return None
         entries = [m.model_dump(mode="json") for m in self.pool[self.pool_sent :]]
-        self.version += 1
-        self._enqueue(
-            {
-                "t": "pool",
-                "v": self.version,
-                "from": self.pool_sent,
-                "entries": entries,
-            }
-        )
+        op = {"t": "pool", "from": self.pool_sent, "entries": entries}
         self.pool_sent = len(self.pool)
+        return op
 
     async def drain(self) -> None:
         """Own the WebSockets: await enqueued wire messages and broadcast them."""

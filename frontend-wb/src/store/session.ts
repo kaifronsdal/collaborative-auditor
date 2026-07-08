@@ -469,6 +469,290 @@ function reconcileQueued(queued: QueuedMap, ev: Event): QueuedMap {
   return changed ? next : queued;
 }
 
+/** Any `Down` variant except the `{t:"batch"}` envelope itself. */
+type DownOp = Exclude<Down, { t: "batch" }>;
+
+/**
+ * Pure reducer for a single wire message. Returns the `Partial<SessionState>`
+ * patch for `msg`; `apply()` folds a `{t:"batch"}`'s `ops[]` through this so
+ * pool + event + timeline land in one Zustand `set()` (A3-batch,
+ * ARCHITECTURE-RACES.md — closes the ghost-gap one-frame race).
+ */
+function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
+  switch (msg.t) {
+    case "state": {
+      const pool = msg.pool;
+      const events = new Map<string, Event>();
+      for (const ev of expandEvents(msg.events, { messages: pool, calls: [] })) {
+        events.set(uuidOf(ev), ev);
+      }
+      const spanRole = new Map<string, [BranchId, Role]>(
+        Object.entries(msg.span_role)
+      );
+      // Recover span parentage from any SpanBegin events in the snapshot.
+      const spanParent = new Map<string, string | null>();
+      for (const ev of msg.events) {
+        if (ev.event === "span_begin") spanParent.set(ev.id, ev.parent_id ?? null);
+      }
+      // Reconcile the pending Recents stub to the real branch id once the
+      // backend assigns `current`. If the branch isn't listed yet (e.g. a
+      // reconnect to a session that already had a running branch), add it.
+      let sessionsList = state.sessionsList;
+      let branchConfig = state.branchConfig;
+      if (msg.current != null) {
+        const pendingIdx = sessionsList.findIndex((s) => s.id === PENDING_ID);
+        if (pendingIdx !== -1) {
+          sessionsList = sessionsList.slice();
+          sessionsList[pendingIdx] = {
+            ...sessionsList[pendingIdx],
+            id: msg.current,
+          };
+          if (branchConfig[PENDING_ID]) {
+            const { [PENDING_ID]: pending, ...rest } = branchConfig;
+            branchConfig = { ...rest, [msg.current]: pending };
+          }
+        } else if (!sessionsList.some((s) => s.id === msg.current)) {
+          // Only add to Recents if this is a root branch (no parent).
+          // Child branches (branch/resample/edit) live in the Branches tree,
+          // not in the Recents list — adding them here creates phantom entries.
+          const branchMeta = (msg.branches ?? {})[msg.current];
+          const isRootBranch = branchMeta == null || branchMeta.parent == null;
+          if (isRootBranch) {
+            sessionsList = [
+              { id: msg.current, title: "audit", updatedAt: Date.now() },
+              ...sessionsList,
+            ];
+          }
+        }
+      }
+      // If the user clicked "+ New audit" we keep current=null (show
+      // StartView) even if the backend still reports the old branch as
+      // current. The flag is cleared when they send a new `start` or
+      // switch to an existing branch.
+      const resolvedCurrent = state.pendingNewAudit ? null : msg.current;
+
+      const hadPendingOp =
+        state.current === PENDING_ID || state.current === PENDING_BRANCH;
+      const resolvedStatus = state.pendingNewAudit
+        ? null
+        : reconcileStatus(state.status, msg.status, hadPendingOp);
+
+      // The real `state` broadcast naturally supersedes any PENDING_BRANCH
+      // optimistic state — `byRole` and `branches` are rebuilt from the
+      // broadcast, and `prevCurrent` is cleared.
+      return {
+        pool,
+        events,
+        byRole: buildByRole(events.values(), spanParent, spanRole),
+        timelines: msg.timelines ?? {},
+        spanRole,
+        spanParent,
+        queued: msg.queued,
+        current: resolvedCurrent,
+        status: resolvedStatus,
+        generating: msg.generating,
+        version: msg.v,
+        sessionsList,
+        branchConfig,
+        branches: msg.branches ?? {},
+        candidateBatches: msg.candidate_batches ?? {},
+        orchestrator: msg.orchestrator ?? null,
+        // Full snapshot supersedes the live rewound-uuid set — the backend
+        // now carries per-event `data.rewound` flags for the same effect.
+        rewound: new Set(),
+        prevCurrent: null,
+      };
+    }
+
+    case "status": {
+      // Don't clobber an optimistic "paused" or "running" status set by
+      // start()/transport() with a stale null from the backend if a
+      // pending operation is in flight.
+      const isPendingOp =
+        state.current === PENDING_ID || state.current === PENDING_BRANCH;
+      const resolvedStatus =
+        isPendingOp && msg.status == null ? state.status : msg.status;
+      return {
+        status: resolvedStatus,
+        generating: msg.generating,
+        version: msg.v,
+        // Orchestrator status piggybacks on the same broadcast; keep the
+        // existing view() snapshot but overlay the fresh status.
+        ...(msg.orch_status !== undefined && state.orchestrator
+          ? { orchestrator: { ...state.orchestrator, status: msg.orch_status ?? "idle" } }
+          : {}),
+      };
+    }
+
+    case "rewound": {
+      // §2: mark every orch event at/after `from_uuid` as rewound. The
+      // events stay in `byRole["orch"]["orch"]` (removing would break the
+      // uuid-keyed update path); `eventsToOrchTurns` filters by this set.
+      const orchEvents = state.byRole.orch?.orch ?? [];
+      const idx = orchEvents.findIndex((e) => e.uuid === msg.from_uuid);
+      if (idx < 0) return { version: msg.v };
+      const next = new Set(state.rewound);
+      for (let i = idx; i < orchEvents.length; i++) {
+        const u = orchEvents[i].uuid;
+        if (u != null) next.add(u);
+      }
+      return { rewound: next, version: msg.v };
+    }
+
+    case "notify": {
+      // sys-chip pushed by a backgrounded cell's done-callback. Full
+      // list is refreshed on the next `state`; append optimistically so
+      // the chip renders above the next turn immediately.
+      if (state.orchestrator == null) return { version: msg.v };
+      return {
+        version: msg.v,
+        orchestrator: {
+          ...state.orchestrator,
+          notifications: [...state.orchestrator.notifications, msg.text],
+        },
+      };
+    }
+
+    case "pool": {
+      const pool = state.pool.slice();
+      // `from` is the high-water-mark; entries append at that index.
+      pool.length = msg.from;
+      pool.push(...msg.entries);
+      // Growing the pool can change earlier ModelEvents' resolution.
+      const events = resolveAll(state.events, pool);
+      return {
+        pool,
+        events,
+        byRole: buildByRole(events.values(), state.spanParent, state.spanRole),
+        version: msg.v,
+      };
+    }
+
+    case "event": {
+      const ev = resolveOne(msg.event, state.pool);
+      const uuid = uuidOf(ev);
+      const events = new Map(state.events);
+      events.set(uuid, ev);
+      const spanParent =
+        ev.event === "span_begin"
+          ? new Map(state.spanParent).set(ev.id, ev.parent_id ?? null)
+          : state.spanParent;
+      const role = resolveRole(ev.span_id, spanParent, state.spanRole);
+      return {
+        events,
+        spanParent,
+        byRole: role
+          ? assignByRole(state.byRole, role[0], role[1], ev, undefined)
+          : state.byRole,
+        queued: reconcileQueued(state.queued, ev),
+        version: msg.v,
+      };
+    }
+
+    case "update": {
+      const ev = resolveOne(msg.event, state.pool);
+      const uuid = uuidOf(ev);
+      const prev = state.events.get(uuid);
+      const events = new Map(state.events);
+      events.set(uuid, ev);
+      const role = resolveRole(ev.span_id, state.spanParent, state.spanRole);
+      return {
+        events,
+        byRole: role
+          ? assignByRole(state.byRole, role[0], role[1], ev, prev)
+          : state.byRole,
+        // R4 gap #2: the pending ModelEvent's terminal update carries
+        // the resolved `input` (with the injected id) — reconcile here
+        // too, not just on the initial `{t:"event"}`.
+        queued: reconcileQueued(state.queued, ev),
+        version: msg.v,
+      };
+    }
+
+    case "queued": {
+      const queued: QueuedMap = structuredClone(state.queued);
+      const roles = (queued[msg.branch] ??= { auditor: [], target: [] });
+      // Dedup by message id: if the inject action already pushed it
+      // optimistically, don't double-push when the server echo arrives.
+      if (msg.message.id == null || !roles[msg.role].some((m) => m.id === msg.message.id)) {
+        roles[msg.role].push(msg.message);
+      }
+      return { queued, version: msg.v };
+    }
+
+    case "unqueued": {
+      const roles = state.queued[msg.branch];
+      if (roles == null) return { version: msg.v };
+      const kept = roles[msg.role].filter((m) => m.id !== msg.message_id);
+      if (kept.length === roles[msg.role].length) return { version: msg.v };
+      return {
+        queued: {
+          ...state.queued,
+          [msg.branch]: { ...roles, [msg.role]: kept },
+        },
+        version: msg.v,
+      };
+    }
+
+    case "rewrite_draft": {
+      const key = msg.call_id ?? msg.message_id;
+      if (key == null) return { version: msg.v };
+      const draft: RewriteDraft = msg.error
+        ? { status: "error", error: msg.error }
+        : { status: "ready", args: msg.args ?? {}, content: msg.content, raw: msg.raw };
+      return {
+        rewriteDrafts: { ...state.rewriteDrafts, [key]: draft },
+        version: msg.v,
+      };
+    }
+
+    case "timeline": {
+      return {
+        timelines: {
+          ...state.timelines,
+          [msg.branch]: { ...state.timelines[msg.branch], [msg.role]: msg.timeline },
+        },
+        version: msg.v,
+      };
+    }
+
+    case "forked": {
+      // P2 session fork: server has closed the parent (this session's
+      // pool/events/byRole are now stale) and registered a fresh Session
+      // under `msg.session_id`. Navigate — same hard-reload path as the
+      // sidebar's `openSession`, so `App.connect()` opens a clean socket
+      // and the first `push_full_state` seeds store from scratch.
+      // `typeof` guard: the vitest node env has no `location`.
+      if (typeof location !== "undefined") {
+        const url = new URL(location.href);
+        url.searchParams.set("session", msg.session_id);
+        location.assign(url.toString());
+      }
+      return {};
+    }
+
+    case "error": {
+      // Roll back any optimistic branch/resample/edit: drop PENDING_BRANCH
+      // from byRole and restore `current` to the previous real id.
+      const hadPending =
+        state.current === PENDING_BRANCH || state.byRole[PENDING_BRANCH] != null;
+      if (hadPending) {
+        const { [PENDING_BRANCH]: _dropped, ...byRoleWithout } = state.byRole;
+        const { [PENDING_BRANCH]: _droppedB, ...branchesWithout } = state.branches;
+        return {
+          error: msg.message,
+          version: msg.v,
+          current: state.prevCurrent,
+          prevCurrent: null,
+          byRole: byRoleWithout,
+          branches: branchesWithout,
+        };
+      }
+      return { error: msg.message, version: msg.v };
+    }
+  }
+}
+
 export const useSession = create<SessionState>((set, get) => ({
   pool: [],
   events: new Map(),
@@ -500,278 +784,14 @@ export const useSession = create<SessionState>((set, get) => ({
   composerDraft: null,
 
   apply: (msg: Down) =>
-    set((state) => {
-      switch (msg.t) {
-        case "state": {
-          const pool = msg.pool;
-          const events = new Map<string, Event>();
-          for (const ev of expandEvents(msg.events, { messages: pool, calls: [] })) {
-            events.set(uuidOf(ev), ev);
-          }
-          const spanRole = new Map<string, [BranchId, Role]>(
-            Object.entries(msg.span_role)
-          );
-          // Recover span parentage from any SpanBegin events in the snapshot.
-          const spanParent = new Map<string, string | null>();
-          for (const ev of msg.events) {
-            if (ev.event === "span_begin") spanParent.set(ev.id, ev.parent_id ?? null);
-          }
-          // Reconcile the pending Recents stub to the real branch id once the
-          // backend assigns `current`. If the branch isn't listed yet (e.g. a
-          // reconnect to a session that already had a running branch), add it.
-          let sessionsList = state.sessionsList;
-          let branchConfig = state.branchConfig;
-          if (msg.current != null) {
-            const pendingIdx = sessionsList.findIndex((s) => s.id === PENDING_ID);
-            if (pendingIdx !== -1) {
-              sessionsList = sessionsList.slice();
-              sessionsList[pendingIdx] = {
-                ...sessionsList[pendingIdx],
-                id: msg.current,
-              };
-              if (branchConfig[PENDING_ID]) {
-                const { [PENDING_ID]: pending, ...rest } = branchConfig;
-                branchConfig = { ...rest, [msg.current]: pending };
-              }
-            } else if (!sessionsList.some((s) => s.id === msg.current)) {
-              // Only add to Recents if this is a root branch (no parent).
-              // Child branches (branch/resample/edit) live in the Branches tree,
-              // not in the Recents list — adding them here creates phantom entries.
-              const branchMeta = (msg.branches ?? {})[msg.current];
-              const isRootBranch = branchMeta == null || branchMeta.parent == null;
-              if (isRootBranch) {
-                sessionsList = [
-                  { id: msg.current, title: "audit", updatedAt: Date.now() },
-                  ...sessionsList,
-                ];
-              }
-            }
-          }
-          // If the user clicked "+ New audit" we keep current=null (show
-          // StartView) even if the backend still reports the old branch as
-          // current. The flag is cleared when they send a new `start` or
-          // switch to an existing branch.
-          const resolvedCurrent = state.pendingNewAudit ? null : msg.current;
-
-          const hadPendingOp =
-            state.current === PENDING_ID || state.current === PENDING_BRANCH;
-          const resolvedStatus = state.pendingNewAudit
-            ? null
-            : reconcileStatus(state.status, msg.status, hadPendingOp);
-
-          // The real `state` broadcast naturally supersedes any PENDING_BRANCH
-          // optimistic state — `byRole` and `branches` are rebuilt from the
-          // broadcast, and `prevCurrent` is cleared.
-          return {
-            pool,
-            events,
-            byRole: buildByRole(events.values(), spanParent, spanRole),
-            timelines: msg.timelines ?? {},
-            spanRole,
-            spanParent,
-            queued: msg.queued,
-            current: resolvedCurrent,
-            status: resolvedStatus,
-            generating: msg.generating,
-            version: msg.v,
-            sessionsList,
-            branchConfig,
-            branches: msg.branches ?? {},
-            candidateBatches: msg.candidate_batches ?? {},
-            orchestrator: msg.orchestrator ?? null,
-            // Full snapshot supersedes the live rewound-uuid set — the backend
-            // now carries per-event `data.rewound` flags for the same effect.
-            rewound: new Set(),
-            prevCurrent: null,
-          };
-        }
-
-        case "status": {
-          // Don't clobber an optimistic "paused" or "running" status set by
-          // start()/transport() with a stale null from the backend if a
-          // pending operation is in flight.
-          const isPendingOp =
-            state.current === PENDING_ID || state.current === PENDING_BRANCH;
-          const resolvedStatus =
-            isPendingOp && msg.status == null ? state.status : msg.status;
-          return {
-            status: resolvedStatus,
-            generating: msg.generating,
-            version: msg.v,
-            // Orchestrator status piggybacks on the same broadcast; keep the
-            // existing view() snapshot but overlay the fresh status.
-            ...(msg.orch_status !== undefined && state.orchestrator
-              ? { orchestrator: { ...state.orchestrator, status: msg.orch_status ?? "idle" } }
-              : {}),
-          };
-        }
-
-        case "rewound": {
-          // §2: mark every orch event at/after `from_uuid` as rewound. The
-          // events stay in `byRole["orch"]["orch"]` (removing would break the
-          // uuid-keyed update path); `eventsToOrchTurns` filters by this set.
-          const orchEvents = state.byRole.orch?.orch ?? [];
-          const idx = orchEvents.findIndex((e) => e.uuid === msg.from_uuid);
-          if (idx < 0) return { version: msg.v };
-          const next = new Set(state.rewound);
-          for (let i = idx; i < orchEvents.length; i++) {
-            const u = orchEvents[i].uuid;
-            if (u != null) next.add(u);
-          }
-          return { rewound: next, version: msg.v };
-        }
-
-        case "notify": {
-          // sys-chip pushed by a backgrounded cell's done-callback. Full
-          // list is refreshed on the next `state`; append optimistically so
-          // the chip renders above the next turn immediately.
-          if (state.orchestrator == null) return { version: msg.v };
-          return {
-            version: msg.v,
-            orchestrator: {
-              ...state.orchestrator,
-              notifications: [...state.orchestrator.notifications, msg.text],
-            },
-          };
-        }
-
-        case "pool": {
-          const pool = state.pool.slice();
-          // `from` is the high-water-mark; entries append at that index.
-          pool.length = msg.from;
-          pool.push(...msg.entries);
-          // Growing the pool can change earlier ModelEvents' resolution.
-          const events = resolveAll(state.events, pool);
-          return {
-            pool,
-            events,
-            byRole: buildByRole(events.values(), state.spanParent, state.spanRole),            version: msg.v,
-          };
-        }
-
-        case "event": {
-          const ev = resolveOne(msg.event, state.pool);
-          const uuid = uuidOf(ev);
-          const events = new Map(state.events);
-          events.set(uuid, ev);
-          const spanParent =
-            ev.event === "span_begin"
-              ? new Map(state.spanParent).set(ev.id, ev.parent_id ?? null)
-              : state.spanParent;
-          const role = resolveRole(ev.span_id, spanParent, state.spanRole);
-          return {
-            events,
-            spanParent,
-            byRole: role
-              ? assignByRole(state.byRole, role[0], role[1], ev, undefined)
-              : state.byRole,            queued: reconcileQueued(state.queued, ev),
-            version: msg.v,
-          };
-        }
-
-        case "update": {
-          const ev = resolveOne(msg.event, state.pool);
-          const uuid = uuidOf(ev);
-          const prev = state.events.get(uuid);
-          const events = new Map(state.events);
-          events.set(uuid, ev);
-          const role = resolveRole(ev.span_id, state.spanParent, state.spanRole);
-          return {
-            events,
-            byRole: role
-              ? assignByRole(state.byRole, role[0], role[1], ev, prev)
-              : state.byRole,
-            // R4 gap #2: the pending ModelEvent's terminal update carries
-            // the resolved `input` (with the injected id) — reconcile here
-            // too, not just on the initial `{t:"event"}`.
-            queued: reconcileQueued(state.queued, ev),
-            version: msg.v,
-          };
-        }
-
-        case "queued": {
-          const queued: QueuedMap = structuredClone(state.queued);
-          const roles = (queued[msg.branch] ??= { auditor: [], target: [] });
-          // Dedup by message id: if the inject action already pushed it
-          // optimistically, don't double-push when the server echo arrives.
-          if (msg.message.id == null || !roles[msg.role].some((m) => m.id === msg.message.id)) {
-            roles[msg.role].push(msg.message);
-          }
-          return { queued, version: msg.v };
-        }
-
-        case "unqueued": {
-          const roles = state.queued[msg.branch];
-          if (roles == null) return { version: msg.v };
-          const kept = roles[msg.role].filter((m) => m.id !== msg.message_id);
-          if (kept.length === roles[msg.role].length) return { version: msg.v };
-          return {
-            queued: {
-              ...state.queued,
-              [msg.branch]: { ...roles, [msg.role]: kept },
-            },
-            version: msg.v,
-          };
-        }
-
-        case "rewrite_draft": {
-          const key = msg.call_id ?? msg.message_id;
-          if (key == null) return { version: msg.v };
-          const draft: RewriteDraft = msg.error
-            ? { status: "error", error: msg.error }
-            : { status: "ready", args: msg.args ?? {}, content: msg.content, raw: msg.raw };
-          return {
-            rewriteDrafts: { ...state.rewriteDrafts, [key]: draft },
-            version: msg.v,
-          };
-        }
-
-        case "timeline": {
-          return {
-            timelines: {
-              ...state.timelines,
-              [msg.branch]: { ...state.timelines[msg.branch], [msg.role]: msg.timeline },
-            },
-            version: msg.v,
-          };
-        }
-
-        case "forked": {
-          // P2 session fork: server has closed the parent (this session's
-          // pool/events/byRole are now stale) and registered a fresh Session
-          // under `msg.session_id`. Navigate — same hard-reload path as the
-          // sidebar's `openSession`, so `App.connect()` opens a clean socket
-          // and the first `push_full_state` seeds store from scratch.
-          // `typeof` guard: the vitest node env has no `location`.
-          if (typeof location !== "undefined") {
-            const url = new URL(location.href);
-            url.searchParams.set("session", msg.session_id);
-            location.assign(url.toString());
-          }
-          return {};
-        }
-
-        case "error": {
-          // Roll back any optimistic branch/resample/edit: drop PENDING_BRANCH
-          // from byRole and restore `current` to the previous real id.
-          const hadPending =
-            state.current === PENDING_BRANCH || state.byRole[PENDING_BRANCH] != null;
-          if (hadPending) {
-            const { [PENDING_BRANCH]: _dropped, ...byRoleWithout } = state.byRole;
-            const { [PENDING_BRANCH]: _droppedB, ...branchesWithout } = state.branches;
-            return {
-              error: msg.message,
-              version: msg.v,
-              current: state.prevCurrent,
-              prevCurrent: null,
-              byRole: byRoleWithout,
-              branches: branchesWithout,
-            };
-          }
-          return { error: msg.message, version: msg.v };
-        }
-      }
-    }),
+    set((state) =>
+      msg.t === "batch"
+        ? msg.ops.reduce<SessionState>(
+            (s, op) => ({ ...s, ...reduceOne(s, op) }),
+            state
+          )
+        : { ...state, ...reduceOne(state, msg) }
+    ),
 
   connect: (sessionId: string) => {
     // Idempotent: React 18 StrictMode mounts effects twice in dev, so guard

@@ -20,7 +20,7 @@ from pathlib import Path
 import anyio
 from inspect_ai.event._pool import _expand_refs
 
-from workbench._smoke_util import FakeConn
+from workbench._smoke_util import FakeConn, flatten
 from workbench.run import Branch
 from workbench.session import Session
 
@@ -52,7 +52,11 @@ async def _amain(dump_path: Path | None = None) -> None:
     await session.close()  # stop drain so all queued wire messages flush
 
     # --- assertions ----------------------------------------------------------
-    kinds = [m["t"] for m in conn.sent]
+    # A3-batch: `_on_event` now ships pool/event/timeline as one
+    # ``{t:"batch", ops:[…]}`` frame. Flatten for the per-op assertions;
+    # ``conn.sent`` (raw) is still what ``--dump`` writes.
+    flat = flatten(conn.sent)
+    kinds = [m["t"] for m in flat]
     n_state = kinds.count("state")
     n_pool = kinds.count("pool")
     n_event = kinds.count("event")
@@ -60,13 +64,13 @@ async def _amain(dump_path: Path | None = None) -> None:
 
     assert n_state >= 1, "expected ≥1 state message"
 
-    pool_msgs = [m for m in conn.sent if m["t"] == "pool"]
+    pool_msgs = [m for m in flat if m["t"] == "pool"]
     assert pool_msgs, "expected ≥1 pool message"
     assert any(m["entries"] for m in pool_msgs), "expected a pool delta with entries"
 
     # a settled ModelEvent: input condensed to refs, input itself emptied.
     model_events = [
-        m for m in conn.sent if m["t"] == "event" and m["event"]["event"] == "model"
+        m for m in flat if m["t"] == "event" and m["event"]["event"] == "model"
     ]
     condensed = [
         m
@@ -80,7 +84,7 @@ async def _amain(dump_path: Path | None = None) -> None:
     for m in condensed:
         uuid = m["event"]["uuid"]
         updates = [
-            u for u in conn.sent if u["t"] == "update" and u["event"]["uuid"] == uuid
+            u for u in flat if u["t"] == "update" and u["event"]["uuid"] == uuid
         ]
         lens = [
             len(json.dumps(u["event"]["output"]["choices"][0]["message"]["content"]))
@@ -126,23 +130,22 @@ async def _amain(dump_path: Path | None = None) -> None:
     # `_target_timeline` appends `by_role` ModelEvents onto the tip span, so
     # the `{t:"timeline"}` shipped in the same `_on_event` tick as the pending
     # target `ModelEvent` already carries its uuid — the column streams rather
-    # than lagging until the anchor lands (RACE-FIXES.md R2).
+    # than lagging until the anchor lands (RACE-FIXES.md R2). Post-A3 the two
+    # ops arrive in one atomic ``{t:"batch"}`` — asserted below.
     def _tl_uuids(span: dict) -> set[str]:
         s = {c["event"] for c in span["content"] if c["type"] == "event"}
         for b in span["branches"]:
             s |= _tl_uuids(b)
         return s
 
-    for i, m in enumerate(conn.sent):
+    for i, m in enumerate(flat):
         if (
             m["t"] == "event"
             and m["event"]["event"] == "model"
             and session._resolve(m["event"]["span_id"]) == ("b0", "target")
         ):
             tl = next(
-                x
-                for x in conn.sent[i:]
-                if x["t"] == "timeline" and x["role"] == "target"
+                x for x in flat[i:] if x["t"] == "timeline" and x["role"] == "target"
             )
             assert m["event"]["uuid"] in _tl_uuids(tl["timeline"]["root"]), (
                 f"target timeline shipped with pending ModelEvent "
@@ -152,6 +155,22 @@ async def _amain(dump_path: Path | None = None) -> None:
             break
     else:
         raise AssertionError("no target ModelEvent on the wire")
+
+    # --- A3-batch: event + timeline atomic (ghost-gap closed) ----------------
+    # Every `{t:"timeline"}` op reaches the wire in the *same* frame as the
+    # `{t:"event"}` that triggered it — the frontend can never paint between
+    # the two. Assert directly on the raw (un-flattened) capture.
+    for frame in conn.sent:
+        if frame["t"] == "batch":
+            op_kinds = {op["t"] for op in frame["ops"]}
+            if "timeline" in op_kinds:
+                assert "event" in op_kinds, (
+                    f"A3: timeline shipped without its event in the same batch: "
+                    f"{[op['t'] for op in frame['ops']]}"
+                )
+    assert not any(m["t"] in ("event", "update", "pool", "timeline") for m in conn.sent), (
+        "A3: _on_event leaked a singleton frame (should be batched)"
+    )
 
     print(
         f"state={n_state} pool={n_pool} event={n_event} update={n_update}; "
