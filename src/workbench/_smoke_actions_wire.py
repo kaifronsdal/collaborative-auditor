@@ -341,12 +341,24 @@ async def w4_end() -> None:
         )
         assert session.current is not None and session.current != "base"
         child_id = session.current
+        child = session.branches[child_id]
         task = session.branch_tasks[child_id]
+        # R5: `_register_and_spawn` no longer blocks on `_replayed`; wait
+        # ourselves so the docstring's "paused at gate" precondition holds.
+        with anyio.move_on_after(2.0):
+            await child._replayed.wait()
         assert not task.done()
 
         await _dispatch(session, {"t": "end"})
+        # A3-typed-deltas: `_h_end` defers the slow tail (channel end +
+        # `_stop_running_branches`) to a bg task so `_dispatch_lock` releases
+        # immediately — poll for the cancellation to land.
+        for _ in range(200):
+            if task.done():
+                break
+            await anyio.sleep(0.01)
         assert task.done(), "branch task survived `end`"
-        assert session.branches[child_id].status == "ended"
+        assert child.status == "ended"
 
         actual = normalize(session, child_id)
         expected = [
@@ -627,8 +639,17 @@ async def w15_switch() -> None:
         session.connections.append(conn)
         await _dispatch(session, {"t": "switch", "branch": "base"})
         assert session.current == "base", f"switch left current={session.current!r}"
-        states = [m for m in conn.sent if m["t"] == "state"]
-        assert len(states) == 1 and states[0]["current"] == "base"
+        # A3-typed-deltas: `switch` now ships a narrow `{t:"current", branch}`
+        # delta (via `_enqueue` → drain task) instead of a full `{t:"state"}`.
+        for _ in range(200):
+            currents = [m for m in flatten(conn.sent) if m["t"] == "current"]
+            if currents:
+                break
+            await anyio.sleep(0.01)
+        assert len(currents) == 1 and currents[0]["branch"] == "base", (
+            f"expected one {{t:'current', branch:'base'}}, got "
+            f"{[m for m in flatten(conn.sent) if m['t'] in ('current', 'state')]}"
+        )
 
         await _dispatch(session, {"t": "switch", "branch": child_id})
         assert session.current == child_id
@@ -663,6 +684,11 @@ async def w16_fork_running_parent() -> None:
         assert a_id is not None and a_id != "base"
         a = session.branches[a_id]
         task_a = session.branch_tasks[a_id]
+        # R5: `_register_and_spawn` releases `_dispatch_lock` before
+        # `_replayed`; wait for A's prefix (T0+r1) to land in its tape so
+        # `_nth_target_anchor` finds the branch point.
+        with anyio.move_on_after(2.0):
+            await a._replayed.wait()
         assert not task_a.done(), "parent A should be alive (paused at gate)"
 
         # Fork B from A at A's first target anchor (in A's replayed prefix).
