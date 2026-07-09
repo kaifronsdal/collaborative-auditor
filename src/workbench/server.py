@@ -21,7 +21,7 @@ import json
 import logging
 import signal
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
@@ -287,11 +287,17 @@ async def export_notebook(session_id: str) -> Response:
 @app.websocket("/ws/{session_id}")
 async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
-    session = await _get_or_create(session_id)
-    session.connections.append(websocket)
-    await session.push_full_state(websocket)
-
+    # E5A (OVERNIGHT-SWEEP): setup (`_get_or_create` → `Session.load`,
+    # `push_full_state` → `view()`) can raise (bad `session.json`, …). If that
+    # escaped uncaught the socket closed with code 1011 → client auto-
+    # reconnected → same crash → infinite loop. Move setup inside the `try:`;
+    # on setup failure ship `{t:"error"}` and close with code ≥4000 so the
+    # client's `onclose` (C1) knows not to auto-reconnect.
+    session: Session | None = None
     try:
+        session = await _get_or_create(session_id)
+        session.connections.append(websocket)
+        await session.push_full_state(websocket)
         while True:
             data = await websocket.receive_json()
             try:
@@ -305,8 +311,14 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str) -> None:
                 )
     except (WebSocketDisconnect, ConnectionError, OSError):
         pass
+    except Exception as exc:
+        logger.exception("WS setup failed for session %r", session_id)
+        with suppress(Exception):
+            await websocket.send_json({"t": "error", "message": str(exc)})
+        with suppress(Exception):
+            await websocket.close(code=4000)
     finally:
-        if websocket in session.connections:
+        if session is not None and websocket in session.connections:
             session.connections.remove(websocket)
 
 
@@ -1232,7 +1244,17 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
         case "switch":
             branch_id = data["branch"]
             if branch_id not in session.branches:
-                logger.warning("switch to unknown branch %r — dropping", branch_id)
+                # E17: surface the miss and re-broadcast the real `current`
+                # so a client that optimistically repointed itself snaps back.
+                logger.warning("switch to unknown branch %r", branch_id)
+                await session.broadcast(
+                    {
+                        "t": "error",
+                        "v": session.version,
+                        "message": f"unknown branch {branch_id!r}",
+                    }
+                )
+                session.broadcast_current()
                 return
             # R5 / WS-race #9: pause the outgoing branch so switching away
             # from a running branch doesn't leave it autoplaying-and-

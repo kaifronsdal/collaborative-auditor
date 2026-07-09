@@ -33,6 +33,7 @@ from workbench.m1._fixtures import (
     orch_events,
     settle,
     tool_result_text,
+    wait_for,
 )
 from workbench.m1.orchestrator import ORCH_SOURCE
 from workbench.session import Session
@@ -80,10 +81,10 @@ async def _amain() -> None:
 
         # P0.1 regression guard: ``orchestrator.eval`` on disk after one
         # turn, with NO explicit ``session.save()`` and NO M0 branch running.
-        assert (d / "orchestrator.eval").exists(), (
-            "P0.1: record_turn did not persist orchestrator.eval"
-        )
-        print("✓ P0.1: orchestrator.eval on disk after turn 1 (per-turn save)")
+        # P10: ``record_turn`` now goes via ``schedule_save()`` (debounced,
+        # threaded) — poll instead of asserting synchronously.
+        await wait_for((d / "orchestrator.eval").exists, timeout=3.0)
+        print("✓ P0.1: orchestrator.eval on disk after turn 1 (schedule_save)")
 
         # stable display: uuid == display_id, and session.events holds the LATEST
         stable = session.events.get("job")

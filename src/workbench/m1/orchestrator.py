@@ -189,9 +189,7 @@ class Orchestrator(StepGated):
         #: onto each ``Finding`` at ``review_finding`` time so a signed claim
         #: names the exact seed/prompt version it was derived from. Restored
         #: from ``orchestrator.eval`` metadata via ``_restored_file_hashes``.
-        self.file_hashes: dict[str, str] = _restored_file_hashes.pop(
-            span_id or "", {}
-        )
+        self.file_hashes: dict[str, str] = _restored_file_hashes.pop(span_id or "", {})
         #: P2 session fork — when this orchestrator was seeded from a
         #: ``fork_seed()``, ``_initial_messages`` swaps ``KERNEL_RESTART_NOTE``
         #: for ``FORK_NOTE`` and ``_seed_user_ns`` exposes the (absolutized)
@@ -702,8 +700,10 @@ class Orchestrator(StepGated):
         # P0.1: a pure-M1 session's only other save trigger is
         # ``Branch.run()``'s finally, which never fires without an M0 branch.
         # Persist per orchestrator turn so a server restart loses at most the
-        # in-flight tool result. No-op when ``store_dir``/``session_id`` unset.
-        self.session.save()
+        # in-flight tool result. P10 (OVERNIGHT-SWEEP): debounced/off-loop —
+        # a full sync ``save()`` here was ~2GB writes / 100 turns on the hot
+        # path. No-op when ``store_dir``/``session_id`` unset.
+        self.session.schedule_save()
 
     # -- rewind (M1-FEATURES §2) ---------------------------------------------
 
@@ -837,9 +837,7 @@ def orchestrator_agent(orch: Orchestrator, model: Model) -> Agent:
                     )
                 except Exception as exc:
                     logger.exception("orchestrator turn %d failed", turn)
-                    orch.kernel.notify(
-                        f"[orchestrator error at turn {turn}: {exc}]"
-                    )
+                    orch.kernel.notify(f"[orchestrator error at turn {turn}: {exc}]")
                     orch.pause()
                     continue
                 state.messages.append(state.output.message)

@@ -153,6 +153,13 @@ class Session:
         # opens this; `close()` shuts it down.
         self._closed = anyio.Event()
         self._run_task: asyncio.Task[None] | None = None
+        #: P10 (OVERNIGHT-SWEEP): debounced-save flag. `schedule_save()` sets
+        #: it and wakes `_autosave` (started alongside `drain`), which flushes
+        #: via `anyio.to_thread.run_sync` at most once per 2s. `record_turn`
+        #: previously did a full sync `save()` per orch turn (~2GB / 100 turns
+        #: on the hot path). `save()` remains for explicit sync points.
+        self._save_pending: bool = False
+        self._save_requested: anyio.Event = anyio.Event()
 
     # -- drain lifecycle (session-owned, STREAMING.md §B) ---------------------
 
@@ -171,11 +178,34 @@ class Session:
     async def _run(self, started: anyio.Event) -> None:
         async with anyio.create_task_group() as tg:
             tg.start_soon(self.drain)
+            tg.start_soon(self._autosave)
             started.set()
             await self._closed.wait()
             # `drain`'s `async for` exits when `_send` is closed; closing it
             # here lets the task group finish cleanly without a cancel scope.
             await self._send.aclose()
+
+    async def _autosave(self) -> None:
+        """P10: debounced background save.
+
+        Wakes on :meth:`schedule_save`, flushes via ``anyio.to_thread.
+        run_sync`` (so a multi-MB ``save_session`` dump doesn't block the
+        event loop), then sleeps 2s so a burst of orchestrator turns
+        coalesces into one write. Exits when ``_closed`` is set;
+        :meth:`close` does the final synchronous flush.
+        """
+        while not self._closed.is_set():
+            await self._save_requested.wait()
+            if self._closed.is_set():
+                break
+            self._save_requested = anyio.Event()
+            self._save_pending = False
+            try:
+                await anyio.to_thread.run_sync(self.save)
+            except Exception:
+                logger.exception("autosave failed for %r", self.session_id)
+            with anyio.move_on_after(2.0):
+                await self._closed.wait()
 
     async def close(self) -> None:
         """Persist, cancel running branches, then shut down the drain task.
@@ -186,6 +216,7 @@ class Session:
         stream (which would raise `ClosedResourceError`).
         """
         self.save()
+        self._save_pending = False
         tasks = list(self.branch_tasks.values())
         if self.orchestrator is not None and self.orchestrator.task is not None:
             tasks.append(self.orchestrator.task)
@@ -195,6 +226,9 @@ class Session:
         if self.orchestrator is not None:
             await self.orchestrator.close()
         self._closed.set()
+        # wake `_autosave` if it's parked on `_save_requested.wait()` so the
+        # task group can drain within the 1s bound below.
+        self._save_requested.set()
         if self._run_task is not None:
             # STRESS-V2 H3: ``fork_orchestrator`` calls this under
             # ``_dispatch_lock``. If a client is backed up, ``drain()`` can
@@ -436,12 +470,20 @@ class Session:
         re-arms for the next iteration rather than being lost.
         """
         self._desync = False
+        dead: list[Connection] = []
         for conn in list(self.connections):
             try:
                 await self.push_full_state(conn)
-            except (WebSocketDisconnect, ConnectionError, OSError, RuntimeError):
-                if conn in self.connections:
-                    self.connections.remove(conn)
+            except Exception:
+                # E6: catch *anything* — a `view()` exception (not just WS/
+                # conn errors) would otherwise propagate through `drain()`
+                # and kill the event pipe, freezing every client. Drop the
+                # conn; it'll reconnect and retry.
+                logger.exception("resync push_full_state failed")
+                dead.append(conn)
+        for conn in dead:
+            if conn in self.connections:
+                self.connections.remove(conn)
 
     async def broadcast(self, msg: dict[str, Any]) -> None:
         # Test-only network-jitter simulation (``_e2e_m1_chaos_delay``):
@@ -477,6 +519,9 @@ class Session:
             "generating": b.generating,
             "seed": b.meta.seed[:80],
             "batch": b.meta.batch,
+            # E1: the branch's terminal error (`Branch.run()` sets this on an
+            # unhandled exception). Sidebar `BranchNode` renders a red dot.
+            "error": b.error,
             # A1-b-wide: this branch's L1 span-id set — the target
             # `SwimlaneColumn` picks its default lane by matching against
             # this (the session-wide tree carries every branch's L1 spans).
@@ -834,6 +879,19 @@ class Session:
         from workbench.persist import save_session
 
         save_session(self, branch)
+
+    def schedule_save(self) -> None:
+        """P10: mark dirty; :meth:`_autosave` flushes off-loop, ≤1 per 2s.
+
+        Use this from hot paths (``Orchestrator.record_turn``) instead of
+        :meth:`save`. Falls back to a synchronous ``save()`` when the drain
+        task group isn't running (some tests construct a bare ``Session``).
+        """
+        if self._run_task is None:
+            self.save()
+            return
+        self._save_pending = True
+        self._save_requested.set()
 
     @classmethod
     async def load(cls, session_id: str, store_dir: Path) -> Session:

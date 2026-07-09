@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import logging
 import math
 import time
 from dataclasses import dataclass, field
@@ -33,6 +34,8 @@ from uuid import uuid4
 from IPython.display import DisplayHandle, display
 
 from workbench.m1.wire import DiffPayload, ScanPayload, finite, wb_bundle
+
+logger = logging.getLogger(__name__)
 
 # -- run handles --------------------------------------------------------------
 
@@ -126,25 +129,34 @@ class _PollingHandle:
         return self
 
     async def _watch(self) -> None:
-        last: Any = None
-        while not self._done():
+        # E14 (OVERNIGHT-SWEEP): an unhandled `_poll()`/`_settle()` exception
+        # would kill the watcher task silently — the card stayed at
+        # `finished=False` forever. Catch, record on `self.error`, and fire a
+        # final `_update()` so the card renders the failure (C2 wires the UI).
+        try:
+            last: Any = None
+            while not self._done():
+                await self._poll()
+                sig = self._signature()
+                if sig != last:
+                    last = sig
+                    self._update()
+                if self._done():
+                    break
+                await asyncio.sleep(self._poll_interval)
+            # final poll after the job settles (last flush may land after done)
             await self._poll()
-            sig = self._signature()
-            if sig != last:
-                last = sig
-                self._update()
-            if self._done():
-                break
-            await asyncio.sleep(self._poll_interval)
-        # final poll after the job settles (last flush may land after done)
-        await self._poll()
-        self.finished = True
-        if self._task is not None:
-            if self._task.cancelled():
-                self.error = "cancelled"
-            elif (exc := self._task.exception()) is not None:
-                self.error = f"{type(exc).__name__}: {exc}"
-        await self._settle(self._task)
+            self.finished = True
+            if self._task is not None:
+                if self._task.cancelled():
+                    self.error = "cancelled"
+                elif (exc := self._task.exception()) is not None:
+                    self.error = f"{type(exc).__name__}: {exc}"
+            await self._settle(self._task)
+        except Exception as exc:
+            logger.exception("%s watcher failed", type(self).__name__)
+            self.error = repr(exc)
+            self.finished = True
         self._update()
 
     # -- hooks ------------------------------------------------------------

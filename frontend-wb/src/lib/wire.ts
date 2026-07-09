@@ -73,6 +73,8 @@ export type BranchMeta = {
   seed: string;
   /** Resample-N batch this branch belongs to, or null for a normal fork. */
   batch?: string | null;
+  /** E1: `Branch.run()`'s terminal error string, or null. Sidebar red-dot. */
+  error?: string | null;
   /** A1-b-wide: this branch's L1 (target-`History`) trajectory span ids.
    *  The target column's session-wide swimlane picks its default lane by
    *  matching row span ids against this set; picking a foreign lane resolves

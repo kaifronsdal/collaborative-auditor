@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -42,6 +43,8 @@ from workbench.m1.wire import (
 if TYPE_CHECKING:
     from workbench.m1.kernel import OrchestratorKernel
     from workbench.m1.orchestrator import Orchestrator
+
+logger = logging.getLogger(__name__)
 
 #: Strip ANSI CSI/SGR sequences from subprocess output. ``TERM=dumb`` in the
 #: bash env should suppress them at the source (rich, click, aisitools all
@@ -79,7 +82,9 @@ def _stream(kernel: OrchestratorKernel, line: str) -> None:
     )
 
 
-def _fold_eval(evals: dict[str, EvalRunPayload], line: dict[str, Any]) -> EvalRunPayload:
+def _fold_eval(
+    evals: dict[str, EvalRunPayload], line: dict[str, Any]
+) -> EvalRunPayload:
     """Fold one ``eval_*`` protocol line into its accumulated snapshot.
 
     ``evals`` is the per-orchestrator accumulator keyed by ``eval_id``; each
@@ -345,6 +350,14 @@ def make_bash_tool(orch: Orchestrator) -> Tool:
                             kernel.notify(
                                 f"[bg-{bg_id} done · exit {code} · {cmd[:60]!r}]"
                             )
+                        except Exception as exc:
+                            # E13 (OVERNIGHT-SWEEP): a `_pump`/emit failure in
+                            # this detached task would otherwise vanish — the
+                            # proc entry stayed in `_bash_procs` (until the
+                            # `finally` below) and the model never heard the
+                            # job died. Notify + log; `finally` still reaps.
+                            logger.exception("bg job %r crashed", bg_id)
+                            kernel.notify(f"[bg-{bg_id} crashed: {exc}]")
                         finally:
                             orch._bash_procs.pop(job_id, None)  # noqa: SLF001
                             orch.dirty()
