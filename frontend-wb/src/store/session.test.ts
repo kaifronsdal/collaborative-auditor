@@ -56,6 +56,7 @@ describe("session reducer against real smoke fixture", () => {
   it("byRole arrays are reference-stable across updates to the other column", () => {
     // capture references after the fixture replay above
     const before = useSession.getState();
+    const eventsRef = before.events;
     const auditorRef = before.byRole["b0"].auditor;
     const targetRef = before.byRole["b0"].target;
 
@@ -74,6 +75,10 @@ describe("session reducer against real smoke fixture", () => {
     const after = useSession.getState();
     expect(after.byRole["b0"].auditor).toBe(auditorRef);
     expect(after.byRole["b0"].target).not.toBe(targetRef);
+    // OVERNIGHT-SWEEP P13: the mutated Map's content is visible via the
+    // pre-update ref (in-place mutation), even when a terminal update
+    // re-mints the top-level ref (TODO(C2) shim).
+    expect(eventsRef.get(targetUpdate!.event.uuid!)).toBeDefined();
   });
 
   it("routes a nested span to its role via resolveRole", () => {
@@ -150,10 +155,14 @@ describe("session reducer against real smoke fixture", () => {
 // New isolated tests — each resets store state in beforeEach to avoid leaking
 // ---------------------------------------------------------------------------
 
-const emptyState = {
+// OVERNIGHT-SWEEP P13: `state.events` is mutated in place, so a shared const
+// `emptyState.events` would leak across tests. Factory returns fresh Maps.
+const emptyState = () => ({
   pool: [],
   events: new Map(),
+  eventsRev: 0,
   byRole: {},
+  turnScores: {},
   timelines: {},
   spanParent: new Map(),
   spanRole: new Map(),
@@ -167,12 +176,13 @@ const emptyState = {
   branchConfig: {},
   branches: {},
   pins: [],
+  pending: [],
   error: null,
-};
+});
 
 describe("byRole isolation across two branches", () => {
   beforeEach(() => {
-    useSession.setState(emptyState);
+    useSession.setState(emptyState());
   });
 
   it("(a) events for b0 and b1 land in separate byRole buckets", () => {
@@ -249,7 +259,7 @@ describe("byRole isolation across two branches", () => {
 
 describe("status message", () => {
   beforeEach(() => {
-    useSession.setState(emptyState);
+    useSession.setState(emptyState());
   });
 
   it("(b) apply({t:'status'}) updates status", () => {
@@ -259,9 +269,142 @@ describe("status message", () => {
   });
 });
 
+describe("OVERNIGHT-SWEEP C1 invariants", () => {
+  beforeEach(() => {
+    useSession.setState(emptyState());
+  });
+
+  const stateMsg: Down = {
+    t: "state", v: 10, pool: [], events: [],
+    span_role: { "sp-t": ["b0", "target"] },
+    queued: {}, current: "b0", status: "idle",
+    branches: { b0: { parent: null, branched_at: null, branched_at_turn: null, status: "idle", seed: "s" } },
+  };
+
+  it("P13: streaming update mutates events in place (stable ref); eventsRev bumps", () => {
+    const { apply } = useSession.getState();
+    apply(stateMsg);
+    const rev0 = useSession.getState().eventsRev;
+
+    apply({ t: "event", v: 11, event: {
+      event: "model", uuid: "u1", span_id: "sp-t", model: "m", pending: true,
+      input: [], output: { model: "m", choices: [] }, config: {}, tools: [],
+      tool_choice: "none", timestamp: "2024-01-01T00:00:00", working_start: 0,
+    } } as unknown as Down);
+    expect(useSession.getState().eventsRev).toBe(rev0 + 1);
+    const ref = useSession.getState().events;
+
+    // Streaming update (pending: true) — the P13 hot path. Map ref STABLE.
+    apply({ t: "update", v: 12, event: {
+      event: "model", uuid: "u1", span_id: "sp-t", model: "m", pending: true,
+      input: [], output: { model: "m", choices: [] }, config: {}, tools: [],
+      tool_choice: "none", timestamp: "2024-01-01T00:00:00", working_start: 0,
+    } } as unknown as Down);
+    expect(useSession.getState().events).toBe(ref);
+    // TODO(C2): update currently bumps eventsRev too — see reducer comment.
+    expect(useSession.getState().eventsRev).toBe(rev0 + 2);
+    const byRoleRef = useSession.getState().byRole;
+
+    // pool: mutates in place (P12), stable ref.
+    apply({ t: "pool", v: 13, from: 0, entries: [{ role: "user", content: "x" }] });
+    expect(useSession.getState().events).toBe(ref);
+    expect(useSession.getState().eventsRev).toBe(rev0 + 3);
+    // P12: byRole untouched when no stored event has unresolved input_refs.
+    expect(useSession.getState().byRole).toBe(byRoleRef);
+
+    // Terminal update (pending: false) — TODO(C2) shim re-mints the Map so
+    // `useSwimlanes` (still on `s.events`) fires (chaos s7).
+    apply({ t: "update", v: 14, event: {
+      event: "model", uuid: "u1", span_id: "sp-t", model: "m", pending: false,
+      input: [], output: { model: "m", choices: [] }, config: {}, tools: [],
+      tool_choice: "none", timestamp: "2024-01-01T00:00:00", working_start: 0,
+    } } as unknown as Down);
+    expect(useSession.getState().events).not.toBe(ref);
+    // Mutated-in-place: the pre-remint ref sees the terminal update too.
+    expect((ref.get("u1") as { pending?: boolean }).pending).toBe(false);
+  });
+
+  it("P17: turnScores index — event appends, update replaces in place", () => {
+    const { apply } = useSession.getState();
+    apply(stateMsg);
+    const mkScore = (score: number | null) => ({
+      t: "event" as const, v: 11, event: {
+        event: "info", uuid: "ts-ev", span_id: "sp-t", source: "turn_score",
+        data: { kind: "turn_score", turn_uuid: "turn-1", scanner: "leak", score, explanation: "", error: null },
+        timestamp: "2024-01-01T00:00:00", working_start: 0,
+      },
+    }) as unknown as Down;
+
+    apply(mkScore(null));
+    let ts = useSession.getState().turnScores;
+    expect(ts["turn-1"]).toHaveLength(1);
+    expect(ts["turn-1"][0].score).toBeNull();
+
+    // resolved score arrives as an update on the same uuid → replaces, not appends
+    apply({ ...(mkScore(0.7) as { t: string }), t: "update" } as Down);
+    ts = useSession.getState().turnScores;
+    expect(ts["turn-1"]).toHaveLength(1);
+    expect(ts["turn-1"][0].score).toBe(0.7);
+
+    // a second scanner on the same turn appends
+    apply({ t: "event", v: 12, event: {
+      event: "info", uuid: "ts-ev2", span_id: "sp-t", source: "turn_score",
+      data: { kind: "turn_score", turn_uuid: "turn-1", scanner: "refusal", score: 0.1, explanation: "", error: null },
+      timestamp: "2024-01-01T00:00:00", working_start: 0,
+    } } as unknown as Down);
+    expect(useSession.getState().turnScores["turn-1"]).toHaveLength(2);
+  });
+
+  it("W-A: sideband arms do not write version", () => {
+    const { apply } = useSession.getState();
+    apply(stateMsg); // version = 10
+    expect(useSession.getState().version).toBe(10);
+
+    // Each of these carries v:5 (< 10). They're not GUARDED so the guard
+    // doesn't drop them; W-A says they must not rewind `version`.
+    apply({ t: "queued", v: 5, branch: "b0", role: "auditor",
+            message: { role: "user", content: "x", id: "m1" } });
+    apply({ t: "unqueued", v: 5, branch: "b0", role: "auditor", message_id: "m1" });
+    apply({ t: "rewrite_draft", v: 5, branch: "b0", call_id: "c1", args: {} });
+    apply({ t: "error", v: 5, message: "boom" });
+    apply({ t: "notify", v: 5, text: "hi" });
+    apply({ t: "rewound", v: 5, span: "orch", from_uuid: "x" });
+    apply({ t: "update", v: 5, event: {
+      event: "info", uuid: "u-wa", span_id: "sp-t", source: "x", data: {},
+      timestamp: "2024-01-01T00:00:00", working_start: 0,
+    } } as unknown as Down);
+
+    expect(useSession.getState().version).toBe(10);
+    // and a subsequent GUARDED frame at v=11 is not rejected
+    apply({ t: "current", v: 11, branch: "b0" });
+    expect(useSession.getState().version).toBe(11);
+  });
+
+  it("A6#4: notifications capped at 200; E19: unknown t warns and returns {}", () => {
+    const { apply } = useSession.getState();
+    useSession.setState({
+      orchestrator: {
+        span_id: "o", status: "idle", pending_gates: [], bg_cells: [],
+        notifications: Array.from({ length: 199 }, (_, i) => `n${i}`),
+      },
+    });
+    apply({ t: "notify", v: 1, text: "n199" });
+    apply({ t: "notify", v: 2, text: "n200" });
+    const notes = useSession.getState().orchestrator!.notifications;
+    expect(notes).toHaveLength(200);
+    expect(notes[0]).toBe("n1"); // head dropped
+    expect(notes[199]).toBe("n200");
+
+    // E19 — unknown Down.t: no throw, no state change.
+    const before = useSession.getState().version;
+    apply({ t: "future_thing", v: 99 } as unknown as Down);
+    expect(useSession.getState().version).toBe(before);
+  });
+});
+
 describe("queued reconciliation", () => {
   beforeEach(() => {
-    useSession.setState(emptyState);
+    useSession.setState(emptyState());
   });
 
   it("(c) queued message drops when its id appears in a ModelEvent input", () => {
@@ -339,7 +482,7 @@ describe("queued reconciliation", () => {
 
 describe("state message populates branch tree", () => {
   beforeEach(() => {
-    useSession.setState(emptyState);
+    useSession.setState(emptyState());
   });
 
   it("(d) state with branches populates the tree", () => {
@@ -376,7 +519,7 @@ describe("rollback fixture (smoke_rollback) — server timeline → swimlanes", 
   ) as Down[];
 
   beforeEach(() => {
-    useSession.setState(emptyState);
+    useSession.setState(emptyState());
     const { apply } = useSession.getState();
     for (const m of rbMessages) apply(m);
   });
@@ -429,7 +572,7 @@ describe("multi-branch fixture (smoke_branch_deep)", () => {
   ) as Down[];
 
   beforeEach(() => {
-    useSession.setState(emptyState);
+    useSession.setState(emptyState());
     const { apply } = useSession.getState();
     for (const m of deepMessages) apply(m);
   });
@@ -505,7 +648,7 @@ describe("multi-branch fixture (smoke_branch_deep)", () => {
 
 describe("togglePin (P2 pin/bookmark)", () => {
   beforeEach(() => {
-    useSession.setState(emptyState);
+    useSession.setState(emptyState());
   });
 
   it("adds a pin, then removes it on second toggle of same (log, sample_id)", () => {
@@ -570,7 +713,7 @@ describe("togglePin (P2 pin/bookmark)", () => {
 
 describe("setLabel (P3 annotation queue)", () => {
   beforeEach(() => {
-    useSession.setState(emptyState);
+    useSession.setState(emptyState());
   });
 
   it("sets and clears label on an existing pin; no-op on missing pin", () => {
@@ -593,7 +736,7 @@ describe("setLabel (P3 annotation queue)", () => {
 
 describe("start does not add phantom Recents for child branch", () => {
   beforeEach(() => {
-    useSession.setState(emptyState);
+    useSession.setState(emptyState());
   });
 
   it("(e) state for a child branch does not add a Recents entry", () => {

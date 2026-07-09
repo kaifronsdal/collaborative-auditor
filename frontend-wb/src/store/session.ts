@@ -27,6 +27,7 @@ import type {
 } from "../lib/wire";
 import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
 import type { GenerateConfigDict } from "../components/ModelPicker";
+import type { TurnScorePayload } from "../components/orch/types";
 
 /** A2: an in-flight `Up` command awaiting `{t:"ack"}` from the server. */
 export type PendingCmd = Up & { req_id: string };
@@ -153,7 +154,22 @@ export type NextConfig = {
 
 export type SessionState = {
   pool: ChatMessage[];
+  /**
+   * OVERNIGHT-SWEEP P13: this Map is **mutated in place** by the reducer —
+   * a streaming `{t:"update"}` (the hot path) does NOT change its reference.
+   * Subscribe to {@link eventsRev} instead and read
+   * `useSession.getState().events` inside the effect/memo. The ref is
+   * currently still re-minted on `event`/terminal-`update` as a TODO(C2)
+   * shim so the two remaining `s.events` subscribers stay live until C2
+   * migrates them; once C2 lands the ref is stable for the connection.
+   */
   events: Map<string, Event>;
+  /**
+   * Monotone counter bumped on **structural** change to `events` (new/removed
+   * uuid, pool re-resolve, rewound, full snapshot). Selectors that would have
+   * keyed on `s.events` key on this instead (OVERNIGHT-SWEEP P13/P16).
+   */
+  eventsRev: number;
   /**
    * Events bucketed by `[branch][role]`, maintained incrementally by the
    * reducer. Selectors read this directly (O(1)); per-column arrays keep
@@ -162,6 +178,13 @@ export type SessionState = {
    * re-renders per flush.
    */
   byRole: EventsByRole;
+  /**
+   * OVERNIGHT-SWEEP P17: `InfoEvent{data.kind==="turn_score"}` payloads
+   * indexed by `data.turn_uuid`. Populated incrementally in `case "event"` /
+   * `"update"`; rebuilt on `case "state"`. `useTurnScores(uuid)` becomes an
+   * O(1) `s.turnScores[uuid]` lookup instead of an O(events) scan per row.
+   */
+  turnScores: Record<string, TurnScorePayload[]>;
   /** Server-built petri timelines (`build_target_timeline`), keyed by branch/role.
    *  Event refs are UUIDs; resolve via `convertServerTimeline(tl, [...events])`. */
   timelines: TimelineMap;
@@ -386,14 +409,34 @@ function resolveOne(ev: Event, pool: ChatMessage[]): Event {
   return expandEvents([ev], data)[0];
 }
 
-/** Re-resolve every ModelEvent in the map against the current pool. */
-function resolveAll(
-  events: Map<string, Event>,
-  pool: ChatMessage[]
-): Map<string, Event> {
-  const next = new Map<string, Event>();
-  for (const [uuid, ev] of events) next.set(uuid, resolveOne(ev, pool));
-  return next;
+/** P17 — extract a `turn_score` payload if `ev` is one, else null. */
+function turnScoreOf(ev: Event | undefined): TurnScorePayload | null {
+  if (ev?.event !== "info") return null;
+  const d = (ev as { data?: { kind?: string } }).data;
+  return d?.kind === "turn_score" ? (d as TurnScorePayload) : null;
+}
+
+/** P17 — full-rebuild the `turn_uuid → payload[]` index (connect-time). */
+function buildTurnScores(events: Iterable<Event>): Record<string, TurnScorePayload[]> {
+  const out: Record<string, TurnScorePayload[]> = {};
+  for (const ev of events) {
+    const p = turnScoreOf(ev);
+    if (p) (out[p.turn_uuid] ??= []).push(p);
+  }
+  return out;
+}
+
+/** P17 — return `turnScores` with `next` inserted (or replacing `prev`) at
+ *  `next.turn_uuid`. Only the touched array is cloned. */
+function assignTurnScore(
+  turnScores: Record<string, TurnScorePayload[]>,
+  next: TurnScorePayload,
+  prev: TurnScorePayload | null
+): Record<string, TurnScorePayload[]> {
+  const arr = turnScores[next.turn_uuid] ?? [];
+  const i = prev ? arr.indexOf(prev) : -1;
+  const nextArr = i >= 0 ? [...arr.slice(0, i), next, ...arr.slice(i + 1)] : [...arr, next];
+  return { ...turnScores, [next.turn_uuid]: nextArr };
 }
 
 /**
@@ -455,6 +498,15 @@ type DownOp = Exclude<Down, { t: "batch" }>;
 let reconnectBackoff = 1000;
 const RECONNECT_BACKOFF_MAX = 30000;
 
+/** OVERNIGHT-SWEEP E20: `Up` commands `send()`'d while the socket wasn't
+ *  OPEN. Module-level so they survive the `onclose → connect()` cycle;
+ *  flushed (and cleared) in `onopen`. Cleared on `disconnect()`. */
+let _outbox: PendingCmd[] = [];
+
+/** A6#4 — cap `orchestrator.notifications` (append-only, never drained
+ *  client-side until the next agent turn consumes them server-side). */
+const NOTIFICATIONS_CAP = 200;
+
 const GUARDED: ReadonlySet<Down["t"]> = new Set([
   "state", "batch", "branch_created", "current", "batch_resolved", "orch",
   "queued_consumed", "status",
@@ -492,7 +544,9 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
       return {
         pool,
         events,
+        eventsRev: state.eventsRev + 1,
         byRole: buildByRole(events.values(), spanParent, spanRole),
+        turnScores: buildTurnScores(events.values()),
         timelines: msg.timelines ?? {},
         spanRole,
         spanParent,
@@ -652,27 +706,29 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
       // §2: mark every orch event at/after `from_uuid` as rewound. The
       // events stay in `byRole["orch"]["orch"]` (removing would break the
       // uuid-keyed update path); `eventsToOrchTurns` filters by this set.
+      // OVERNIGHT-SWEEP W-A: sideband — do not write `version`.
       const orchEvents = state.byRole.orch?.orch ?? [];
       const idx = orchEvents.findIndex((e) => e.uuid === msg.from_uuid);
-      if (idx < 0) return { version: msg.v };
+      if (idx < 0) return {};
       const next = new Set(state.rewound);
       for (let i = idx; i < orchEvents.length; i++) {
         const u = orchEvents[i].uuid;
         if (u != null) next.add(u);
       }
-      return { rewound: next, version: msg.v };
+      return { rewound: next, eventsRev: state.eventsRev + 1 };
     }
 
     case "notify": {
       // sys-chip pushed by a backgrounded cell's done-callback. Full
       // list is refreshed on the next `state`; append optimistically so
       // the chip renders above the next turn immediately.
-      if (state.orchestrator == null) return { version: msg.v };
+      // OVERNIGHT-SWEEP W-A: sideband — do not write `version`.
+      if (state.orchestrator == null) return {};
       return {
-        version: msg.v,
         orchestrator: {
           ...state.orchestrator,
-          notifications: [...state.orchestrator.notifications, msg.text],
+          notifications: [...state.orchestrator.notifications, msg.text]
+            .slice(-NOTIFICATIONS_CAP),
         },
       };
     }
@@ -682,32 +738,50 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
       // `from` is the high-water-mark; entries append at that index.
       pool.length = msg.from;
       pool.push(...msg.entries);
-      // Growing the pool can change earlier ModelEvents' resolution.
-      const events = resolveAll(state.events, pool);
-      return {
-        pool,
-        events,
-        byRole: buildByRole(events.values(), state.spanParent, state.spanRole),
-        version: msg.v,
-      };
+      // OVERNIGHT-SWEEP P12: incremental. A3-batch ships pool BEFORE events
+      // in the same frame, so stored ModelEvents already have `input_refs:
+      // null` (cleared by `expandEvents`) — the loop below is a no-op on the
+      // hot path. Only an event that arrived while `pool` was empty (rare)
+      // still carries refs and needs re-resolving. P13: mutate `events` in
+      // place; `assignByRole` clones only the touched `[branch][role]` path.
+      let byRole = state.byRole;
+      for (const [uuid, ev] of state.events) {
+        if (!isModelEvent(ev) || ev.input_refs == null) continue;
+        const resolved = resolveOne(ev, pool);
+        state.events.set(uuid, resolved);
+        const role = resolveRole(ev.span_id, state.spanParent, state.spanRole);
+        if (role) byRole = assignByRole(byRole, role[0], role[1], resolved, ev);
+      }
+      return { pool, byRole, eventsRev: state.eventsRev + 1, version: msg.v };
     }
 
     case "event": {
       const ev = resolveOne(msg.event, state.pool);
       const uuid = uuidOf(ev);
-      const events = new Map(state.events);
-      events.set(uuid, ev);
+      // OVERNIGHT-SWEEP P13: mutate the live Map — the streaming hot path
+      // (`update`, below) never clones it.
+      state.events.set(uuid, ev);
       const spanParent =
         ev.event === "span_begin"
           ? new Map(state.spanParent).set(ev.id, ev.parent_id ?? null)
           : state.spanParent;
       const role = resolveRole(ev.span_id, spanParent, state.spanRole);
+      const score = turnScoreOf(ev);
       return {
-        events,
+        // TODO(C2): drop `events:` (keep only `eventsRev`). Verified zustand
+        // v5's selector `Object.is` does NOT fire `useSession(s=>s.events)`
+        // on a same-ref return, so until C2 migrates `useSwimlanes`/
+        // `useTurnScores` to `eventsRev`, structural transitions re-mint the
+        // Map (O(N), ~1/turn — the P13 hot path is `update` streaming).
+        events: new Map(state.events),
+        eventsRev: state.eventsRev + 1,
         spanParent,
         byRole: role
           ? assignByRole(state.byRole, role[0], role[1], ev, undefined)
           : state.byRole,
+        ...(score
+          ? { turnScores: assignTurnScore(state.turnScores, score, null) }
+          : {}),
         queued: reconcileQueued(state.queued, ev),
         version: msg.v,
       };
@@ -717,23 +791,37 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
       const ev = resolveOne(msg.event, state.pool);
       const uuid = uuidOf(ev);
       const prev = state.events.get(uuid);
-      const events = new Map(state.events);
-      events.set(uuid, ev);
+      // OVERNIGHT-SWEEP P13: mutate in place — no `new Map(state.events)`
+      // per streaming frame.
+      state.events.set(uuid, ev);
       const role = resolveRole(ev.span_id, state.spanParent, state.spanRole);
+      const score = turnScoreOf(ev);
+      const streaming = (ev as { pending?: boolean | null }).pending === true;
       return {
-        events,
+        // TODO(C2): drop both `events:` and the `eventsRev` bump from this
+        // arm — `eventsRev` is meant to signal *structural* change only.
+        // Until C2 migrates the two `s.events` subscribers, a terminal
+        // update (pending→done, or `retract_pending`'s `rewound:true` —
+        // chaos s7) must re-mint the Map so `useSwimlanes` fires. Streaming
+        // frames (`pending===true`, the P13 hot path) do NOT clone.
+        ...(streaming ? {} : { events: new Map(state.events) }),
+        eventsRev: state.eventsRev + 1,
         byRole: role
           ? assignByRole(state.byRole, role[0], role[1], ev, prev)
           : state.byRole,
+        ...(score
+          ? { turnScores: assignTurnScore(state.turnScores, score, turnScoreOf(prev)) }
+          : {}),
         // R4 gap #2: the pending ModelEvent's terminal update carries
         // the resolved `input` (with the injected id) — reconcile here
         // too, not just on the initial `{t:"event"}`.
         queued: reconcileQueued(state.queued, ev),
-        version: msg.v,
+        // OVERNIGHT-SWEEP W-A: sideband — do not write `version`.
       };
     }
 
     case "queued": {
+      // OVERNIGHT-SWEEP W-A: sideband — do not write `version`.
       const queued: QueuedMap = structuredClone(state.queued);
       const roles = (queued[msg.branch] ??= { auditor: [], target: [] });
       // Dedup by message id: if the inject action already pushed it
@@ -741,32 +829,32 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
       if (msg.message.id == null || !roles[msg.role].some((m) => m.id === msg.message.id)) {
         roles[msg.role].push(msg.message);
       }
-      return { queued, version: msg.v };
+      return { queued };
     }
 
     case "unqueued": {
+      // OVERNIGHT-SWEEP W-A: sideband — do not write `version`.
       const roles = state.queued[msg.branch];
-      if (roles == null) return { version: msg.v };
+      if (roles == null) return {};
       const kept = roles[msg.role].filter((m) => m.id !== msg.message_id);
-      if (kept.length === roles[msg.role].length) return { version: msg.v };
+      if (kept.length === roles[msg.role].length) return {};
       return {
         queued: {
           ...state.queued,
           [msg.branch]: { ...roles, [msg.role]: kept },
         },
-        version: msg.v,
       };
     }
 
     case "rewrite_draft": {
+      // OVERNIGHT-SWEEP W-A: sideband — do not write `version`.
       const key = msg.call_id ?? msg.message_id;
-      if (key == null) return { version: msg.v };
+      if (key == null) return {};
       const draft: RewriteDraft = msg.error
         ? { status: "error", error: msg.error }
         : { status: "ready", args: msg.args ?? {}, content: msg.content, raw: msg.raw };
       return {
         rewriteDrafts: { ...state.rewriteDrafts, [key]: draft },
-        version: msg.v,
       };
     }
 
@@ -802,7 +890,15 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
     case "error": {
       // F3: no optimistic `current`/`byRole` mutation to roll back — the
       // fork overlay is derived from `pending[]` and clears on `{t:"ack"}`.
-      return { error: msg.message, version: msg.v };
+      // OVERNIGHT-SWEEP W-A: sideband — do not write `version`.
+      return { error: msg.message };
+    }
+
+    default: {
+      // OVERNIGHT-SWEEP E19: a `Down.t` this build doesn't know — surface
+      // it (backend outran the frontend) but don't crash the reducer.
+      console.warn("unknown Down.t", (msg as { t: string }).t);
+      return {};
     }
   }
 }
@@ -810,7 +906,9 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
 export const useSession = create<SessionState>((set, get) => ({
   pool: [],
   events: new Map(),
+  eventsRev: 0,
   byRole: {},
+  turnScores: {},
   timelines: {},
   spanParent: new Map(),
   spanRole: new Map(),
@@ -879,13 +977,31 @@ export const useSession = create<SessionState>((set, get) => ({
     next.onmessage = (e) => get().apply(JSON.parse(e.data) as Down);
     next.onopen = () => {
       reconnectBackoff = 1000;
-      if (get().ws === next) set({ reconnecting: false });
+      if (get().ws !== next) return;
+      set({ reconnecting: false });
+      // OVERNIGHT-SWEEP E20: flush commands `send()`'d while not OPEN.
+      // Already in `pending[]`; `{t:"ack"}` (or the imminent `{t:"state"}`
+      // reset) clears them.
+      for (const cmd of _outbox) next.send(JSON.stringify(cmd));
+      _outbox = [];
     };
-    next.onclose = () => {
+    next.onclose = (ev) => {
       // Only act if this is still the live socket — a newer `connect()` (or
       // the e2e reconnect test's manual `setState({ws:null})+connect()`) may
       // have superseded it, in which case *its* onclose owns retry.
       if (get().ws !== next) return;
+      // OVERNIGHT-SWEEP E5A: server closes with an application code (≥4000)
+      // when `Session.load` etc. failed — auto-reconnect would infinite-loop
+      // the same crash. Surface `ev.reason` and stop.
+      if (ev.code >= 4000) {
+        _outbox = [];
+        set({
+          ws: null,
+          reconnecting: false,
+          error: `Session failed to load: ${ev.reason || `code ${ev.code}`}`,
+        });
+        return;
+      }
       // STRESS-V2 P2: auto-reconnect with exponential backoff. `sessionId`
       // is KEPT (was cleared pre-P2) so `CommandPalette`/`Sidebar` exports
       // and the setTimeout guard below can distinguish "socket dropped,
@@ -904,8 +1020,12 @@ export const useSession = create<SessionState>((set, get) => ({
     // A2 failure-mode caveat: a WS drop between `send()` and the server's
     // `{t:"ack"}` would strand an entry in `pending` (button disabled
     // forever). Reset on every (re)connect — commands never survive a
-    // socket, so no in-flight ack is expected on the new one.
-    set({ ws: next, sessionId, pending: [], pins: readStoredPins(sessionId) });
+    // socket, so no in-flight ack is expected on the new one. E20: except
+    // outboxed ones, which `onopen` is about to re-send on this socket.
+    if (cur !== sessionId) _outbox = [];
+    set({
+      ws: next, sessionId, pending: _outbox.slice(), pins: readStoredPins(sessionId),
+    });
   },
 
   disconnect: () => {
@@ -914,15 +1034,23 @@ export const useSession = create<SessionState>((set, get) => ({
       ws.onclose = null; // avoid the handler racing our explicit clear
       ws.close();
     }
+    _outbox = [];
     set({ ws: null, sessionId: null, reconnecting: false });
   },
 
   send: (msg: Up) => {
     const ws = get().ws;
     const req_id = crypto.randomUUID();
-    set((s) => ({ pending: [...s.pending, { ...msg, req_id }] }));
+    const stamped: PendingCmd = { ...msg, req_id };
+    set((s) => ({ pending: [...s.pending, stamped] }));
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ ...msg, req_id }));
+      ws.send(JSON.stringify(stamped));
+    } else {
+      // OVERNIGHT-SWEEP E20: socket not OPEN (CONNECTING, or dropped and
+      // auto-reconnect pending). Queue; `onopen` flushes. The button greys
+      // (entry is in `pending[]`) and the command eventually sends instead
+      // of being silently eaten.
+      _outbox.push(stamped);
     }
     // PRODUCT-GAPS P2: request desktop-notification permission on the first
     // user-initiated send (browsers require a user gesture on the call stack).
