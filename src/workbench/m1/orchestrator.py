@@ -490,13 +490,21 @@ class Orchestrator(StepGated):
                     )
         return messages
 
-    def close(self) -> None:
-        """Reap every tracked ``bash`` subprocess (P0.5).
+    async def close(self) -> None:
+        """Reap every tracked ``bash`` subprocess and bg cell task.
 
         Called from ``Session.close()`` after the ``run()`` task is cancelled
         (so nothing spawns more). Each proc was started with
         ``start_new_session=True`` → its pgid == its pid, so ``killpg``
         reaches the whole subtree (``inspect eval`` → docker sandboxes).
+
+        STRESS-V2 H4: ``kernel.bg`` cell tasks are separate ``asyncio.Task``s
+        — cancelling ``run()`` doesn't reach them, and ``kernel.__exit__`` is
+        sync (can't await) and runs inside the being-cancelled ``run()``'s
+        ``with`` unwind, so it can't own this either. Cancel-then-gather here
+        with the same ``move_on_after`` bound as ``rewind()`` (H7): a cell in
+        blocking sync code never observes the cancel; don't let it hold up
+        session teardown.
         """
         for entry in list(self._bash_procs.values()):
             proc = entry["proc"]
@@ -504,6 +512,12 @@ class Orchestrator(StepGated):
                 with suppress(ProcessLookupError, PermissionError):
                     os.killpg(proc.pid, signal.SIGTERM)
         self._bash_procs.clear()
+        bg_tasks = list(self.kernel.bg.values())
+        for t in bg_tasks:
+            t.cancel()
+        if bg_tasks:
+            with anyio.move_on_after(1.0):
+                await asyncio.gather(*bg_tasks, return_exceptions=True)
 
     def cancel_bg(self, job_id: str) -> bool:
         """Kill one tracked ``bash`` subprocess (``{t:"cancel_bg"}`` handler).

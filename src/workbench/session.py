@@ -193,10 +193,16 @@ class Session:
         # P0.5: reap bash subprocesses AFTER the orch task is cancelled (so it
         # can't spawn more). ``close()`` killpg's each tracked process group.
         if self.orchestrator is not None:
-            self.orchestrator.close()
+            await self.orchestrator.close()
         self._closed.set()
         if self._run_task is not None:
-            await self._run_task
+            # STRESS-V2 H3: ``fork_orchestrator`` calls this under
+            # ``_dispatch_lock``. If a client is backed up, ``drain()`` can
+            # stall flushing 2048 queued frames and every locked dispatch on a
+            # second connection hangs. Bound the flush; the WS teardown drops
+            # the queue and the fork's ``push_full_state`` resyncs anyway.
+            with anyio.move_on_after(1.0):
+                await self._run_task
 
     # -- event handling (sync, fast, inline in the generating task) -----------
 

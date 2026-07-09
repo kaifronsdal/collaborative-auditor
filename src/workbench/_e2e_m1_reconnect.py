@@ -3,9 +3,10 @@
 Drives the real UI (in-process backend + vite dev + headless chromium) on
 free ports. A 5-turn, 2s-per-generate mockllm branch runs while the test
 force-closes the client's WebSocket every 1-3s and immediately reconnects
-(via ``useSession.getState().connect(sid)`` — there is no auto-reconnect in
-the store, so the storm exercises the manual path a "reconnect" button /
-network flap would take).
+(via ``useSession.getState().connect(sid)``). STRESS-V2 P2 added
+auto-reconnect on ``onclose`` — the manual ``setState({ws:null})+connect()``
+here supersedes the scheduled retry (its ``get().ws == null`` guard fails),
+so the storm still exercises one reconnect per drop.
 
 Scenarios (observation-first — a FAIL is a finding, not a bug to fix here):
 

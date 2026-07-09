@@ -194,6 +194,9 @@ export type SessionState = {
   ws: WebSocket | null;
   /** Id of the session the current socket is for; guards idempotent connect. */
   sessionId: string | null;
+  /** STRESS-V2 P2: `onclose` scheduled an auto-reconnect and it hasn't opened
+   *  yet. Drives a "reconnecting…" banner; cleared on `onopen`/`disconnect`. */
+  reconnecting: boolean;
   /**
    * A2 (ARCHITECTURE-RACES.md): every `send()` appends `{...msg, req_id}`
    * here; `case "ack"` filters it. `useIsPending(pred)` reads this — one
@@ -445,6 +448,13 @@ type DownOp = Exclude<Down, { t: "batch" }>;
  *  goes through the drain queue too, so a stale one (post-H5a resync, or
  *  under `WORKBENCH_BROADCAST_DELAY_MS` reorder) must be dropped rather
  *  than rewind `version` and cause the guard to reject the next batch. */
+/** STRESS-V2 P2 auto-reconnect: exponential backoff (1s → 2s → … → 30s cap),
+ *  reset on the next successful `onopen`. Module-level (not store state) —
+ *  one WS at a time, and the setTimeout closure needs to read the *current*
+ *  value across `connect()` calls. */
+let reconnectBackoff = 1000;
+const RECONNECT_BACKOFF_MAX = 30000;
+
 const GUARDED: ReadonlySet<Down["t"]> = new Set([
   "state", "batch", "branch_created", "current", "batch_resolved", "orch",
   "queued_consumed", "status",
@@ -814,6 +824,7 @@ export const useSession = create<SessionState>((set, get) => ({
   rewound: new Set(),
   ws: null,
   sessionId: null,
+  reconnecting: false,
   pending: [],
   sessionsList: [],
   savedSessions: [],
@@ -866,10 +877,29 @@ export const useSession = create<SessionState>((set, get) => ({
       `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}`;
     const next = new WebSocket(`${base}/ws/${sessionId}`);
     next.onmessage = (e) => get().apply(JSON.parse(e.data) as Down);
+    next.onopen = () => {
+      reconnectBackoff = 1000;
+      if (get().ws === next) set({ reconnecting: false });
+    };
     next.onclose = () => {
-      // Clear only if this is still the live socket (a newer connect may have
-      // replaced it). Lets a fresh connect re-open cleanly.
-      if (get().ws === next) set({ ws: null, sessionId: null });
+      // Only act if this is still the live socket — a newer `connect()` (or
+      // the e2e reconnect test's manual `setState({ws:null})+connect()`) may
+      // have superseded it, in which case *its* onclose owns retry.
+      if (get().ws !== next) return;
+      // STRESS-V2 P2: auto-reconnect with exponential backoff. `sessionId`
+      // is KEPT (was cleared pre-P2) so `CommandPalette`/`Sidebar` exports
+      // and the setTimeout guard below can distinguish "socket dropped,
+      // retry" from "user left" (`disconnect()` clears it).
+      set({ ws: null, reconnecting: true });
+      const delay = reconnectBackoff;
+      reconnectBackoff = Math.min(reconnectBackoff * 2, RECONNECT_BACKOFF_MAX);
+      setTimeout(() => {
+        // Skip if `disconnect()`/`newAudit()` navigated away, or a manual
+        // `connect()` already opened a fresh socket in the interim.
+        if (get().sessionId === sessionId && get().ws == null) {
+          get().connect(sessionId);
+        }
+      }, delay);
     };
     // A2 failure-mode caveat: a WS drop between `send()` and the server's
     // `{t:"ack"}` would strand an entry in `pending` (button disabled
@@ -884,7 +914,7 @@ export const useSession = create<SessionState>((set, get) => ({
       ws.onclose = null; // avoid the handler racing our explicit clear
       ws.close();
     }
-    set({ ws: null, sessionId: null });
+    set({ ws: null, sessionId: null, reconnecting: false });
   },
 
   send: (msg: Up) => {
