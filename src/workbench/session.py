@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import random
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -380,11 +382,32 @@ class Session:
         return op
 
     async def drain(self) -> None:
-        """Own the WebSockets: await enqueued wire messages and broadcast them."""
+        """Own the WebSockets: await enqueued wire messages and broadcast them.
+
+        Test-only jitter: when ``WORKBENCH_BROADCAST_DELAY_MS`` is set, each
+        frame is spawned concurrently (rather than awaited in sequence) so
+        the per-frame random sleep in :meth:`broadcast` can reorder them —
+        a later ``v`` may reach the client before an earlier one, exercising
+        the client's A3 version guard. Without the env var, drain is
+        strictly FIFO and ``v`` is monotone on the wire.
+        """
+        if os.environ.get("WORKBENCH_BROADCAST_DELAY_MS"):
+            async with anyio.create_task_group() as tg:
+                async for msg in self._recv:
+                    tg.start_soon(self.broadcast, msg)
+            return
         async for msg in self._recv:
             await self.broadcast(msg)
 
     async def broadcast(self, msg: dict[str, Any]) -> None:
+        # Test-only network-jitter simulation (``_e2e_m1_chaos_delay``):
+        # delay every outbound frame by ``uniform(0, N/1000)`` seconds. Read
+        # per-call so a test can set the env var after import. Applies to
+        # drain-queue frames AND direct broadcasts (``{t:"ack"}`` from
+        # ``server._dispatch``) — the latter is what holds ``useIsPending``
+        # true across the delay window.
+        if delay := os.environ.get("WORKBENCH_BROADCAST_DELAY_MS"):
+            await asyncio.sleep(random.uniform(0, int(delay) / 1000))  # noqa: S311
         dead: list[Connection] = []
         for conn in list(self.connections):
             try:
