@@ -154,6 +154,16 @@ function ModelEventRowImpl({
   turn, turnIndex, auditor, siblingPos, onSwitchSibling, highlighted, rowRef,
 }: Props): JSX.Element {
   const { ev, resolved, tools } = turn;
+  // Dev-only render probe (`_e2e_m1_perf`): P23's `arePropsEqual` should keep
+  // every settled row at O(1) renders while a *later* row streams. Per-uuid
+  // counts let the harness distinguish the streaming row from its neighbours.
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rc = ((window as any).__renderCount ??= {});
+    rc.ModelEventRow = (rc.ModelEventRow ?? 0) + 1;
+    const k = `ModelEventRow:${auditor ? "auditor" : "target"}:${ev.uuid}`;
+    rc[k] = (rc[k] ?? 0) + 1;
+  }
   const branchAt = useSession((s) => s.branchAt);
   const resampleAt = useSession((s) => s.resampleAt);
   const branchAuditor = useSession((s) => s.branchAuditor);
@@ -445,15 +455,26 @@ function refsEqual<T>(a: readonly T[], b: readonly T[]): boolean {
  * *matters* also changes `siblingPos`/`highlighted`, which ARE compared.
  */
 function arePropsEqual(prev: Props, next: Props): boolean {
-  return (
+  const eq =
     prev.turn.ev === next.turn.ev &&
     refsEqual(prev.turn.tools, next.turn.tools) &&
     prev.turnIndex === next.turnIndex &&
     prev.auditor === next.auditor &&
     prev.highlighted === next.highlighted &&
     prev.siblingPos?.idx === next.siblingPos?.idx &&
-    prev.siblingPos?.total === next.siblingPos?.total
-  );
+    prev.siblingPos?.total === next.siblingPos?.total;
+  if (import.meta.env.DEV && !eq) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rc = ((window as any).__renderCount ??= {});
+    const why =
+      prev.turn.ev !== next.turn.ev ? "ev"
+      : !refsEqual(prev.turn.tools, next.turn.tools) ? "tools"
+      : prev.turnIndex !== next.turnIndex ? "turnIndex"
+      : prev.highlighted !== next.highlighted ? "highlighted"
+      : "siblingPos";
+    rc[`memoMiss:${why}`] = (rc[`memoMiss:${why}`] ?? 0) + 1;
+  }
+  return eq;
 }
 
 export const ModelEventRow = memo(ModelEventRowImpl, arePropsEqual);

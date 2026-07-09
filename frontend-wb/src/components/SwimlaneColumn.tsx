@@ -53,6 +53,15 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   { branch, role = "target", linked, onSync },
   ref
 ): JSX.Element {
+  // Dev-only render probe (`_e2e_m1_perf`): OVERNIGHT-SWEEP P16 keeps this
+  // column quiet during streaming `{t:"update"}` frames — expect O(turns)
+  // renders, not O(turns × chunks).
+  if (import.meta.env.DEV) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const rc = ((window as any).__renderCount ??= {});
+    rc.SwimlaneColumn = (rc.SwimlaneColumn ?? 0) + 1;
+    rc[`SwimlaneColumn:${role}`] = (rc[`SwimlaneColumn:${role}`] ?? 0) + 1;
+  }
   const { timeline, rows, layouts, lineage } = useSwimlanes(branch, role);
   const queued = useQueued(branch, role);
   const staged = useStagedForTarget(branch);
