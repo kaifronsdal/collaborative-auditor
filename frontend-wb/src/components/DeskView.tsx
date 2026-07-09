@@ -29,6 +29,7 @@ export function DeskView(): JSX.Element {
   );
   const error = useSession((s) => s.error);
   const dismissError = useSession((s) => s.dismissError);
+  const reconnecting = useSession((s) => s.reconnecting);
   const hasOrch = useSession((s) => s.orchestrator != null);
 
   const auditorRef = useRef<ColumnHandle>(null);
@@ -172,6 +173,23 @@ export function DeskView(): JSX.Element {
 
   return (
     <>
+      {/* STRESS-V2 P2: WS dropped and `onclose` scheduled a backoff retry.
+          Fixed strip so it overlays whatever's on screen (StartView included);
+          reuses the existing `pulse` keyframe. */}
+      {reconnecting && (
+        <div
+          style={{
+            position: "fixed", top: 0, left: 0, right: 0, zIndex: 1000,
+            padding: "4px 0", textAlign: "center",
+            background: "hsl(45 90% 88%)", color: "hsl(30 60% 30%)",
+            borderBottom: "1px solid hsl(45 60% 70%)",
+            font: "var(--fs-sm) var(--sans)",
+            animation: "pulse 1.2s ease-in-out infinite",
+          }}
+        >
+          Reconnecting…
+        </div>
+      )}
       {error && (
         <div className="error-banner">
           <span>{error}</span>

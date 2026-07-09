@@ -410,20 +410,15 @@ class Session:
     async def drain(self) -> None:
         """Own the WebSockets: await enqueued wire messages and broadcast them.
 
-        Test-only jitter: when ``WORKBENCH_BROADCAST_DELAY_MS`` is set, each
-        frame is spawned concurrently (rather than awaited in sequence) so
-        the per-frame random sleep in :meth:`broadcast` can reorder them —
-        a later ``v`` may reach the client before an earlier one, exercising
-        the client's A3 version guard. Without the env var, drain is
-        strictly FIFO and ``v`` is monotone on the wire.
+        Strictly FIFO — each :meth:`broadcast` is awaited to completion before
+        the next dequeue, so ``v`` is monotone on the wire. When
+        ``WORKBENCH_BROADCAST_DELAY_MS`` is set, :meth:`broadcast` sleeps
+        ``uniform(0, N/1000)`` per frame *inline* here, simulating a slow
+        link's latency without the reorder a real (TCP-ordered) WebSocket
+        can't produce. The previous ``tg.start_soon`` variant let a later
+        ``v`` overtake an earlier one — an artefact of the test hook, not a
+        network condition the A3 guard needs to survive.
         """
-        if os.environ.get("WORKBENCH_BROADCAST_DELAY_MS"):
-            async with anyio.create_task_group() as tg:
-                async for msg in self._recv:
-                    if self._desync:
-                        await self._resync_all()
-                    tg.start_soon(self.broadcast, msg)
-            return
         async for msg in self._recv:
             if self._desync:
                 await self._resync_all()

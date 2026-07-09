@@ -1,11 +1,13 @@
 """Chaos playwright under simulated network jitter.
 
-Sets ``WORKBENCH_BROADCAST_DELAY_MS=500`` (see :meth:`Session.drain` /
-:meth:`Session.broadcast`) so every server→client frame is delayed by
-``uniform(0, 0.5)`` seconds AND drain-queue frames are broadcast
-concurrently — a later ``v`` can reach the client before an earlier one.
-The connect-time ``push_full_state`` (direct ``conn.send_json``) is NOT
-delayed, so the UI renders its initial snapshot immediately.
+Sets ``WORKBENCH_BROADCAST_DELAY_MS=500`` (see :meth:`Session.broadcast`)
+so every server→client frame is delayed by ``uniform(0, 0.5)`` seconds.
+Drain remains strictly FIFO — the delay simulates a slow link's latency,
+not reorder (a real TCP-ordered WebSocket can't reorder frames). Direct
+``broadcast`` calls (``{t:"ack"}``) are delayed too, so ``useIsPending``
+holds across the window. The connect-time ``push_full_state`` (direct
+``conn.send_json``) is NOT delayed, so the UI renders its initial snapshot
+immediately.
 
 Re-runs the eight ``_e2e_m1_chaos`` scenarios verbatim (observation: which
 assertions only hold without delay?) and adds three delay-specific probes:
@@ -58,14 +60,16 @@ from workbench._e2e_m1_chaos import (
 from workbench._smoke_fixtures import _backend, _free_port, _vite
 
 # Frame types the client's A3 version guard applies to (mirror of
-# ``frontend-wb/src/store/session.ts`` ``GUARDED``).
+# ``frontend-wb/src/store/session.ts`` ``GUARDED``). STRESS-V2 P0 (H5b)
+# added ``"status"`` — it goes through the drain queue and writes
+# ``version: msg.v``, so a stale one must be dropped.
 GUARDED = frozenset(
     {"state", "batch", "branch_created", "current", "batch_resolved", "orch",
-     "queued_consumed"}
+     "queued_consumed", "status"}
 )
 # Non-guarded frames that nonetheless write ``version: msg.v`` — if one
 # overtakes a GUARDED frame, the guard drops the latter.
-WRITES_VERSION = frozenset({"status", "rewound", "notify", "l1_spans", "timeline"})
+WRITES_VERSION = frozenset({"rewound", "notify", "l1_spans", "timeline"})
 
 
 # ── WS frame capture ────────────────────────────────────────────────────────
