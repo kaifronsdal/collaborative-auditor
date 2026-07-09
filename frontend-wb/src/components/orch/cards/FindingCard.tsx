@@ -7,6 +7,7 @@
  * `{kind, id, claim, quotes: [{sample_id, at, role, text, log}], signed_by}`.
  */
 import type { JSX } from "react";
+import { FORK_KINDS, useIsPending } from "../../../lib/selectors";
 import type { Up } from "../../../lib/wire";
 import type { FindingPayload } from "../types";
 
@@ -18,6 +19,7 @@ type Props = {
 
 export default function FindingCard({ payload, send }: Props): JSX.Element {
   const first = payload.quotes[0];
+  const forkPending = useIsPending((c) => FORK_KINDS.has(c.t));
   // Quotes reference *finished* samples → `{t:"import", path: .eval}` (not
   // `import_running`, which needs a `log_dir` to find the ACP socket).
   const open = first?.log
@@ -36,7 +38,9 @@ export default function FindingCard({ payload, send }: Props): JSX.Element {
         </span>
         {open && (
           <span className="out-actions">
-            <a onClick={open}>open</a>
+            <button type="button" onClick={open} disabled={forkPending}>
+              open
+            </button>
           </span>
         )}
       </div>

@@ -849,6 +849,14 @@ body {
 }
 .error-banner button:hover { color: var(--ink); }
 
+/* a11y: `<a onClick>` without `href` isn't keyboard-focusable and can't be
+   `disabled` — this reset lets a `<button>` stand in visually. */
+.link-btn {
+  border: none; background: none; padding: 0; margin: 0;
+  font: inherit; color: inherit; text-decoration: underline; cursor: pointer;
+}
+.link-btn:disabled { opacity: 0.5; cursor: default; text-decoration: none; }
+
 /* ---------- runline — single header bar (status-dot · seed) ---------- */
 .runline {
   flex-shrink: 0; display: flex; align-items: center; gap: var(--sp-2);

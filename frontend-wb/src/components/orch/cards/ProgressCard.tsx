@@ -18,6 +18,7 @@ import { Fragment, useRef, useState, type JSX, type MouseEvent } from "react";
 
 import { basename } from "@tsmono/util";
 
+import { FORK_KINDS, useIsPending } from "../../../lib/selectors";
 import type { Up } from "../../../lib/wire";
 import { PIN_LABELS, useSession, type Pin, type PinLabel } from "../../../store/session";
 import type {
@@ -84,6 +85,9 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
   const pins = useSession((s) => s.pins);
   const togglePin = useSession((s) => s.togglePin);
   const setLabel = useSession((s) => s.setLabel);
+  // W-B: row click sends `import`/`import_running` (fork-shaped — repoints
+  // `current`); guard while any fork is in flight.
+  const forkPending = useIsPending((c) => FORK_KINDS.has(c.t));
 
   const markOpened = (id: string): void => {
     opened.current.add(id);
@@ -180,6 +184,7 @@ export default function ProgressCard({ payload, displayId, send }: Props): JSX.E
     });
 
     const onRowClick = (row: SampleRow): void => {
+      if (forkPending) return;
       if (row.status === "running") {
         send({ t: "import_running", sample_id: row.id, log_dir: payload.log_dir });
       } else if (log != null) {
@@ -453,6 +458,7 @@ function RunRow({
           <button
             className="ar-stop"
             title="stop this sample"
+            aria-label="stop this sample"
             onClick={(e) => {
               e.stopPropagation();
               onStop();

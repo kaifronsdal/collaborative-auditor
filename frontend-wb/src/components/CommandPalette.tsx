@@ -120,7 +120,8 @@ export function CommandPalette({
       id: "restart-kernel",
       label: "Restart kernel",
       hint: "drop user_ns, keep messages",
-      disabled: orch == null,
+      // Matches the OrchColumn toolbar: not while a cell/generate is in flight.
+      disabled: orch == null || orchRunning,
       run: () => send({ t: "restart_kernel" }),
     },
   ], [setMode, newAudit, onOpenSettings, sessionId, orch, orchRunning, savedSessions.length, send]);

@@ -5,6 +5,7 @@ import {
 } from "@tsmono/react/components/ComponentIconContext";
 
 import { useSession } from "./store/session";
+import { IconClose } from "./components/icons";
 import { Sidebar } from "./components/Sidebar";
 import { StartView } from "./components/StartView";
 import { DeskView } from "./components/DeskView";
@@ -36,6 +37,8 @@ export function App(): JSX.Element {
   const current = useSession((s) => s.current);
   const hasOrch = useSession((s) => s.orchestrator != null);
   const pendingNewAudit = useSession((s) => s.pendingNewAudit);
+  const error = useSession((s) => s.error);
+  const dismissError = useSession((s) => s.dismissError);
 
   useEffect(() => {
     // App-lifetime singleton. `connect` is idempotent — StrictMode double-invoke
@@ -63,6 +66,18 @@ export function App(): JSX.Element {
       <div className="app">
         <Sidebar />
         <main className="app-main">
+          {/* E25: error banner lives here (not DeskView) so it also renders
+              over StartView — a `Session.load` failure lands you on StartView
+              with an error, and the pre-E25 DeskView-only banner never showed
+              it. `.app-main` is the flex column, so it stacks above either. */}
+          {error && (
+            <div className="error-banner">
+              <span>{error}</span>
+              <button onClick={dismissError} title="Dismiss" aria-label="Dismiss">
+                <IconClose />
+              </button>
+            </div>
+          )}
           {showStart ? <StartView /> : <DeskView />}
         </main>
         {paletteOpen && (

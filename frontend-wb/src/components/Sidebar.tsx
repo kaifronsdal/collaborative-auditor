@@ -2,6 +2,7 @@ import type { CSSProperties, JSX } from "react";
 
 import { basename } from "@tsmono/util";
 
+import { FORK_KINDS, useIsPending } from "../lib/selectors";
 import type { BranchId, BranchMeta } from "../lib/wire";
 import {
   PIN_LABELS,
@@ -259,6 +260,7 @@ export function Sidebar(): JSX.Element {
   const setMode = useSession((s) => s.setMode);
   const pins = useSession((s) => s.pins);
   const togglePin = useSession((s) => s.togglePin);
+  const forkPending = useIsPending((c) => FORK_KINDS.has(c.t));
 
   useEffect(() => {
     void fetchSessions();
@@ -435,6 +437,7 @@ export function Sidebar(): JSX.Element {
                   style={{ float: "right" }}
                   title="Import .eval as new branch"
                   aria-label="Import .eval"
+                  disabled={forkPending}
                   onClick={handleImport}
                 >
                   <i className="bi bi-upload" style={{ fontSize: 11 }} />

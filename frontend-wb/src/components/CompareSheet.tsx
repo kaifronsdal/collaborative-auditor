@@ -8,6 +8,7 @@ import type { JSX } from "react";
 import { Modal } from "@tsmono/react/components/Modal";
 
 import type { CandidateBatch } from "../lib/wire";
+import { useIsPending } from "../lib/selectors";
 import { useSession } from "../store/session";
 import { SwimlaneColumn } from "./SwimlaneColumn";
 
@@ -19,6 +20,7 @@ type Props = {
 
 export function CompareSheet({ batchId, batch, onClose }: Props): JSX.Element {
   const pickCandidate = useSession((s) => s.pickCandidate);
+  const picking = useIsPending((c) => c.t === "pick_candidate");
   return (
     <Modal
       show
@@ -39,6 +41,7 @@ export function CompareSheet({ batchId, batch, onClose }: Props): JSX.Element {
               <button
                 type="button"
                 className="cand-pick"
+                disabled={picking}
                 onClick={() => {
                   pickCandidate(batchId, cid);
                   onClose();

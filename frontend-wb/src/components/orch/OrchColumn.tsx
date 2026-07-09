@@ -80,6 +80,12 @@ export function OrchColumn(): JSX.Element {
   const turns = useMemo(() => eventsToOrchTurns(events, rewound), [events, rewound]);
   const status = orch?.status ?? "idle";
   const isRunning = status === "running" || status === "waiting";
+
+  // W-B guards — hoisted (rules-of-hooks) since some buttons mount conditionally.
+  const playPausePending = useIsPending((c) => c.t === "pause" || c.t === "play");
+  const interruptPending = useIsPending((c) => c.t === "interrupt_and_send");
+  const restartPending = useIsPending((c) => c.t === "restart_kernel");
+  const sendNowPending = useIsPending((c) => c.t === "detach_cell" || c.t === "orch_send");
   const bgCells = orch?.bg_cells ?? EMPTY_BG;
   const bgJobs = orch?.bg_jobs ?? EMPTY_JOBS;
   const notifications = orch?.notifications ?? EMPTY_NOTIF;
@@ -242,6 +248,7 @@ export function OrchColumn(): JSX.Element {
               <button
                 type="button"
                 title="interrupt cell"
+                aria-label="interrupt cell"
                 onClick={() => send({ t: "cancel_cell", turn: turns.length })}
               >
                 <IconStop size={14} />
@@ -250,6 +257,7 @@ export function OrchColumn(): JSX.Element {
             <button
               type="button"
               title="run one turn"
+              aria-label="run one turn"
               disabled={isRunning}
               onClick={() => send({ t: "step", target: ORCH })}
             >
@@ -258,6 +266,8 @@ export function OrchColumn(): JSX.Element {
             <button
               type="button"
               title={isRunning ? "pause after this turn" : "run"}
+              aria-label={isRunning ? "pause after this turn" : "run"}
+              disabled={playPausePending}
               onClick={() => send({ t: isRunning ? "pause" : "play", target: ORCH })}
             >
               {isRunning ? <IconPause size={14} /> : <IconPlay size={15} />}
@@ -265,7 +275,8 @@ export function OrchColumn(): JSX.Element {
             <button
               type="button"
               title="restart kernel (clear Python namespace, keep conversation)"
-              disabled={isRunning}
+              aria-label="restart kernel"
+              disabled={isRunning || restartPending}
               onClick={() => send({ t: "restart_kernel" })}
             >
               <i className="bi bi-arrow-clockwise" style={{ fontSize: 14 }} />
@@ -273,7 +284,15 @@ export function OrchColumn(): JSX.Element {
           </div>
           {cellRunning && hasText ? (
             <span className="composer-hint composer-hint-running truncate">
-              or queue · <a onClick={sendNow}>send now (background)</a>
+              or queue ·{" "}
+              <button
+                type="button"
+                className="link-btn"
+                disabled={sendNowPending}
+                onClick={sendNow}
+              >
+                send now (background)
+              </button>
             </span>
           ) : (
             <span className="composer-hint truncate">
@@ -284,7 +303,9 @@ export function OrchColumn(): JSX.Element {
             <button
               className="primary primary-send primary-interrupt"
               onClick={interruptAndSend}
+              disabled={interruptPending}
               title="Interrupt the running cell and send now"
+              aria-label="Interrupt the running cell and send now"
             >
               <i className="bi bi-send" style={{ fontSize: 13 }} />
             </button>
@@ -294,6 +315,7 @@ export function OrchColumn(): JSX.Element {
               onClick={sendText}
               disabled={!hasText}
               title="Send to orchestrator"
+              aria-label="Send to orchestrator"
             >
               <IconSend size={16} />
             </button>

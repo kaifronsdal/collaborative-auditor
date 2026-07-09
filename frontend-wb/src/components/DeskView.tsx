@@ -8,7 +8,7 @@ import { ComposerTextarea } from "./ComposerTextarea";
 import { OrchColumn } from "./orch/OrchColumn";
 import { ScanControl } from "./ScannerPicker";
 import { SwimlaneColumn } from "./SwimlaneColumn";
-import { IconClose, IconPause, IconPlay, IconSend } from "./icons";
+import { IconPause, IconPlay, IconSend } from "./icons";
 
 function uuid(): string {
   return crypto.randomUUID();
@@ -23,12 +23,12 @@ export function DeskView(): JSX.Element {
   const injectMsg = useSession((s) => s.inject);
   const current = useSession((s) => s.current);
   const status = useSession((s) => s.status);
-  const branches = useSession((s) => s.branches);
+  // Narrowed from `s.branches` (P1): the whole map churns on every branch's
+  // status flip; the desk only reads its own seed for the runline.
+  const seed = useSession((s) => (s.current ? s.branches[s.current]?.seed : undefined));
   const branchConfig = useSession((s) =>
     s.current ? s.branchConfig[s.current] : undefined
   );
-  const error = useSession((s) => s.error);
-  const dismissError = useSession((s) => s.dismissError);
   const reconnecting = useSession((s) => s.reconnecting);
   const hasOrch = useSession((s) => s.orchestrator != null);
 
@@ -113,8 +113,7 @@ export function DeskView(): JSX.Element {
   }, []);
 
   const branch = current!;
-  const currentBranch = current ? branches[current] : undefined;
-  const seedTitle = currentBranch?.seed ?? branchConfig?.seed ?? "";
+  const seedTitle = seed ?? branchConfig?.seed ?? "";
   const isRunning = status === "running";
   const isEnded = status === "ended";
 
@@ -190,12 +189,6 @@ export function DeskView(): JSX.Element {
           Reconnecting…
         </div>
       )}
-      {error && (
-        <div className="error-banner">
-          <span>{error}</span>
-          <button onClick={dismissError} title="Dismiss"><IconClose /></button>
-        </div>
-      )}
 
       {/* Single header bar: status-dot · seed. Play/pause lives in the
           composer's primary button; step/end are gone. */}
@@ -231,6 +224,7 @@ export function DeskView(): JSX.Element {
                   onClick={onPrimary}
                   disabled={(justSent && primary.mode === "play") || (!hasText && isEnded)}
                   title={hasText ? primary.title : `${primary.title} (Enter)`}
+                  aria-label={primary.title}
                 >
                   <primary.Icon size={16} />
                 </button>
@@ -248,6 +242,7 @@ export function DeskView(): JSX.Element {
                 type="button"
                 onClick={() => syncTo("auditor")}
                 title="Scroll auditor to match target"
+                aria-label="Scroll auditor to match target"
               >
                 <i className="bi bi-arrow-left" />
               </button>
@@ -260,6 +255,7 @@ export function DeskView(): JSX.Element {
                     ? "Unlink scroll (columns scroll independently)"
                     : "Link scroll (scrolling one column tracks the other). Press . for a one-off jump."
                 }
+                aria-label={linked ? "Unlink scroll" : "Link scroll"}
               >
                 <i className="bi bi-link-45deg" />
               </button>
@@ -267,6 +263,7 @@ export function DeskView(): JSX.Element {
                 type="button"
                 onClick={() => syncTo("target")}
                 title="Scroll target to match auditor"
+                aria-label="Scroll target to match auditor"
               >
                 <i className="bi bi-arrow-right" />
               </button>

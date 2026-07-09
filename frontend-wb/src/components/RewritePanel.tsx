@@ -12,6 +12,7 @@
  */
 import { useEffect, useState, type JSX, type RefObject } from "react";
 
+import { useIsPending } from "../lib/selectors";
 import type { RewriteDraft } from "../store/session";
 import { StatusDot } from "./icons";
 
@@ -84,6 +85,7 @@ export function SelectionPill({
       onMouseDown={(e) => e.stopPropagation()}
       onClick={() => onPick(pill.text)}
       title="rewrite this selection"
+      aria-label="rewrite this selection"
     >
       <i className="bi bi-stars" />
     </button>
@@ -105,6 +107,11 @@ export type RewritePanelProps = {
 export function RewritePanel({
   className, draft, prompt, setPrompt, sel, onSend, onApply, onDiscard,
 }: RewritePanelProps): JSX.Element {
+  // W-B: `draft.status === "pending"` already hides the button, but that flip
+  // waits on the round-trip; `useIsPending` greys it the instant `send()` runs.
+  const sending = useIsPending(
+    (c) => c.t === "rewrite_tool_call" || c.t === "rewrite_target_message"
+  );
   return (
     <div className={className ?? "tp-slot tp-rewrite"}>
       <div className="tp-lbl">
@@ -127,7 +134,7 @@ export function RewritePanel({
             >
               apply & replay
             </button>
-            <button type="button" onClick={onSend} disabled={!prompt.trim()}>
+            <button type="button" onClick={onSend} disabled={!prompt.trim() || sending}>
               regenerate
             </button>
             <button type="button" onClick={onDiscard}>discard</button>
@@ -143,7 +150,7 @@ export function RewritePanel({
             rows={2}
             autoFocus
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !sending) {
                 e.preventDefault();
                 onSend();
               }
@@ -158,7 +165,7 @@ export function RewritePanel({
             <div className="tp-edit-err">{draft.error}</div>
           )}
           <div className="tp-edit-actions">
-            <button type="button" onClick={onSend} disabled={!prompt.trim()}>
+            <button type="button" onClick={onSend} disabled={!prompt.trim() || sending}>
               rewrite
             </button>
             <button type="button" onClick={onDiscard}>cancel</button>

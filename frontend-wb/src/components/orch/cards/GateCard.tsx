@@ -283,8 +283,14 @@ function PromptBody({
 
   const answer = (v: string): void => resolve(v);
 
-  // `1`..`9` shortcuts while the card has focus.
+  // `1`..`9` shortcuts while the card has focus. K1: focus on mount so the
+  // shortcuts work without a click — a fresh gate is the newest thing on
+  // screen and the column has already scrolled to it. `preventScroll` because
+  // the tail-follow layout effect owns scroll position.
   const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    rootRef.current?.focus({ preventScroll: true });
+  }, []);
   useEffect(() => {
     const el = rootRef.current;
     if (!el) return;

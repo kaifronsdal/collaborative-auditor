@@ -14,6 +14,7 @@
  */
 import { useMemo, useState, type JSX } from "react";
 
+import { useIsPending } from "../../lib/selectors";
 import type { BgJob } from "../../lib/wire";
 import { WB_MIME, type OrchTurnData } from "./types";
 
@@ -126,6 +127,7 @@ function JobRow({
   // `bg_done` (fresh uuid), so they're inert.
   const jumpable = job.kind === "eval";
   const cancellable = job.kind === "bash" && job.status === "running";
+  const cancelling = useIsPending((c) => c.t === "cancel_bg" && c.id === job.id);
   const title =
     job.kind === "bash"
       ? `pid ${job.pid ?? "?"} · ${job.cmd_or_task}`
@@ -149,6 +151,8 @@ function JobRow({
           <button
             className="hjp-cancel"
             title="SIGTERM this subprocess"
+            aria-label="SIGTERM this subprocess"
+            disabled={cancelling}
             onClick={(e) => {
               e.stopPropagation();
               onCancel(job.id);

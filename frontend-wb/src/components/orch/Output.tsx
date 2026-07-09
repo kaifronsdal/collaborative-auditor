@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState, type JSX } from "react";
 import { marked } from "marked";
 
+import { FORK_KINDS } from "../../lib/selectors";
 import { useSession } from "../../store/session";
 import { BlockActions, CopyBtn, tableToTsv } from "./BlockActions";
 import { cards } from "./cards";
@@ -315,6 +316,10 @@ function HtmlOutput({ html }: { html: string }): JSX.Element {
             );
             return;
           }
+          // W-B: `import` is fork-shaped (repoints `current`); a click while
+          // another fork is in flight would race it. Read `pending` fresh —
+          // this handler outlives the render that captured `send`.
+          if (useSession.getState().pending.some((c) => FORK_KINDS.has(c.t))) return;
           send({ t: "import", path: log, sample_id: sampleId });
         });
         // UI-AUDIT §C: only advertise the click affordance when at least one

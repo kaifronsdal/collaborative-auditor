@@ -12,7 +12,7 @@
 import type { JSX } from "react";
 
 import { isModelEvent } from "../lib/events";
-import { useEvents } from "../lib/selectors";
+import { useEvents, useIsPending } from "../lib/selectors";
 import type { BranchId, Role } from "../lib/wire";
 import { useSession } from "../store/session";
 import { ShimmerBubble } from "./ShimmerBubble";
@@ -27,6 +27,7 @@ type Props = {
 export function CandidateCard({ cid, kind, ordinal, onPick }: Props): JSX.Element {
   const events = useEvents(cid, kind);
   const grades = useSession((s) => s.branches[cid]?.grades);
+  const picking = useIsPending((c) => c.t === "pick_candidate");
 
   const ev = events.find(isModelEvent);
   const msg = ev?.output?.choices?.[0]?.message;
@@ -59,7 +60,7 @@ export function CandidateCard({ cid, kind, ordinal, onPick }: Props): JSX.Elemen
             ))}
           </span>
         )}
-        <button type="button" className="cand-pick" onClick={onPick} disabled={pending}>
+        <button type="button" className="cand-pick" onClick={onPick} disabled={pending || picking}>
           pick this
         </button>
       </div>

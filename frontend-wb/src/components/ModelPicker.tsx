@@ -151,11 +151,14 @@ export function ModelPicker({
     return () => document.removeEventListener("mousedown", handle);
   }, [open]);
 
-  // Close on Escape
+  // Close on Escape. K1: `stopPropagation` so a picker opened *inside* a modal
+  // (SettingsModal, StartView card) closes only itself — the parent Modal's
+  // own Esc handler would otherwise fire on the same event and close both.
   useEffect(() => {
     if (!open) return;
     function handle(e: KeyboardEvent): void {
       if (e.key === "Escape") {
+        e.stopPropagation();
         setOpen(false);
         setFilter("");
       }

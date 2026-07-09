@@ -20,6 +20,7 @@ import { useState, type JSX } from "react";
 import { Modal } from "@tsmono/react/components/Modal";
 
 import { renderContent } from "../../Bubble";
+import { FORK_KINDS, useIsPending } from "../../../lib/selectors";
 import type { Up } from "../../../lib/wire";
 import type { ExcerptPayload, TranscriptPayload } from "../types";
 
@@ -39,8 +40,11 @@ const roleTag = (r: ChatMessage["role"]): string =>
 
 export default function ReaderCard({ payload, displayId, send }: Props): JSX.Element {
   const [expanded, setExpanded] = useState(false);
-  const openInDesk = (): void =>
+  const forkPending = useIsPending((c) => FORK_KINDS.has(c.t));
+  const openInDesk = (): void => {
+    if (forkPending) return;
     send({ t: "import", path: payload.log, sample_id: payload.sample_id });
+  };
 
   const isExcerpt = payload.kind === "excerpt";
   const msgs = isExcerpt ? payload.messages : (payload.preview ?? []);
