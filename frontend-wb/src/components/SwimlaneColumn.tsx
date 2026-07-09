@@ -49,6 +49,24 @@ function rowSpan(r: SwimlaneRow): TimelineSpan {
   return getAgents(r.spans[0])[0];
 }
 
+/**
+ * C2a-redux: `useStagedForTarget` hoisted out of `SwimlaneColumn` so the
+ * auditor column (which never renders staged bubbles) never subscribes, and
+ * any future churn in the hook re-renders only this leaf, not the whole
+ * column with its O(turns) `ModelEventRow` children.
+ */
+function StagedPreview({ branch }: { branch: BranchId }): JSX.Element | null {
+  const staged = useStagedForTarget(branch);
+  if (staged.length === 0) return null;
+  return (
+    <>
+      {staged.map((m, i) => (
+        <Bubble key={m.id ?? `s${i}`} msg={m} ghost byline={`staged · ${m.role}`} />
+      ))}
+    </>
+  );
+}
+
 export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneColumn(
   { branch, role = "target", linked, onSync },
   ref
@@ -64,7 +82,6 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
   }
   const { timeline, rows, layouts, lineage } = useSwimlanes(branch, role);
   const queued = useQueued(branch, role);
-  const staged = useStagedForTarget(branch);
   const status = useSession((s) => s.status);
   const generating = useSession((s) => s.generating);
   const switchBranch = useSession((s) => s.switchBranch);
@@ -235,9 +252,7 @@ export const SwimlaneColumn = forwardRef<ColumnHandle, Props>(function SwimlaneC
           />
         );
       })}
-      {!isAuditor && staged.map((m, i) => (
-        <Bubble key={m.id ?? `s${i}`} msg={m} ghost byline={`staged · ${m.role}`} />
-      ))}
+      {!isAuditor && <StagedPreview branch={branch} />}
       {queued.map((m, i) => (
         <QueuedBubble key={m.id ?? `q${i}`} branch={branch} role={role} msg={m} />
       ))}

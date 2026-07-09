@@ -162,11 +162,21 @@ const STAGING_TOOLS: Record<string, ChatMessage["role"]> = {
  * Messages the auditor has staged for the target but the target hasn't
  * consumed yet (no `resume` → no target ModelEvent after them). Derived
  * from the auditor column's ToolEvents — no backend change needed.
+ *
+ * C2a-redux: keyed on `eventsRev` (P16 pattern) instead of the two `byRole`
+ * arrays. `assignByRole` re-mints those per streaming chunk, so the old
+ * subscription drove O(turns × chunks) `SwimlaneColumn` renders even though
+ * the *result* only changes on structural events (new ToolEvent / new target
+ * ModelEvent). `eventsRev` bumps on exactly those and stays quiet during
+ * `pending===true` streaming, so this now re-computes at the same cadence as
+ * `useSwimlanes` — a subscription both columns already hold.
  */
 export function useStagedForTarget(branch: BranchId): ChatMessage[] {
-  const auditorEvs = useEvents(branch, "auditor");
-  const targetEvs = useEvents(branch, "target");
+  const eventsRev = useSession((s) => s.eventsRev);
   return useMemo(() => {
+    const roles = useSession.getState().byRole[branch];
+    const auditorEvs = roles?.auditor ?? EMPTY;
+    const targetEvs = roles?.target ?? EMPTY;
     const lastTargetTs = [...targetEvs].reverse().find(isModelEvent)?.timestamp ?? "";
     const out: ChatMessage[] = [];
     for (const ev of auditorEvs) {
@@ -181,7 +191,8 @@ export function useStagedForTarget(branch: BranchId): ChatMessage[] {
       if (content) out.push({ role, content, id: ev.uuid ?? undefined } as ChatMessage);
     }
     return out;
-  }, [auditorEvs, targetEvs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branch, eventsRev]);
 }
 
 /**
@@ -201,6 +212,34 @@ type Swimlanes = {
   /** Reconstruct a row's full event lineage (ancestor prefix + own content). */
   lineage: (span: TimelineSpan) => Event[];
 };
+
+/**
+ * C2a-redux (P23): source store `Event` → its `stripSuffix()`-cloned form.
+ *
+ * `splice()` runs every event through `stripSuffix()`, which returns
+ * `{...e, span_id: ""}` for any event whose `span_id` is the timeline node
+ * id — every workbench ModelEvent. So `lineage()` yields fresh clones on
+ * each `eventsRev` bump and `arePropsEqual`'s `prev.turn.ev === next.turn.ev`
+ * check never holds → O(turns²) row renders (`_e2e_m1_perf` 9a0ff20).
+ *
+ * Keying the cache on the *store* ref (P13: stable for done events, replaced
+ * per update for the streaming one) makes the stripped clone inherit exactly
+ * that stability — cache hit for every settled row, miss for the one row
+ * that actually changed. WeakMap so evicted store events (reconnect
+ * `{t:"state"}` rebuild) don't pin their clones.
+ */
+const _stripCache = new WeakMap<Event, Event>();
+
+function stabilize(stripped: Event[], store: Map<string, Event>): Event[] {
+  return stripped.map((e) => {
+    const src = e.uuid != null ? store.get(e.uuid) : undefined;
+    if (src === undefined) return e;
+    const hit = _stripCache.get(src);
+    if (hit !== undefined) return hit;
+    _stripCache.set(src, e);
+    return e;
+  });
+}
 
 export function useSwimlanes(branch: BranchId, role: Role): Swimlanes {
   const serverTl = useSession((s) => s.timelines[branch]?.[role]);
@@ -228,7 +267,7 @@ export function useSwimlanes(branch: BranchId, role: Role): Swimlanes {
       timeline,
       rows,
       layouts,
-      lineage: (span) => splice(timeline.root, span),
+      lineage: (span) => stabilize(splice(timeline.root, span), events),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverTl, eventsRev]);
