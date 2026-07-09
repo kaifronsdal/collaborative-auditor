@@ -1,6 +1,6 @@
 import type { ChatMessage, Content } from "@tsmono/inspect-common";
 
-import { useMemo, type JSX } from "react";
+import { type JSX } from "react";
 
 import { useSession } from "../store/session";
 import { CollapsibleContent } from "./CollapsibleContent";
@@ -79,30 +79,22 @@ export function Bubble({ msg, role, ghost, byline, children }: Props): JSX.Eleme
   );
 }
 
+/** OVERNIGHT-SWEEP P17: module-level so `Object.is` short-circuits when
+ *  `turnScores[uuid]` is absent (the common case for non-target rows). */
+const EMPTY_SCORES: TurnScorePayload[] = [];
+
 /**
  * P1.8(c) — every `turn_score` payload for the target message with id `uuid`.
  *
- * The backend routes `InfoEvent(source="turn_score", span_id=target_span)`
- * into `byRole[branch].target`, but this hook reads the flat `events` map
- * instead so it works from any render site (linear column, swimlane splice,
- * candidate card) without needing the branch id. O(events) per render — fine
- * at M0 desk scale; move to a `byTurnScore` index in the store if it shows up
- * in a profile.
+ * OVERNIGHT-SWEEP P17: O(1) lookup into `state.turnScores` (populated
+ * incrementally by the reducer). Pre-C2 this scanned `s.events` — O(E) per
+ * row per render, and the `s.events` subscription forced every row to
+ * re-render on every structural change (the P1 chain's tail).
  */
 export function useTurnScores(uuid: string | null | undefined): TurnScorePayload[] {
-  const events = useSession((s) => s.events);
-  return useMemo(() => {
-    if (uuid == null) return [];
-    const out: TurnScorePayload[] = [];
-    for (const ev of events.values()) {
-      if (ev.event !== "info") continue;
-      const d = (ev as { data?: { kind?: string; turn_uuid?: string } }).data;
-      if (d?.kind === "turn_score" && d.turn_uuid === uuid) {
-        out.push(d as TurnScorePayload);
-      }
-    }
-    return out;
-  }, [events, uuid]);
+  return useSession((s) =>
+    uuid == null ? EMPTY_SCORES : s.turnScores[uuid] ?? EMPTY_SCORES
+  );
 }
 
 /** Badge row under a target assistant bubble: one chip per live scanner.

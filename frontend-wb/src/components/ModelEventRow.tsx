@@ -1,6 +1,6 @@
-import type { ChatMessage } from "@tsmono/inspect-common";
+import type { ChatMessage, ToolEvent } from "@tsmono/inspect-common";
 
-import { useRef, useState, type JSX } from "react";
+import { memo, useRef, useState, type JSX } from "react";
 
 import { pairToolCalls, type Turn } from "../lib/events";
 import { FORK_KINDS, useIsPending } from "../lib/selectors";
@@ -41,6 +41,9 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
   const rewriteTargetMessage = useSession((s) => s.rewriteTargetMessage);
   const clearRewriteDraft = useSession((s) => s.clearRewriteDraft);
   const draft = useSession((s) => (msg.id != null ? s.rewriteDrafts[msg.id] : undefined));
+  // OVERNIGHT-SWEEP W-B: `editTargetMessage` is fork-shaped (`_pendingChild`
+  // → `_register_and_spawn`); disable while any fork is in flight.
+  const forkPending = useIsPending((c) => FORK_KINDS.has(c.t));
 
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
@@ -60,7 +63,7 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
     setEditing(true);
   }
   function save() {
-    if (msg.id == null) return;
+    if (msg.id == null || forkPending) return;
     editTargetMessage(msg.id, role, text, tcid);
     setEditing(false);
   }
@@ -80,7 +83,7 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
     setRewriteSel(undefined);
   }
   function applyRewrite() {
-    if (msg.id == null || draft?.content == null) return;
+    if (msg.id == null || draft?.content == null || forkPending) return;
     editTargetMessage(msg.id, role, draft.content, tcid);
     discardRewrite();
   }
@@ -98,7 +101,9 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
             autoFocus
           />
           <div className="edit-actions">
-            <button className="edit-save" onClick={save}>save & replay</button>
+            <button className="edit-save" onClick={save} disabled={forkPending}>
+              save & replay
+            </button>
             <button className="edit-cancel" onClick={() => setEditing(false)}>cancel</button>
           </div>
         </div>
@@ -145,7 +150,7 @@ function EditableLeadBubble({ msg }: { msg: ChatMessage }): JSX.Element {
   );
 }
 
-export function ModelEventRow({
+function ModelEventRowImpl({
   turn, turnIndex, auditor, siblingPos, onSwitchSibling, highlighted, rowRef,
 }: Props): JSX.Element {
   const { ev, resolved, tools } = turn;
@@ -156,12 +161,6 @@ export function ModelEventRow({
   const requestCandidates = useSession((s) => s.requestCandidates);
   const requestCandidatesAuditor = useSession((s) => s.requestCandidatesAuditor);
   const current = useSession((s) => s.current);
-  const editAuditorCall = useSession((s) => s.editAuditorCall);
-  const editTargetMessage = useSession((s) => s.editTargetMessage);
-  const rewriteToolCall = useSession((s) => s.rewriteToolCall);
-  const rewriteTargetMessage = useSession((s) => s.rewriteTargetMessage);
-  const clearRewriteDraft = useSession((s) => s.clearRewriteDraft);
-  const rewriteDrafts = useSession((s) => s.rewriteDrafts);
 
   // The turn's resolved messages: leading non-assistant (system/user) bubbles,
   // ending in this turn's assistant output (if it's landed). Tool results are
@@ -211,11 +210,6 @@ export function ModelEventRow({
     setShowNPicker(false);
   }
 
-  function handleToolEdit(callId: string, args: Record<string, unknown>) {
-    if (anchorId == null) return;
-    editAuditorCall(turnIndex, anchorId, callId, args);
-  }
-
   const hasText =
     content != null &&
     (typeof content === "string"
@@ -248,66 +242,17 @@ export function ModelEventRow({
       {(tools.length > 0 || callPairs.length > 0) && (
         <div className="tool-pairs">
           {tools.map((t) => (
-            <ToolPair
+            <AuditorToolPair
               key={t.uuid ?? t.id}
-              {...fromToolEvent(t)}
-              onEdit={
-                auditor && t.id && !disabled
-                  ? (args) => handleToolEdit(t.id, args)
-                  : undefined
-              }
-              onRewrite={
-                auditor && t.id && !disabled
-                  ? (inst, sel) => rewriteToolCall(turnIndex, t.id, inst, sel)
-                  : undefined
-              }
-              rewriteDraft={auditor && t.id ? rewriteDrafts[t.id] : undefined}
-              onApplyRewrite={
-                auditor && t.id && !disabled
-                  ? (draft) => {
-                      clearRewriteDraft(t.id);
-                      if (draft.args) handleToolEdit(t.id, draft.args);
-                    }
-                  : undefined
-              }
-              onDiscardRewrite={
-                auditor && t.id ? () => clearRewriteDraft(t.id) : undefined
-              }
+              ev={t}
+              turnIndex={turnIndex}
+              anchorId={anchorId}
+              disabled={!auditor || disabled}
             />
           ))}
-          {callPairs.map((p) => {
-            const rid = p.result?.id ?? undefined;
-            const tcid = p.result?.tool_call_id ?? undefined;
-            return (
-              <ToolPair
-                key={p.call.id}
-                {...fromCall(p.call, p.result)}
-                onEditResult={
-                  rid != null
-                    ? (text) => editTargetMessage(rid, "tool", text, tcid)
-                    : undefined
-                }
-                onRewrite={
-                  rid != null
-                    ? (inst, sel) =>
-                        rewriteTargetMessage(rid, "tool", inst, sel, tcid)
-                    : undefined
-                }
-                rewriteDraft={rid != null ? rewriteDrafts[rid] : undefined}
-                onApplyRewrite={
-                  rid != null
-                    ? (draft) => {
-                        clearRewriteDraft(rid);
-                        if (draft.content != null) {
-                          editTargetMessage(rid, "tool", draft.content, tcid);
-                        }
-                      }
-                    : undefined
-                }
-                onDiscardRewrite={rid != null ? () => clearRewriteDraft(rid) : undefined}
-              />
-            );
-          })}
+          {callPairs.map((p) => (
+            <TargetToolPair key={p.call.id} pair={p} />
+          ))}
         </div>
       )}
 
@@ -344,7 +289,12 @@ export function ModelEventRow({
         {showNPicker ? (
           <span className="n-picker">
             {[3, 5, 8].map((n) => (
-              <button key={n} type="button" onClick={() => handleCandidates(n)}>
+              <button
+                key={n}
+                type="button"
+                disabled={forkPending}
+                onClick={() => handleCandidates(n)}
+              >
                 {n}
               </button>
             ))}
@@ -387,3 +337,123 @@ export function ModelEventRow({
     </div>
   );
 }
+
+/**
+ * Per-`ToolEvent` wrapper so the `s.rewriteDrafts[id]` subscription is
+ * narrowed to this one call — a rewrite draft landing for tool X no longer
+ * re-renders every row (which the pre-C2 whole-dict `useSession(s =>
+ * s.rewriteDrafts)` did, defeating the {@link ModelEventRow} memo).
+ */
+function AuditorToolPair({
+  ev, turnIndex, anchorId, disabled,
+}: {
+  ev: ToolEvent;
+  turnIndex: number;
+  anchorId: string | null | undefined;
+  disabled: boolean;
+}): JSX.Element {
+  const editAuditorCall = useSession((s) => s.editAuditorCall);
+  const rewriteToolCall = useSession((s) => s.rewriteToolCall);
+  const clearRewriteDraft = useSession((s) => s.clearRewriteDraft);
+  const draft = useSession((s) => (ev.id ? s.rewriteDrafts[ev.id] : undefined));
+  const canEdit = !!ev.id && !disabled && anchorId != null;
+  const onEdit = (args: Record<string, unknown>): void => {
+    if (anchorId != null) editAuditorCall(turnIndex, anchorId, ev.id, args);
+  };
+  return (
+    <ToolPair
+      {...fromToolEvent(ev)}
+      onEdit={canEdit ? onEdit : undefined}
+      onRewrite={
+        canEdit ? (inst, sel) => rewriteToolCall(turnIndex, ev.id, inst, sel) : undefined
+      }
+      rewriteDraft={draft}
+      onApplyRewrite={
+        canEdit
+          ? (d) => {
+              clearRewriteDraft(ev.id);
+              if (d.args) onEdit(d.args);
+            }
+          : undefined
+      }
+      onDiscardRewrite={ev.id ? () => clearRewriteDraft(ev.id) : undefined}
+    />
+  );
+}
+
+/** Target-column analogue of {@link AuditorToolPair}: narrow
+ *  `s.rewriteDrafts[rid]` subscription + W-B `forkPending` guard on the
+ *  `edit_target_message` triggers (`onEditResult`/`onApplyRewrite`). */
+function TargetToolPair({
+  pair,
+}: {
+  pair: ReturnType<typeof pairToolCalls>[number];
+}): JSX.Element {
+  const editTargetMessage = useSession((s) => s.editTargetMessage);
+  const rewriteTargetMessage = useSession((s) => s.rewriteTargetMessage);
+  const clearRewriteDraft = useSession((s) => s.clearRewriteDraft);
+  const rid = pair.result?.id ?? undefined;
+  const tcid = pair.result?.tool_call_id ?? undefined;
+  const draft = useSession((s) => (rid != null ? s.rewriteDrafts[rid] : undefined));
+  const forkPending = useIsPending((c) => FORK_KINDS.has(c.t));
+  return (
+    <ToolPair
+      {...fromCall(pair.call, pair.result)}
+      onEditResult={
+        rid != null && !forkPending
+          ? (text) => editTargetMessage(rid, "tool", text, tcid)
+          : undefined
+      }
+      onRewrite={
+        rid != null
+          ? (inst, sel) => rewriteTargetMessage(rid, "tool", inst, sel, tcid)
+          : undefined
+      }
+      rewriteDraft={draft}
+      onApplyRewrite={
+        rid != null && !forkPending
+          ? (d) => {
+              clearRewriteDraft(rid);
+              if (d.content != null) editTargetMessage(rid, "tool", d.content, tcid);
+            }
+          : undefined
+      }
+      onDiscardRewrite={rid != null ? () => clearRewriteDraft(rid) : undefined}
+    />
+  );
+}
+
+/** Store `Event` objects have referential identity across renders
+ *  (`assignByRole` only clones the array/replaces the one updated element),
+ *  so a length + per-index identity check catches every real change without
+ *  a `.rev` field on `Turn`. */
+function refsEqual<T>(a: readonly T[], b: readonly T[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/**
+ * OVERNIGHT-SWEEP P23: `eventsToTurns` rebuilds every `Turn` object each
+ * parent render, so plain `React.memo` (shallow `Object.is` on props) never
+ * hits. `turn.ev` and `turn.tools[i]` are stable store refs though — a row
+ * whose ModelEvent/ToolEvents didn't change is safe to skip. `resolved` is
+ * derived from the append-only conversation prefix through `turn.ev`, so
+ * `ev`-identity implies `resolved`-content-equality. `rowRef`/
+ * `onSwitchSibling` are excluded: both close over stable refs
+ * (`rowEls.current`, `forks`) and a change to their captured state that
+ * *matters* also changes `siblingPos`/`highlighted`, which ARE compared.
+ */
+function arePropsEqual(prev: Props, next: Props): boolean {
+  return (
+    prev.turn.ev === next.turn.ev &&
+    refsEqual(prev.turn.tools, next.turn.tools) &&
+    prev.turnIndex === next.turnIndex &&
+    prev.auditor === next.auditor &&
+    prev.highlighted === next.highlighted &&
+    prev.siblingPos?.idx === next.siblingPos?.idx &&
+    prev.siblingPos?.total === next.siblingPos?.total
+  );
+}
+
+export const ModelEventRow = memo(ModelEventRowImpl, arePropsEqual);

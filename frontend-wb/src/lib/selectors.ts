@@ -26,11 +26,13 @@ import type { BranchId, Role, Up } from "./wire";
 import { useSession } from "../store/session";
 import { ORCH_SOURCE, WB_MIME, type DisplayInfoEvent } from "../components/orch/types";
 
-/** A2 (ARCHITECTURE-RACES.md): the six fork-shaped commands that flow
- *  through `_pendingChild` → `_fork` → `_register_and_spawn`. Any one
- *  in-flight means every fork button is disabled (chaos s4 double-branch)
- *  — they all repoint `current`, so a second fork mid-flight would race
- *  the first regardless of which button fired it. */
+/** A2 (ARCHITECTURE-RACES.md) + OVERNIGHT-SWEEP W-B: fork-shaped commands.
+ *  Any one in-flight means every fork button is disabled (chaos s4
+ *  double-branch) — they all repoint `current` (or, for the orch/import
+ *  set, tear down / recreate branches), so a second fork mid-flight would
+ *  race the first regardless of which button fired it. The first six flow
+ *  through `_pendingChild` → `_fork` → `_register_and_spawn`; the rest are
+ *  the C2b additions (import row-click, resample-N, orch fork). */
 export const FORK_KINDS: ReadonlySet<Up["t"]> = new Set([
   "branch",
   "resample",
@@ -38,6 +40,12 @@ export const FORK_KINDS: ReadonlySet<Up["t"]> = new Set([
   "resample_auditor",
   "edit_auditor_call",
   "edit_target_message",
+  "import",
+  "import_running",
+  "candidates",
+  "candidates_auditor",
+  "pick_candidate",
+  "fork_orchestrator",
 ]);
 
 /**
@@ -196,9 +204,16 @@ export type Swimlanes = {
 
 export function useSwimlanes(branch: BranchId, role: Role): Swimlanes {
   const serverTl = useSession((s) => s.timelines[branch]?.[role]);
-  const events = useSession((s) => s.events);
+  // OVERNIGHT-SWEEP P16: subscribe to `eventsRev` (a number — `Object.is`
+  // short-circuits on every streaming `{t:"update"}`) and read the mutable
+  // `events` Map imperatively inside the memo. Pre-C2 this subscribed to
+  // `s.events` directly, which (with the P13 mutable Map) required a shim
+  // that re-minted the Map on structural change; now `eventsRev` is the
+  // sole recompute key and the Map ref is connection-stable.
+  const eventsRev = useSession((s) => s.eventsRev);
   return useMemo(() => {
     if (!serverTl) return { timeline: null, rows: [], layouts: [], lineage: () => [] };
+    const events = useSession.getState().events;
     const timeline = convertServerTimeline(serverTl, [...events.values()]);
     const rows = computeFlatSwimlaneRows(timeline.root, {
       includeUtility: true,
@@ -215,7 +230,8 @@ export function useSwimlanes(branch: BranchId, role: Role): Swimlanes {
       layouts,
       lineage: (span) => splice(timeline.root, span),
     };
-  }, [serverTl, events]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverTl, eventsRev]);
 }
 
 /** Sibling set at a fork point, plus the index of the currently-viewed one. */

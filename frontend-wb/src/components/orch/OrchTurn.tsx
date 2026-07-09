@@ -12,11 +12,12 @@
  * tools → a one-line `.tool-receipt` (the actual UI is the `GateCard`
  * DisplayEvent that `kernel.gate` emits below).
  */
-import { useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type JSX, type ReactNode } from "react";
 import { marked } from "marked";
 
 import type { ChatMessage, ToolCallError, ToolEvent } from "@tsmono/inspect-common";
 
+import { useIsPending } from "../../lib/selectors";
 import { useSession } from "../../store/session";
 import { contentText, resultText } from "../tool-renderers/util";
 import { BlockActions, CopyBtn } from "./BlockActions";
@@ -48,7 +49,7 @@ type Props = {
   ns: NsSummary;
 };
 
-export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
+function OrchTurnImpl({ data, bgCells, settledBg, ns }: Props): JSX.Element {
   const { turn, model, userInput, tools, outputs } = data;
   const asst = model.output?.choices?.[0]?.message;
   const py = tools.find((t) => t.function === "python");
@@ -158,6 +159,47 @@ export function OrchTurn({ data, bgCells, settledBg, ns }: Props): JSX.Element {
   );
 }
 
+/** See {@link ModelEventRow}'s `refsEqual` — store `Event` objects have
+ *  referential identity across renders. */
+function refsEqual<T>(a: readonly T[], b: readonly T[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** `ns` is rebuilt in {@link OrchColumn} on every `turns` change (i.e. every
+ *  streaming frame) but is content-stable until a new `cell_done` lands.
+ *  Shallow-equal so the memo isn't defeated by the fresh-object identity. */
+function nsEqual(a: NsSummary, b: NsSummary): boolean {
+  if (a === b) return true;
+  const ak = Object.keys(a);
+  if (ak.length !== Object.keys(b).length) return false;
+  for (const k of ak) if (a[k] !== b[k]) return false;
+  return true;
+}
+
+/**
+ * OVERNIGHT-SWEEP P23: `eventsToOrchTurns` rebuilds every `OrchTurnData`
+ * each parent render, so plain `React.memo` never hits. `data.model` /
+ * `data.tools[i]` / `data.outputs[i]` are stable store refs — a settled
+ * turn whose events didn't change is safe to skip. `bgCells.includes(turn)`
+ * is compared as a boolean (the array ref may churn on unrelated `{t:"orch"}`
+ * deltas).
+ */
+function orchPropsEqual(prev: Props, next: Props): boolean {
+  return (
+    prev.data.model === next.data.model &&
+    refsEqual(prev.data.tools, next.data.tools) &&
+    refsEqual(prev.data.outputs, next.data.outputs) &&
+    refsEqual(prev.data.userInput, next.data.userInput) &&
+    prev.settledBg === next.settledBg &&
+    prev.bgCells.includes(prev.data.turn) === next.bgCells.includes(next.data.turn) &&
+    nsEqual(prev.ns, next.ns)
+  );
+}
+
+export const OrchTurn = memo(OrchTurnImpl, orchPropsEqual);
+
 // ── tool-cell dispatch ──────────────────────────────────────────────────────
 
 const FILE_TOOLS: ReadonlySet<string> = new Set([
@@ -244,6 +286,13 @@ function AssistantProse({
   turn: number;
 }): JSX.Element | null {
   const send = useSession((s) => s.send);
+  // OVERNIGHT-SWEEP W-B: `rewind` truncates the orch tape and
+  // `fork_orchestrator` navigates to a fresh session — both must be
+  // one-at-a-time (a second click before the ack would race the first's
+  // `{t:"rewound"}`/`{t:"forked"}`).
+  const rewindPending = useIsPending(
+    (c) => c.t === "rewind" || c.t === "fork_orchestrator"
+  );
   const md = contentText(content);
   const html = useMemo(
     () => (md ? linkifyRefs(marked.parse(md, { async: false })) : ""),
@@ -262,6 +311,7 @@ function AssistantProse({
           <button
             type="button"
             title={`rewind to before turn ${turn}`}
+            disabled={rewindPending}
             onClick={() => {
               if (
                 confirm(
@@ -278,6 +328,7 @@ function AssistantProse({
           <button
             type="button"
             title={`fork a new session from before turn ${turn}`}
+            disabled={rewindPending}
             onClick={() => {
               if (
                 confirm(

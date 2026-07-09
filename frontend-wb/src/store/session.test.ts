@@ -75,10 +75,10 @@ describe("session reducer against real smoke fixture", () => {
     const after = useSession.getState();
     expect(after.byRole["b0"].auditor).toBe(auditorRef);
     expect(after.byRole["b0"].target).not.toBe(targetRef);
-    // OVERNIGHT-SWEEP P13: the mutated Map's content is visible via the
-    // pre-update ref (in-place mutation), even when a terminal update
-    // re-mints the top-level ref (TODO(C2) shim).
+    // OVERNIGHT-SWEEP P13: the Map is mutated in place — the pre-update ref
+    // sees the new content, and the top-level ref is connection-stable.
     expect(eventsRef.get(targetUpdate!.event.uuid!)).toBeDefined();
+    expect(after.events).toBe(eventsRef);
   });
 
   it("routes a nested span to its role via resolveRole", () => {
@@ -294,33 +294,34 @@ describe("OVERNIGHT-SWEEP C1 invariants", () => {
     expect(useSession.getState().eventsRev).toBe(rev0 + 1);
     const ref = useSession.getState().events;
 
-    // Streaming update (pending: true) — the P13 hot path. Map ref STABLE.
+    // Streaming update (pending: true) — the P13 hot path. Map ref STABLE;
+    // eventsRev NOT bumped (P16 — `useSwimlanes` stays quiet).
     apply({ t: "update", v: 12, event: {
       event: "model", uuid: "u1", span_id: "sp-t", model: "m", pending: true,
       input: [], output: { model: "m", choices: [] }, config: {}, tools: [],
       tool_choice: "none", timestamp: "2024-01-01T00:00:00", working_start: 0,
     } } as unknown as Down);
     expect(useSession.getState().events).toBe(ref);
-    // TODO(C2): update currently bumps eventsRev too — see reducer comment.
-    expect(useSession.getState().eventsRev).toBe(rev0 + 2);
+    expect(useSession.getState().eventsRev).toBe(rev0 + 1);
     const byRoleRef = useSession.getState().byRole;
 
     // pool: mutates in place (P12), stable ref.
     apply({ t: "pool", v: 13, from: 0, entries: [{ role: "user", content: "x" }] });
     expect(useSession.getState().events).toBe(ref);
-    expect(useSession.getState().eventsRev).toBe(rev0 + 3);
+    expect(useSession.getState().eventsRev).toBe(rev0 + 2);
     // P12: byRole untouched when no stored event has unresolved input_refs.
     expect(useSession.getState().byRole).toBe(byRoleRef);
 
-    // Terminal update (pending: false) — TODO(C2) shim re-mints the Map so
-    // `useSwimlanes` (still on `s.events`) fires (chaos s7).
+    // Terminal update (pending: false) — structural (chaos s7). Map ref
+    // STAYS STABLE (C2 shim removed); eventsRev bumps so `useSwimlanes`
+    // recomputes and the `.cursor` / retracted-pending shimmer clears.
     apply({ t: "update", v: 14, event: {
       event: "model", uuid: "u1", span_id: "sp-t", model: "m", pending: false,
       input: [], output: { model: "m", choices: [] }, config: {}, tools: [],
       tool_choice: "none", timestamp: "2024-01-01T00:00:00", working_start: 0,
     } } as unknown as Down);
-    expect(useSession.getState().events).not.toBe(ref);
-    // Mutated-in-place: the pre-remint ref sees the terminal update too.
+    expect(useSession.getState().events).toBe(ref);
+    expect(useSession.getState().eventsRev).toBe(rev0 + 3);
     expect((ref.get("u1") as { pending?: boolean }).pending).toBe(false);
   });
 

@@ -41,7 +41,19 @@ export function useOpenBatchId(
 export function CandidateCell({ branch, anchor, kind }: Props): JSX.Element | null {
   const batchId = useOpenBatchId(branch, anchor, kind);
   const batch = useSession((s) => (batchId != null ? s.candidateBatches[batchId] : null));
-  const byRole = useSession((s) => s.byRole);
+  // OVERNIGHT-SWEEP C2a: narrow — return the count (a number, `Object.is`-
+  // stable) instead of subscribing to the whole `s.byRole` (which churns on
+  // every streaming frame across every branch). Each `<CandidateCard>` below
+  // already subscribes to its own `s.byRole[cid][kind]` via `useEvents`.
+  const done = useSession((s) => {
+    if (batch == null) return 0;
+    let n = 0;
+    for (const cid of batch.children) {
+      const ev = s.byRole[cid]?.[kind]?.find(isModelEvent);
+      if (ev != null && !ev.pending) n++;
+    }
+    return n;
+  });
   const pickCandidate = useSession((s) => s.pickCandidate);
   const dismissCandidates = useSession((s) => s.dismissCandidates);
   const [compare, setCompare] = useState(false);
@@ -51,11 +63,6 @@ export function CandidateCell({ branch, anchor, kind }: Props): JSX.Element | nu
   );
 
   if (batchId == null || batch == null) return null;
-
-  const done = batch.children.filter((cid) => {
-    const ev = byRole[cid]?.[kind]?.find(isModelEvent);
-    return ev != null && !ev.pending;
-  }).length;
 
   return (
     <div className="candidate-cell">

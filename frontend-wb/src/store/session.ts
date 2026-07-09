@@ -155,13 +155,10 @@ export type NextConfig = {
 export type SessionState = {
   pool: ChatMessage[];
   /**
-   * OVERNIGHT-SWEEP P13: this Map is **mutated in place** by the reducer —
-   * a streaming `{t:"update"}` (the hot path) does NOT change its reference.
-   * Subscribe to {@link eventsRev} instead and read
-   * `useSession.getState().events` inside the effect/memo. The ref is
-   * currently still re-minted on `event`/terminal-`update` as a TODO(C2)
-   * shim so the two remaining `s.events` subscribers stay live until C2
-   * migrates them; once C2 lands the ref is stable for the connection.
+   * OVERNIGHT-SWEEP P13: this Map is **mutated in place** by the reducer
+   * and its reference is stable for the connection — `useSession(s =>
+   * s.events)` never fires. Subscribe to {@link eventsRev} instead and
+   * read `useSession.getState().events` inside the effect/memo.
    */
   events: Map<string, Event>;
   /**
@@ -768,12 +765,6 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
       const role = resolveRole(ev.span_id, spanParent, state.spanRole);
       const score = turnScoreOf(ev);
       return {
-        // TODO(C2): drop `events:` (keep only `eventsRev`). Verified zustand
-        // v5's selector `Object.is` does NOT fire `useSession(s=>s.events)`
-        // on a same-ref return, so until C2 migrates `useSwimlanes`/
-        // `useTurnScores` to `eventsRev`, structural transitions re-mint the
-        // Map (O(N), ~1/turn — the P13 hot path is `update` streaming).
-        events: new Map(state.events),
         eventsRev: state.eventsRev + 1,
         spanParent,
         byRole: role
@@ -798,14 +789,13 @@ function reduceOne(state: SessionState, msg: DownOp): Partial<SessionState> {
       const score = turnScoreOf(ev);
       const streaming = (ev as { pending?: boolean | null }).pending === true;
       return {
-        // TODO(C2): drop both `events:` and the `eventsRev` bump from this
-        // arm — `eventsRev` is meant to signal *structural* change only.
-        // Until C2 migrates the two `s.events` subscribers, a terminal
-        // update (pending→done, or `retract_pending`'s `rewound:true` —
-        // chaos s7) must re-mint the Map so `useSwimlanes` fires. Streaming
-        // frames (`pending===true`, the P13 hot path) do NOT clone.
-        ...(streaming ? {} : { events: new Map(state.events) }),
-        eventsRev: state.eventsRev + 1,
+        // OVERNIGHT-SWEEP P13/P16: streaming frames (`pending===true`, the
+        // hot path — ~100/turn) do NOT bump `eventsRev`; `useSwimlanes` and
+        // every other structural subscriber stays quiet. A terminal update
+        // (~1/turn: pending→done, or `retract_pending`'s `rewound:true` —
+        // chaos s7) IS structural — the event's visibility in `laneEvents`'
+        // `.rewound`/`.pending` filter changes — so it bumps.
+        ...(streaming ? {} : { eventsRev: state.eventsRev + 1 }),
         byRole: role
           ? assignByRole(state.byRole, role[0], role[1], ev, prev)
           : state.byRole,
