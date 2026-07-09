@@ -13,19 +13,8 @@
  * under the `target` span still resolves to `target`.
  */
 import type { Event, ModelEvent } from "@tsmono/inspect-common";
-import {
-  treeifyEvents,
-  type EventNode,
-} from "@tsmono/inspect-components/transcript/transform";
 
 import type { BranchId, Role } from "./wire";
-
-// TODO(E): delete `buildEventTree` + `EventNode` re-export after
-// session.test.ts migration — no production callers remain.
-export type { EventNode };
-export function buildEventTree(events: Iterable<Event>): EventNode[] {
-  return treeifyEvents([...events], 0);
-}
 
 export function resolveRole(
   spanId: string | null | undefined,

@@ -32,11 +32,6 @@ import type { TurnScorePayload } from "../components/orch/types";
 /** A2: an in-flight `Up` command awaiting `{t:"ack"}` from the server. */
 type PendingCmd = Up & { req_id: string };
 
-// TODO(E): delete after session.test.ts migration — dead post-F3 (the M0
-// UI-side "Recents" stub was superseded by `savedSessions` from `GET
-// /sessions`; nothing writes `sessionsList` anymore).
-type SessionSummary = { id: string; title: string; updatedAt: number };
-
 /** LLM-assisted rewrite draft. Keyed by `call_id` (auditor-side tool_call
  *  rewrite) or `message_id` (target-side message rewrite). */
 export type RewriteDraft = {
@@ -212,7 +207,6 @@ type SessionState = {
   /** Resample-N batches keyed by `batch_id` (RESAMPLE-N.md). */
   candidateBatches: Record<string, CandidateBatch>;
   // TODO(E): delete after session.test.ts migration — dead post-F3.
-  sessionsList: SessionSummary[];
   /** Persisted sessions from `GET /sessions` (sidebar Recents). */
   savedSessions: SavedSession[];
   /** Editable config for the next audit (pre-populates StartView pickers). */
@@ -886,7 +880,6 @@ export const useSession = create<SessionState>((set, get) => ({
   sessionId: null,
   reconnecting: false,
   pending: [],
-  sessionsList: [],
   savedSessions: [],
   branches: {},
   candidateBatches: {},
