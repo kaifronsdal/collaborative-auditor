@@ -35,11 +35,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import json
 import logging
 import random
 import sys
 import time
 import traceback
+import zlib
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -48,6 +50,7 @@ from inspect_ai.model import ChatMessage, GenerateConfig, ModelOutput
 from inspect_ai.tool import ToolChoice, ToolInfo
 from playwright.async_api import Page, async_playwright
 
+from workbench._e2e_m1_chaos_v2 import _mk_orch_session, _teardown_orch
 from workbench._smoke_fixtures import (
     _auditor_turn,
     _backend,
@@ -57,8 +60,9 @@ from workbench._smoke_fixtures import (
     _vite,
     _wire_page_capture as _wire_page_capture_base,
 )
+from workbench.m1._fixtures import tool_call, wait_for
 from workbench.run import Branch
-from workbench.server import sessions
+from workbench.server import _dispatch, sessions
 from workbench.session import Session
 
 SLEEP_S = 2.0  # per generate (task spec)
@@ -499,11 +503,167 @@ async def s2_fork_mid_reconnect(page: Page, ui_port: int) -> str:
         await session.close()
 
 
+async def s3_state_size_rewind_and_deflate(page: Page, ui_port: int) -> str:
+    """``push_full_state`` payload size: permessage-deflate + rewound-skip.
+
+    3a  WS compression is negotiated (uvicorn ``ws_per_message_deflate`` — the
+        default with the ``websockets`` impl, pinned explicit in ``server.
+        main``). Asserted via the browser ``WebSocket.extensions`` property;
+        Playwright's ``framereceived`` reports the *decoded* payload, so the
+        wire ratio is estimated with ``zlib.compress`` on the same JSON.
+
+    3b  ``session.view()`` skips ``rewound: True`` events. Run a 4-turn orch,
+        ``rewind(2)`` (flags turns 2-N), reconnect. Assert: ``view()["events"]``
+        shrank by exactly the flagged count; client ``events.size`` matches;
+        ``byRole["orch"]["orch"]`` carries no rewound uuid; the orch column
+        renders turn 1 and *not* the discarded turns; no errors.
+    """
+    import os
+
+    sid = "reconn-s3"
+    orig_cwd = os.getcwd()
+    turns = [
+        *(
+            tool_call(f"turn {i}", [("python", {"code": f"v{i} = {i}"})])
+            for i in range(1, 5)
+        ),
+        tool_call("done.", []),  # no-tool → orch parks at ``status="paused"``
+    ]
+    session, orch, _entered = await _mk_orch_session(
+        sid, turns, slow_from=99, play=True
+    )
+    try:
+        await wait_for(lambda: orch.status == "paused", timeout=15.0)
+        n_events_full = len(session.events)
+        assert len(orch._turn_msg) >= 4, f"only {len(orch._turn_msg)} orch turns"
+
+        await _dispatch(session, {"t": "rewind", "turn": 2})
+        for _ in range(20):
+            await asyncio.sleep(0)
+        rewound_uuids = {
+            u for u, e in session.events.items() if e.get("rewound") is True
+        }
+        assert rewound_uuids, "rewind(2) flagged nothing"
+
+        # ── 3b backend: view() skips rewound events ─────────────────────────
+        # ``rewind()`` also emits a ``rewind_marker`` InfoEvent (not itself
+        # rewound), so re-read the total after the settle.
+        n_events_total = len(session.events)
+        view = session.view()
+        n_shipped = len(view["events"])
+        assert n_shipped == n_events_total - len(rewound_uuids), (
+            f"view() shipped {n_shipped} events; want "
+            f"{n_events_total} - {len(rewound_uuids)} (rewound not skipped)"
+        )
+        assert n_shipped < n_events_full, "no events dropped from view()"
+        assert not any(d.get("rewound") for d in view["events"]), (
+            "view()['events'] still contains a rewound entry"
+        )
+
+        # ── 3a payload size: raw JSON vs deflate estimate ───────────────────
+        # Match starlette's ``WebSocket.send_json`` exactly (separators +
+        # ensure_ascii) so the local dump is byte-comparable to the frame
+        # the server pushes on connect.
+        state_json = json.dumps(
+            {"t": "state", "v": session.version, **view},
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode()
+        raw_bytes = len(state_json)
+        deflate_bytes = len(zlib.compress(state_json))
+        ratio = raw_bytes / max(deflate_bytes, 1)
+        assert ratio > 1.5, (
+            f"deflate ratio {ratio:.2f}× (raw={raw_bytes} deflate={deflate_bytes}) "
+            f"— repetitive JSON should compress >1.5×"
+        )
+
+        # ── connect: capture the app-WS frames + negotiated extensions ──────
+        state_frame_lens: list[int] = []
+
+        def _on_ws(ws) -> None:
+            if "/ws/" not in ws.url:  # skip vite HMR socket
+                return
+
+            def _on_frame(payload: str | bytes) -> None:
+                p = payload if isinstance(payload, bytes) else payload.encode()
+                if b'"t":"state"' in p or b'"t": "state"' in p:
+                    state_frame_lens.append(len(p))
+
+            ws.on("framereceived", _on_frame)
+
+        page.on("websocket", _on_ws)
+        await page.goto(f"http://127.0.0.1:{ui_port}/?session={sid}")
+        await _install_store(page)
+        await page.wait_for_function(
+            "() => window.__store.getState().version > 0", timeout=15_000
+        )
+
+        # 3a: browser negotiated permessage-deflate.
+        ext = await _store_state(page, "s.ws?.extensions ?? ''")
+        assert "permessage-deflate" in ext, (
+            f"WS extensions={ext!r} — permessage-deflate not negotiated "
+            f"(uvicorn ws_per_message_deflate off, or wsproto in use)"
+        )
+        # ``framereceived`` is the *decoded* payload — must round-trip to the
+        # same size class as our JSON dump (fastapi's ``send_json`` uses the
+        # same ``separators`` as above).
+        assert state_frame_lens, "no {t:'state'} frame observed on the app WS"
+        frame_len = state_frame_lens[0]
+        assert abs(frame_len - raw_bytes) <= 64, (
+            f"decoded state frame {frame_len}B vs local dump {raw_bytes}B — "
+            f"view() drifted between server push and test snapshot"
+        )
+
+        # ── 3b client: events / byRole / orch column ────────────────────────
+        fe_events = await _store_state(page, "s.events.size")
+        assert fe_events == n_shipped, (
+            f"client events.size={fe_events} vs view()={n_shipped}"
+        )
+        fe_orch_uuids = await _store_state(
+            page, "(s.byRole.orch?.orch ?? []).map(e => e.uuid)"
+        )
+        leaked = set(fe_orch_uuids) & rewound_uuids
+        assert not leaked, (
+            f"byRole['orch']['orch'] contains {len(leaked)} rewound uuid(s) — "
+            f"client would re-filter what view() should have dropped"
+        )
+
+        await page.wait_for_selector(".orch-col .turn[data-turn='1']", timeout=15_000)
+        turn_ids = await page.evaluate(
+            "() => [...document.querySelectorAll('.orch-col .turn')]"
+            ".map(t => t.getAttribute('data-turn'))"
+        )
+        assert "1" in turn_ids, f"turn 1 missing from orch column ({turn_ids})"
+        assert not (set(turn_ids) & {"2", "3", "4"}), (
+            f"orch column shows discarded turn(s): {turn_ids}"
+        )
+        banner = await page.locator(".error-banner").count()
+        assert banner == 0, (
+            f".error-banner: {await page.locator('.error-banner').text_content()!r}"
+        )
+        fe_err = await _store_state(page, "s.error")
+        assert fe_err is None, f"store.error set: {fe_err!r}"
+
+        return (
+            f"events {n_events_full}→{n_shipped} (skipped={len(rewound_uuids)}) "
+            f"raw={raw_bytes}B deflate≈{deflate_bytes}B ratio={ratio:.1f}× "
+            f"ext={ext.split(';')[0]!r} frame={frame_len}B "
+            f"fe_orch={len(fe_orch_uuids)} turns={turn_ids}"
+        )
+    finally:
+        await _teardown_orch(session)
+        os.chdir(orig_cwd)
+
+
 # ── driver ──────────────────────────────────────────────────────────────────
 
 SCENARIOS = [
     ("s1 reconnect storm during running audit", s1_reconnect_storm),
     ("s2 reconnect during _pendingChild fork", s2_fork_mid_reconnect),
+    (
+        "s3 push_full_state size — deflate + view() skips rewound",
+        s3_state_size_rewind_and_deflate,
+    ),
 ]
 
 

@@ -529,7 +529,16 @@ class Session:
         }
 
     def view(self) -> dict[str, Any]:
-        """The full session snapshot (STREAMING.md §C `state` message body)."""
+        """The full session snapshot (STREAMING.md §C `state` message body).
+
+        ``events`` skips entries flagged ``rewound: True`` (``mark_rewound`` /
+        ``retract_pending``). Those are dead — the client's ``eventsToOrchTurns``
+        / column filters drop them anyway — and after a few orchestrator rewinds
+        they dominate the payload. ``by_role`` isn't shipped; the client's
+        ``case "state"`` derives ``byRole`` from this filtered ``events`` list,
+        so it's rewound-free by construction. Ended-branch events are *kept*
+        (the session-wide target timeline references them).
+        """
         # A1-b-wide: both timelines are session-wide — one tree per role,
         # replicated across every branch key so the frontend's per-branch
         # `useSwimlanes` lookup resolves the same tree from any `current`.
@@ -548,7 +557,7 @@ class Session:
         branches_meta = {bid: self._branch_meta(b) for bid, b in self.branches.items()}
         return {
             "pool": [m.model_dump(mode="json") for m in self.pool],
-            "events": list(self.events.values()),
+            "events": [d for d in self.events.values() if d.get("rewound") is not True],
             "orchestrator": self.orchestrator.view() if self.orchestrator else None,
             "span_role": {sid: list(v) for sid, v in self.span_role.items()},
             "queued": queued,

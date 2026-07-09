@@ -1299,7 +1299,15 @@ def main() -> None:
     # bypass uvicorn's signal setup.
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: _save_all_sessions())
-    uvicorn.run(app, host="0.0.0.0", port=args.port)  # noqa: S104
+    # ``ws_per_message_deflate`` is uvicorn's default with the ``websockets``
+    # impl; pinned explicit here so ``push_full_state`` stays wire-compressed
+    # (``_e2e_m1_reconnect`` s3 asserts the negotiated extension + ratio).
+    uvicorn.run(
+        app,
+        host="0.0.0.0",  # noqa: S104
+        port=args.port,
+        ws_per_message_deflate=True,
+    )
 
 
 if __name__ == "__main__":
