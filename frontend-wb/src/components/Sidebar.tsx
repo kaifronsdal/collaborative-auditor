@@ -6,16 +6,25 @@ import { FORK_KINDS, useIsPending } from "../lib/selectors";
 import type { BranchId, BranchMeta } from "../lib/wire";
 import {
   PIN_LABELS,
+  genId,
   type Mode,
   type Pin,
   type PinLabel,
   useSession,
 } from "../store/session";
+import type { MouseEvent } from "react";
 import { useEffect, useState } from "react";
 import { Chevron } from "./icons";
 import { SettingsModal } from "./SettingsModal";
 
 const COLLAPSED_KEY = "workbench.sidebarCollapsed";
+
+/** Plain-click on a session `<a>` should navigate in-place; cmd/ctrl/shift/
+ *  middle-click should fall through to the browser (new tab/window). Returns
+ *  `true` when the event was a modifier-click and the caller should bail. */
+function isModifierClick(e: MouseEvent<HTMLAnchorElement>): boolean {
+  return e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button === 1;
+}
 
 /** Sidebar MODES section entries — icon + label, claude.ai "Products" style. */
 const MODES: { id: Mode; icon: string; label: string }[] = [
@@ -245,10 +254,10 @@ function PinnedGroups({
  * Below the config card, a branch tree for the current session.
  */
 export function Sidebar(): JSX.Element {
-  const newAudit = useSession((s) => s.newAudit);
   const savedSessions = useSession((s) => s.savedSessions);
   const sessionId = useSession((s) => s.sessionId);
   const fetchSessions = useSession((s) => s.fetchSessions);
+  const fetchSettings = useSession((s) => s.fetchSettings);
   const exportBranch = useSession((s) => s.exportBranch);
   const importEval = useSession((s) => s.importEval);
   const current = useSession((s) => s.current);
@@ -262,7 +271,12 @@ export function Sidebar(): JSX.Element {
 
   useEffect(() => {
     void fetchSessions();
-  }, [fetchSessions]);
+    void fetchSettings();
+  }, [fetchSessions, fetchSettings]);
+
+  // `<a href>` target for "+ New audit" — regenerated per render so repeat
+  // cmd-clicks (with any store update in between) land on distinct sessions.
+  const newHref = `?session=${genId()}`;
 
   function handleExport(id: BranchId): void {
     const path = window.prompt("Export branch to .eval path:", `${id}.eval`);
@@ -274,10 +288,10 @@ export function Sidebar(): JSX.Element {
     if (path) importEval(path);
   }
 
-  function openSession(sid: string): void {
-    const url = new URL(location.href);
-    url.searchParams.set("session", sid);
-    location.assign(url.toString());
+  function openSession(e: MouseEvent<HTMLAnchorElement>): void {
+    if (isModifierClick(e)) return;
+    e.preventDefault();
+    location.assign(e.currentTarget.href);
   }
 
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -311,14 +325,21 @@ export function Sidebar(): JSX.Element {
         >
           <Chevron size={12} />
         </button>
-        <button
+        <a
           className="side-icon-btn"
-          onClick={() => { toggleCollapsed(); newAudit(); }}
+          href={newHref}
+          style={{ textDecoration: "none" }}
+          onClick={(e) => {
+            if (isModifierClick(e)) return;
+            e.preventDefault();
+            toggleCollapsed();
+            location.assign(e.currentTarget.href);
+          }}
           title="New audit"
           aria-label="New audit"
         >
           <span className="plus">+</span>
-        </button>
+        </a>
       </aside>
     );
   }
@@ -348,9 +369,14 @@ export function Sidebar(): JSX.Element {
       </div>
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
 
-      <button className="side-new" onClick={newAudit}>
+      <a
+        className="side-new"
+        href={newHref}
+        style={{ textDecoration: "none" }}
+        onClick={openSession}
+      >
         <span className="plus">+</span> New audit
-      </button>
+      </a>
 
       <div className="side-section">Modes</div>
       <div className="side-modes">
@@ -381,17 +407,19 @@ export function Sidebar(): JSX.Element {
           const isActive = s.session_id === sessionId;
           const title = s.seed.trim() || s.session_id;
           return (
-            <button
+            <a
               key={s.session_id}
               className={`side-row${isActive ? " active" : ""}`}
+              href={`?session=${s.session_id}`}
+              style={{ textDecoration: "none" }}
               title={title}
-              onClick={() => openSession(s.session_id)}
+              onClick={openSession}
             >
               <span className="side-row-title">{title}</span>
               <span className="side-row-time">
                 {s.n_branches} · {relTime(Date.parse(s.created_at))}
               </span>
-            </button>
+            </a>
           );
         })}
       </div>

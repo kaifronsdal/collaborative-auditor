@@ -33,12 +33,23 @@ export function StartView(): JSX.Element {
  *  into one; `set` is used as `setX((p) => ({...p, ...}))`. */
 type PickerState = { model: string; config: GenerateConfigDict; args: ModelArgs };
 
+/** `initial` may change once (`settings` fetch resolves after mount). If the
+ *  picker is still at the previous default — user hasn't touched it — adopt
+ *  the new one. */
 function usePicker(role: string, initial: string): [PickerState, (p: PickerState) => void] {
   const [s, set] = useState<PickerState>(() => ({
     model: initial,
     config: readStoredConfig(role),
     args: {},
   }));
+  const prevInitial = useRef(initial);
+  useEffect(() => {
+    if (initial !== prevInitial.current) {
+      const was = prevInitial.current;
+      prevInitial.current = initial;
+      set((p) => (p.model === was ? { ...p, model: initial } : p));
+    }
+  }, [initial]);
   return [s, set];
 }
 
@@ -54,10 +65,19 @@ function nonEmpty<T extends object>(v: T): T | undefined {
  *  system-prompt override. */
 function OrchStartCard(): JSX.Element {
   const send = useSession((s) => s.send);
-  const [orch, setOrch] = usePicker("orchestrator", DEFAULT_ORCHESTRATOR);
-  const [target, setTarget] = usePicker("target", DEFAULT_TARGET);
-  const [auditor, setAuditor] = usePicker("auditor", DEFAULT_AUDITOR);
-  const [judge, setJudge] = usePicker("judge", DEFAULT_JUDGE);
+  const settings = useSession((s) => s.settings);
+  const [orch, setOrch] = usePicker(
+    "orchestrator", settings?.default_orchestrator ?? DEFAULT_ORCHESTRATOR,
+  );
+  const [target, setTarget] = usePicker(
+    "target", settings?.default_target ?? DEFAULT_TARGET,
+  );
+  const [auditor, setAuditor] = usePicker(
+    "auditor", settings?.default_auditor ?? DEFAULT_AUDITOR,
+  );
+  const [judge, setJudge] = usePicker(
+    "judge", settings?.default_judge ?? DEFAULT_JUDGE,
+  );
   const [maxTurns, setMaxTurns] = useState<number>(30);
   const [judgeDims, setJudgeDims] = useState("");
   const [defaultsOpen, setDefaultsOpen] = useState(false);

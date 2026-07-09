@@ -49,6 +49,7 @@ async def _amain() -> None:
     with OrchestratorKernel() as k:
         await _run_diff(k)
     await _run_branch_scan()
+    await _run_live_scanner_bad_name()
     print("\n✓ M1 wb.scan smoke passed")
 
 
@@ -340,6 +341,41 @@ async def _run_branch_scan() -> None:
         config.settings = prev_settings
         scanmod._lib_cache = None
         shutil.rmtree(lib_dir, ignore_errors=True)
+
+
+async def _run_live_scanner_bad_name() -> None:
+    """P1.8(c) resolve failure: a bad ``live_scanners`` name in ``post_turn``
+    surfaces as a ``{t:"notify"}`` frame (not just a server-side log line)."""
+    from workbench._smoke_util import FakeConn
+    from workbench.run import Branch
+    from workbench.session import Session
+
+    session = Session()
+    await session.start()
+    conn = FakeConn()
+    session.connections.append(conn)
+    try:
+        b = Branch(
+            session,
+            "scan-bad",
+            seed="s",
+            auditor_model="mockllm/model",
+            target_model="mockllm/model",
+            live_scanners=["not-a-real-scanner"],
+        )
+        session.branches[b.branch_id] = b
+        # ``post_turn`` short-circuits before touching ``audit_tape.log`` when
+        # resolve() raises, so an unrun branch is enough.
+        b.post_turn()
+        with anyio.fail_after(2.0):
+            while not any(m["t"] == "notify" for m in conn.sent):
+                await anyio.sleep(0.01)
+        notify = next(m for m in conn.sent if m["t"] == "notify")
+        assert "not-a-real-scanner" in notify["text"], notify
+        assert "resolve" in notify["text"], notify
+        print(f"✓ P1.8(c): bad live_scanners → {{t:'notify'}}: {notify['text'][:60]!r}…")
+    finally:
+        await session.close()
 
 
 if __name__ == "__main__":

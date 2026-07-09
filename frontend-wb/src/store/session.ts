@@ -27,6 +27,7 @@ import type {
 } from "../lib/wire";
 import { DEFAULT_AUDITOR, DEFAULT_TARGET } from "../lib/presets";
 import type { GenerateConfigDict } from "../components/ModelPicker";
+import type { Settings } from "../components/SettingsModal";
 import type { TurnScorePayload } from "../components/orch/types";
 
 /** A2: an in-flight `Up` command awaiting `{t:"ack"}` from the server. */
@@ -76,6 +77,12 @@ export type Pin = {
   label?: PinLabel;
   at: number;
 };
+
+/** Random 8-char base36 id for a fresh `?session=` — exported so the sidebar
+ *  can build `<a href>` targets that cmd-click into a new tab. */
+export function genId(): string {
+  return Math.random().toString(36).slice(2, 10);
+}
 
 function readStoredMode(): Mode {
   try {
@@ -209,6 +216,9 @@ type SessionState = {
   // TODO(E): delete after session.test.ts migration — dead post-F3.
   /** Persisted sessions from `GET /sessions` (sidebar Recents). */
   savedSessions: SavedSession[];
+  /** `GET /settings` (`workbench.config.Settings`). Null until fetched;
+   *  StartView reads `settings?.default_* ?? presets.DEFAULT_*`. */
+  settings: Settings | null;
   /** Editable config for the next audit (pre-populates StartView pickers). */
   nextConfig: NextConfig;
   /** Which start card the sidebar's MODES section has selected. Only affects
@@ -260,6 +270,11 @@ type SessionState = {
 
   /** Fetch `GET /sessions` and populate `savedSessions`. */
   fetchSessions: () => Promise<void>;
+
+  /** Fetch `GET /settings` and populate `settings`. If a `nextConfig` model
+   *  is still the hardcoded `presets.ts` fallback (no localStorage override),
+   *  seed it from `settings.default_*` — the server is the source of truth. */
+  fetchSettings: () => Promise<void>;
 
   /** Export `branchId` (and its subtree) to a `.eval` at `path`. */
   exportBranch: (branchId: BranchId, path: string) => void;
@@ -881,6 +896,7 @@ export const useSession = create<SessionState>((set, get) => ({
   reconnecting: false,
   pending: [],
   savedSessions: [],
+  settings: null,
   branches: {},
   candidateBatches: {},
   nextConfig: readStoredNextConfig(),
@@ -1094,6 +1110,32 @@ export const useSession = create<SessionState>((set, get) => ({
     }
   },
 
+  fetchSettings: async () => {
+    try {
+      const res = await fetch("/settings");
+      if (!res.ok || !res.headers.get("content-type")?.includes("json")) return;
+      const settings = (await res.json()) as Settings;
+      set((state) => {
+        // Seed `nextConfig` from server defaults, but only for fields the
+        // user hasn't already overridden (localStorage-persisted) — a field
+        // still at the hardcoded `presets.ts` fallback is treated as unset.
+        const nc = state.nextConfig;
+        const patch: Partial<NextConfig> = {};
+        if (nc.auditor_model === DEFAULT_AUDITOR && settings.default_auditor) {
+          patch.auditor_model = settings.default_auditor;
+        }
+        if (nc.target_model === DEFAULT_TARGET && settings.default_target) {
+          patch.target_model = settings.default_target;
+        }
+        return Object.keys(patch).length > 0
+          ? { settings, nextConfig: { ...nc, ...patch } }
+          : { settings };
+      });
+    } catch {
+      // backend down — StartView falls back to presets.ts DEFAULT_*
+    }
+  },
+
   exportBranch: (branchId, path) => {
     get().send({ t: "export", branch: branchId, path });
   },
@@ -1115,8 +1157,7 @@ export const useSession = create<SessionState>((set, get) => ({
     // attempt (mythos-5 → fable-5 → mythos-preview cascade). Sibling
     // audits in one session are what fork/branch is for. Guard for vitest.
     if (typeof window !== "undefined" && window.location) {
-      const id = Math.random().toString(36).slice(2, 10);
-      window.location.assign(`?session=${id}`);
+      window.location.assign(`?session=${genId()}`);
       return;
     }
     set({ current: null, pendingNewAudit: true });

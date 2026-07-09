@@ -589,6 +589,11 @@ class Branch(StepGated):
             scanners = resolve(self.meta.live_scanners)
         except Exception as exc:  # noqa: BLE001 — unknown name / bad user file
             logger.warning("live_scanners resolve failed: %s", exc)
+            # Surface to the UI — otherwise a typo in the StartView field
+            # silently disables per-turn scoring with only a server log line.
+            self.session.notify(
+                f"live scanner {self.meta.live_scanners!r} failed to resolve: {exc}"
+            )
             return
         for s in self.audit_tape.log:
             if (
