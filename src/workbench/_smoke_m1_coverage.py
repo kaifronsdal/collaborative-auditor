@@ -103,6 +103,96 @@ async def _check_bash_background() -> None:
     print(f"✓ bash(background=True): bg-{bg_id} → bg_done card + notify, no orphan")
 
 
+async def _check_cancel_bg() -> None:
+    """OVERNIGHT-E: ``{t:"cancel_bg", id}`` → tracked bash proc killpg'd,
+    ``_bash_procs`` entry pops (via ``_bg`` finally), ``bg_done`` card lands.
+    Distinct from ``_check_bash_reap`` (whole-orch teardown) — this is the
+    per-job path the header ``bg_jobs`` × button drives."""
+    async with mock_orch_session([]) as (session, orch, _conn):
+        (bash, *_) = make_tools(orch)
+        out = await bash(cmd="sleep 60", background=True)
+        m = re.fullmatch(r"\[bg-([0-9a-f]{6}) started · pid (\d+)\]", out)
+        assert m, f"bad bg return: {out!r}"
+        bg_id, pid = m.group(1), int(m.group(2))
+        assert bg_id in orch._bash_procs
+        os.kill(pid, 0)  # alive
+
+        await _dispatch(session, {"t": "cancel_bg", "id": bg_id})
+        # ``_bg`` finally pops the entry once ``proc.wait()`` returns.
+        await wait_for(lambda: bg_id not in orch._bash_procs, timeout=3.0)
+        # SIGTERM'd process group is gone (poll — reap is async).
+        def _gone() -> bool:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
+        await wait_for(_gone, timeout=3.0, tick=0.05)
+        # unknown id → no-op (returns False internally, no raise).
+        await _dispatch(session, {"t": "cancel_bg", "id": "nope"})
+    print(f"✓ _dispatch cancel_bg → bg-{bg_id} killed, popped from _bash_procs")
+
+
+async def _check_approve_all() -> None:
+    """OVERNIGHT-E: ``{t:"approve_all"}`` resolves every ``gate.pending``
+    entry server-side (STRESS-V2 s13). Two concurrent ``ask_human`` gates
+    open in one cell; one dispatch clears both."""
+    turns: list[TurnSpec] = [
+        (
+            "asking twice",
+            [("python", {
+                "code": "import asyncio\n"
+                        "a, b = await asyncio.gather("
+                        "wb.ask_human('a?'), wb.ask_human('b?'))\n"
+                        "(a, b)"
+            })],
+        ),
+    ]
+    async with mock_orch_session(turns) as (session, orch, _conn):
+        orch.step()
+        await wait_for(lambda: len(orch.gate.pending) == 2, timeout=3.0)
+        await _dispatch(session, {"t": "approve_all"})
+        await wait_for(lambda: not orch.gate.pending, timeout=3.0)
+        # ``approve_all`` verdict is `{}`; ``ask_human`` stringifies it.
+        ns = orch.kernel.shell.user_ns
+        await wait_for(lambda: "a" in ns and "b" in ns, timeout=3.0)
+        assert ns["a"] == "{}" and ns["b"] == "{}", (ns.get("a"), ns.get("b"))
+        # idempotent on empty pending
+        await _dispatch(session, {"t": "approve_all"})
+    print("✓ _dispatch approve_all → 2 pending gates resolved in one shot")
+
+
+async def _check_restart_kernel() -> None:
+    """OVERNIGHT-E: ``{t:"restart_kernel"}`` — ``user_ns`` cleared and
+    re-seeded (``wb`` back, user bindings gone), ``state.messages`` kept,
+    KERNEL_RESTART_NOTE queued into notifications."""
+    turns: list[TurnSpec] = [
+        ("bind x", [("python", {"code": "x = 42\nx"})]),
+    ]
+    async with mock_orch_session(turns) as (session, orch, _conn):
+        orch.step()
+        ns = orch.kernel.shell.user_ns
+        await wait_for(lambda: ns.get("x") == 42, timeout=3.0)
+        assert orch.state is not None
+        n_msgs = len(orch.state.messages)
+        assert n_msgs >= 3, n_msgs  # system + assistant + tool at minimum
+        assert "wb" in ns
+
+        await _dispatch(session, {"t": "restart_kernel"})
+
+        # ``shell.reset()`` swaps in a fresh ``user_ns`` dict; re-read.
+        ns = orch.kernel.shell.user_ns
+        assert "x" not in ns, "user binding survived restart"
+        assert isinstance(ns.get("wb"), Workbench), "wb not re-seeded"
+        assert len(orch.state.messages) == n_msgs, (
+            f"state.messages truncated: {len(orch.state.messages)} != {n_msgs}"
+        )
+        assert any(
+            "kernel restarted" in n for n in orch.kernel.notifications
+        ), orch.kernel.notifications
+    print("✓ _dispatch restart_kernel → user_ns re-seeded, state.messages preserved")
+
+
 async def _check_bash_reap() -> None:
     """P0.5: bg bash procs are tracked on orch and killpg'd on ``session.close()``."""
     async with mock_orch_session([]) as (_session, orch, _conn):
@@ -429,6 +519,9 @@ async def _amain() -> None:
 
     await _check_bash_background()
     await _check_bash_reap()
+    await _check_cancel_bg()
+    await _check_approve_all()
+    await _check_restart_kernel()
 
     read_wb_dir = tempfile.mkdtemp(prefix="wb-cov-read-wb-")
     with OrchestratorKernel() as k:

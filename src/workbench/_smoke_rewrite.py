@@ -13,7 +13,12 @@ Drives `_dispatch` directly (in-process, no uvicorn) with a `FakeConn`:
 
   R3. Bad `call_id` → `{t:"rewrite_draft", error:…}` ("not found").
 
-  R4. `_extract_json_object` strips ```json fences and fishes the object
+  R4. Target-column: `rewrite_target_message` locates the auditor
+      `send_message` staging call via `locate_staging_call` and returns
+      `{t:"rewrite_draft", message_id:…, args, content}` — `content` is the
+      staging arg's rewritten value (what `edit_target_message` applies).
+
+  R0. `_extract_json_object` strips ```json fences and fishes the object
       out of surrounding prose.
 
 Run:  uv run python -m workbench._smoke_rewrite
@@ -67,12 +72,25 @@ def _make_branch(session: Session, rewrite_response: str) -> Branch:
     return branch
 
 
+def _make_target_branch(session: Session, rewrite_response: str) -> tuple[Branch, str]:
+    """A branch whose tape carries an auditor `send_message` turn followed by
+    the ``boundary=="in"`` mark that ``locate_staging_call`` walks back from —
+    the minimal shape ``rewrite_target_message`` needs to resolve
+    `message_id → (turn_index, call_id, arg_key)`."""
+    branch = _make_branch(session, rewrite_response)
+    msg_id = "target-msg-1"
+    branch.audit_tape.log.append(
+        Step(value=None, source="stage", boundary="in", anchor_id=msg_id)
+    )
+    return branch, msg_id
+
+
 def _drafts(conn: FakeConn) -> list[dict]:
     return [m for m in conn.sent if m["t"] == "rewrite_draft"]
 
 
 async def _amain() -> None:
-    # ── R4: parser unit checks ───────────────────────────────────────────────
+    # ── R0: parser unit checks ───────────────────────────────────────────────
     assert _extract_json_object('{"a": 1}') == {"a": 1}
     assert _extract_json_object('```json\n{"a": 1}\n```') == {"a": 1}
     assert _extract_json_object('Here you go:\n{"a": 1}\nHope that helps.') == {
@@ -80,10 +98,10 @@ async def _amain() -> None:
     }
     try:
         _extract_json_object("no json here")
-        raise AssertionError("R4: expected ValueError on non-JSON")
+        raise AssertionError("R0: expected ValueError on non-JSON")
     except ValueError:
         pass
-    print("R4 ✓ _extract_json_object handles fences/prose/failure")
+    print("R0 ✓ _extract_json_object handles fences/prose/failure")
 
     # ── R1: happy path ───────────────────────────────────────────────────────
     session = Session()
@@ -158,6 +176,53 @@ async def _amain() -> None:
     assert len(drafts) == 1, f"R3: expected 1 rewrite_draft, got {len(drafts)}"
     assert "not found" in drafts[0]["error"], f"R3: bad error: {drafts[0]['error']!r}"
     print(f"R3 ✓ bad call_id → error={drafts[0]['error']!r}")
+    await session.close()
+
+    # ── R4: rewrite_target_message (target-column → staging call) ────────────
+    session = Session()
+    await session.start()
+    conn = FakeConn()
+    session.connections.append(conn)
+    _branch, msg_id = _make_target_branch(session, '{"message": "REWRITTEN BODY"}')
+
+    await _dispatch(
+        session,
+        {
+            "t": "rewrite_target_message",
+            "branch": "b1",
+            "message_id": msg_id,
+            "role": "user",
+            "instruction": "make it terser",
+        },
+    )
+    drafts = _drafts(conn)
+    assert len(drafts) == 1, f"R4: expected 1 rewrite_draft, got {len(drafts)}"
+    d = drafts[0]
+    assert d.get("message_id") == msg_id, f"R4: draft not keyed by message_id: {d!r}"
+    assert "call_id" not in d, f"R4: draft leaked call_id key: {d!r}"
+    assert "error" not in d, f"R4: unexpected error: {d.get('error')!r}"
+    assert d["args"] == {"message": "REWRITTEN BODY"}, f"R4: bad args: {d['args']!r}"
+    # target-column drafts return the staging arg's value as `content` for
+    # direct `edit_target_message` apply.
+    assert d["content"] == "REWRITTEN BODY", f"R4: bad content: {d.get('content')!r}"
+    print(f"R4 ✓ rewrite_target_message → message_id-keyed draft, content={d['content']!r}")
+
+    # bad message_id → error keyed by message_id (not call_id)
+    conn.sent.clear()
+    await _dispatch(
+        session,
+        {
+            "t": "rewrite_target_message",
+            "branch": "b1",
+            "message_id": "does-not-exist",
+            "role": "user",
+            "instruction": "x",
+        },
+    )
+    drafts = _drafts(conn)
+    assert len(drafts) == 1 and drafts[0].get("message_id") == "does-not-exist"
+    assert "not found" in drafts[0]["error"], drafts[0]
+    print(f"R4 ✓ bad message_id → error={drafts[0]['error']!r}")
     await session.close()
 
     print("✓ rewrite smoke passed")

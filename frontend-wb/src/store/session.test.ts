@@ -12,23 +12,45 @@ import {
   splice,
 } from "@tsmono/inspect-components/transcript/timeline";
 
-import { buildEventTree, isModelEvent, resolveRole } from "../lib/events";
+import {
+  treeifyEvents,
+  type EventNode,
+} from "@tsmono/inspect-components/transcript/transform";
+
+import { isModelEvent, resolveRole } from "../lib/events";
 import type { Down } from "../lib/wire";
 import { useSession } from "./session";
+
+// OVERNIGHT-SWEEP D dropped the `buildEventTree` wrapper (dead in prod) —
+// inline inspect's `treeifyEvents` here so the tree-consistency invariants
+// stay covered without keeping a wrapper in `lib/events`.
+const buildEventTree = (events: Iterable<unknown>): EventNode[] =>
+  treeifyEvents([...events] as never, 0);
 
 const fixtureUrl = new URL("../../fixtures/smoke.json", import.meta.url);
 const messages = JSON.parse(
   readFileSync(fileURLToPath(fixtureUrl), "utf8")
 ) as Down[];
 
+/** A3-batch: post-OVERNIGHT-E fixtures ship pool/event/update/timeline inside
+ *  `{t:"batch", ops:[…]}`. `apply()` handles the fold; tests that scan the
+ *  raw wire capture flatten first (mirrors `_smoke_util.flatten`). */
+type DownOp = Exclude<Down, { t: "batch" }>;
+const flatten = (msgs: Down[]): DownOp[] =>
+  msgs.flatMap((m) => (m.t === "batch" ? m.ops : [m]));
+
 describe("session reducer against real smoke fixture", () => {
   it("applies every wire message and reconstructs the event store", () => {
     // distinct event uuids the backend shipped (state.events + event/update).
     const distinct = new Set<string | null | undefined>();
-    for (const m of messages) {
+    for (const m of flatten(messages)) {
       if (m.t === "state") for (const e of m.events) distinct.add(e.uuid);
       if (m.t === "event" || m.t === "update") distinct.add(m.event.uuid);
     }
+    // OVERNIGHT-E: fixture regenerated post-A3-batch — every event/update
+    // reaches the wire inside a `{t:"batch"}`, so `apply()`'s ops-fold path
+    // is now exercised by the fixture replay itself.
+    expect(messages.some((m) => m.t === "batch")).toBe(true);
 
     const { apply } = useSession.getState();
     for (const m of messages) apply(m);
@@ -62,10 +84,10 @@ describe("session reducer against real smoke fixture", () => {
 
     // replay the last `update` for a target ModelEvent — only target's array
     // should change; auditor's reference should be preserved.
-    const targetUpdate = [...messages]
+    const targetUpdate = flatten(messages)
       .reverse()
       .find(
-        (m): m is Extract<Down, { t: "update" }> =>
+        (m): m is Extract<DownOp, { t: "update" }> =>
           m.t === "update" && m.event.event === "model" &&
           targetRef.some((e) => e.uuid === m.event.uuid)
       );
@@ -172,9 +194,9 @@ const emptyState = () => ({
   status: null,
   ws: null,
   sessionId: null,
-  sessionsList: [],
-  branchConfig: {},
   branches: {},
+  orchestrator: null,
+  rewound: new Set<string>(),
   pins: [],
   pending: [],
   error: null,
@@ -403,6 +425,132 @@ describe("OVERNIGHT-SWEEP C1 invariants", () => {
   });
 });
 
+describe("OVERNIGHT-E: A3-typed-delta reducer arms", () => {
+  beforeEach(() => {
+    useSession.setState(emptyState());
+  });
+
+  it("branch_created: populates branches[id], merges spanRole delta, adopts current", () => {
+    const { apply } = useSession.getState();
+    apply({
+      t: "branch_created", v: 1, id: "b7",
+      meta: { parent: "b0", branched_at: "anc", branched_at_turn: 2, status: "idle", seed: "s" },
+      span_role_delta: { "sp-b7-aud": ["b7", "auditor"], "sp-b7-tgt": ["b7", "target"] },
+      current: "b7",
+    });
+    const s = useSession.getState();
+    expect(s.branches.b7.parent).toBe("b0");
+    expect(s.spanRole.get("sp-b7-aud")).toEqual(["b7", "auditor"]);
+    expect(s.spanRole.get("sp-b7-tgt")).toEqual(["b7", "target"]);
+    expect(s.current).toBe("b7");
+    expect(s.version).toBe(1);
+    expect(s.pendingNewAudit).toBe(false);
+  });
+
+  it("current: sets current + version", () => {
+    const { apply } = useSession.getState();
+    apply({ t: "current", v: 3, branch: "b2" });
+    expect(useSession.getState().current).toBe("b2");
+    expect(useSession.getState().version).toBe(3);
+    apply({ t: "current", v: 4, branch: null });
+    expect(useSession.getState().current).toBeNull();
+  });
+
+  it("ack: removes matching req_id from pending", () => {
+    useSession.setState({
+      pending: [
+        { t: "play", req_id: "r1" },
+        { t: "pause", req_id: "r2" },
+      ],
+    });
+    const { apply } = useSession.getState();
+    apply({ t: "ack", req_id: "r1" });
+    const s = useSession.getState();
+    expect(s.pending).toHaveLength(1);
+    expect(s.pending[0].req_id).toBe("r2");
+    // unknown req_id → no-op
+    apply({ t: "ack", req_id: "nope" });
+    expect(useSession.getState().pending).toHaveLength(1);
+  });
+
+  it("orch: merges (not replaces) orchestrator fields; merges spanRole", () => {
+    const { apply } = useSession.getState();
+    // Initial full push (carries notifications:[]).
+    apply({
+      t: "orch", v: 1,
+      state: {
+        span_id: "orch-sp", status: "running", pending_gates: [], bg_cells: [],
+        notifications: [],
+      },
+      span_role_delta: { "orch-sp": ["orch", "orch"] },
+    } as Down);
+    // Client-side chip appended between pushes.
+    apply({ t: "notify", v: 1, text: "chip" });
+    expect(useSession.getState().orchestrator!.notifications).toEqual(["chip"]);
+    // A4-partial `dirty()` push: bg_jobs only, notifications STRIPPED.
+    // Merge must not clobber the appended chip.
+    apply({
+      t: "orch", v: 2,
+      state: { bg_jobs: [{ kind: "bash", id: "bg-1", cmd_or_task: "sleep", status: "running" }] },
+      span_role_delta: {},
+    } as unknown as Down);
+    const s = useSession.getState();
+    expect(s.orchestrator!.notifications).toEqual(["chip"]);
+    expect(s.orchestrator!.bg_jobs).toHaveLength(1);
+    expect(s.orchestrator!.status).toBe("running"); // preserved
+    expect(s.spanRole.get("orch-sp")).toEqual(["orch", "orch"]);
+    expect(s.version).toBe(2);
+  });
+
+  it("rewound: marks orch events at/after from_uuid; bumps eventsRev; W-A no version write", () => {
+    // Seed byRole["orch"]["orch"] directly (rewound reads it, not `events`).
+    const orchEvs = [
+      { event: "info", uuid: "u1" }, { event: "info", uuid: "u2" },
+      { event: "info", uuid: "u3" },
+    ];
+    useSession.setState({
+      byRole: { orch: { auditor: [], target: [], orch: orchEvs } } as never,
+      version: 10, eventsRev: 5,
+    });
+    const { apply } = useSession.getState();
+    apply({ t: "rewound", v: 3, span: "orch", from_uuid: "u2" });
+    const s = useSession.getState();
+    expect(s.rewound.has("u1")).toBe(false);
+    expect(s.rewound.has("u2")).toBe(true);
+    expect(s.rewound.has("u3")).toBe(true);
+    expect(s.eventsRev).toBe(6);
+    expect(s.version).toBe(10); // W-A: sideband
+
+    // from_uuid not in the bucket → no-op.
+    apply({ t: "rewound", v: 3, span: "orch", from_uuid: "missing" });
+    expect(useSession.getState().rewound.size).toBe(2);
+  });
+
+  it("queued_consumed: drops matching auditor-queued ids", () => {
+    useSession.setState({
+      queued: {
+        b0: {
+          auditor: [
+            { role: "user", content: "a", id: "m1" },
+            { role: "user", content: "b", id: "m2" },
+          ],
+          target: [],
+        },
+      },
+    });
+    const { apply } = useSession.getState();
+    apply({ t: "queued_consumed", v: 5, branch: "b0", ids: ["m1", "gone"] });
+    const s = useSession.getState();
+    expect(s.queued.b0.auditor).toHaveLength(1);
+    expect(s.queued.b0.auditor[0].id).toBe("m2");
+    expect(s.version).toBe(5);
+    // unknown branch → version bump only.
+    apply({ t: "queued_consumed", v: 6, branch: "nope", ids: ["m2"] });
+    expect(useSession.getState().queued.b0.auditor).toHaveLength(1);
+    expect(useSession.getState().version).toBe(6);
+  });
+});
+
 describe("queued reconciliation", () => {
   beforeEach(() => {
     useSession.setState(emptyState());
@@ -540,7 +688,11 @@ describe("rollback fixture (smoke_rollback) — server timeline → swimlanes", 
     expect(rows[0].branch).not.toBe(true);
     const branchRows = rows.filter((r) => r.branch === true);
     expect(branchRows.length).toBeGreaterThanOrEqual(1);
-    expect(branchRows[0].branchedFrom).toBeTruthy();
+    // `branchedFrom` may be null when the rollback anchors before any parent
+    // content (model-behavior dependent); when present it names an anchor id.
+    if (branchRows[0].branchedFrom != null) {
+      expect(typeof branchRows[0].branchedFrom).toBe("string");
+    }
 
     // splice() on a branch row's span yields a non-empty lineage that
     // includes the parent prefix (≥ the branch's own content length).
@@ -553,13 +705,17 @@ describe("rollback fixture (smoke_rollback) — server timeline → swimlanes", 
   it("emits ≥2 target {t:'timeline'} ops (on BranchEvent + post-rollback target turns)", () => {
     // Both roles now ship a timeline (auditor swimlane added in the splice
     // refactor); the rollback-creates-a-branch assertion is target-specific.
-    const tlOps = rbMessages.filter(
+    const flat = flatten(rbMessages);
+    const tlOps = flat.filter(
       (m): m is Extract<typeof m, { t: "timeline" }> =>
         m.t === "timeline" && m.role === "target"
     );
     expect(tlOps.length).toBeGreaterThanOrEqual(2);
     const last = tlOps[tlOps.length - 1];
     expect(last.timeline.root.branches?.length ?? 0).toBeGreaterThanOrEqual(1);
+    // OVERNIGHT-E: rollback fixture now carries `{t:"l1_spans"}` (F2) inside
+    // the same batch as the BranchEvent's timeline op.
+    expect(flat.some((m) => m.t === "l1_spans")).toBe(true);
   });
 });
 
@@ -735,56 +891,7 @@ describe("setLabel (P3 annotation queue)", () => {
   });
 });
 
-describe("start does not add phantom Recents for child branch", () => {
-  beforeEach(() => {
-    useSession.setState(emptyState());
-  });
-
-  it("(e) state for a child branch does not add a Recents entry", () => {
-    const { apply, start } = useSession.getState();
-
-    // start() adds a pending Recents entry.
-    start({ seed: "test", auditor_model: "m", target_model: "m" });
-
-    // First state broadcast: backend assigns current = "branch-id-root" (root branch).
-    const stateRoot: Down = {
-      t: "state",
-      v: 1,
-      pool: [],
-      events: [],
-      span_role: {},
-      queued: {},
-      current: "branch-id-root",
-      status: "idle",
-      branches: {
-        "branch-id-root": { parent: null, branched_at: null, branched_at_turn: null, status: "idle", seed: "test" },
-      },
-    };
-    apply(stateRoot);
-
-    // Second state broadcast: user branched; current switches to child branch.
-    const stateChild: Down = {
-      t: "state",
-      v: 2,
-      pool: [],
-      events: [],
-      span_role: {},
-      queued: {},
-      current: "branch-id-child",
-      status: "idle",
-      branches: {
-        "branch-id-root": { parent: null, branched_at: null, branched_at_turn: null, status: "idle", seed: "test" },
-        "branch-id-child": { parent: "branch-id-root", branched_at: "anc", branched_at_turn: 1, status: "idle", seed: "test" },
-      },
-    };
-    apply(stateChild);
-
-    // sessionsList should have at most 1 entry (the root), NOT 2.
-    const { sessionsList } = useSession.getState();
-    expect(sessionsList.length).toBeLessThanOrEqual(1);
-    // The one entry should be for the root branch, not the child.
-    if (sessionsList.length === 1) {
-      expect(sessionsList[0].id).toBe("branch-id-root");
-    }
-  });
-});
+// OVERNIGHT-SWEEP D: the "start does not add phantom Recents" test asserted
+// against `sessionsList`, which is dead post-F3 (`start()` no longer writes a
+// PENDING_ID entry; `savedSessions` from `GET /sessions` supersedes it).
+// Dropped so D can delete the `sessionsList`/`SessionSummary` stubs.
