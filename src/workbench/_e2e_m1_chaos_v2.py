@@ -526,13 +526,19 @@ async def s13_approve_all_race(page: Page, ui_port: int) -> str:
         # Wait for gate 1+2 to open (≥2 pending → ``Approve all`` mounts on
         # hover). Gate 3 (``d=0.6``) is still ``asyncio.sleep``'ing.
         await wait_for(lambda: len(orch.gate.pending) >= 2, timeout=5.0)
-        n_at_click = len(orch.gate.pending)
 
         pill = page.locator(".orch-head .head-gate-wrap")
         await pill.wait_for(state="visible", timeout=10_000)
         await pill.hover()
         approve_all = page.locator(".head-gate-pop .hgp-all")
         await approve_all.wait_for(state="visible", timeout=5_000)
+        # STRESS-V2 P1 s13: the fix's guarantee is "server-side snapshot at
+        # resolve time" — wait until gate 3 is pending *on the server* (the
+        # client's button may still read "(2)" if the broadcast hasn't
+        # rendered), then click. Pre-fix this still fails: the client
+        # iterates its own ``approvable`` and sends ≤2 ``{t:"approve"}``.
+        await wait_for(lambda: len(orch.gate.pending) == 3, timeout=5.0)
+        n_at_click = len(orch.gate.pending)
         await approve_all.click(force=True)
 
         # Let gate 3 open + observe. If it wasn't caught by the click, it's

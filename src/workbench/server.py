@@ -671,6 +671,7 @@ UNLOCKED = {
     "rewrite_target_message",
     "export",
     "approve",
+    "approve_all",
     "detach_cell",
     "cancel_cell",
     "cancel_bg",
@@ -725,27 +726,39 @@ async def _h_start(session: Session, data: dict) -> None:
     await _register_and_spawn(session, branch, autoplay=True)
 
 
-async def _h_end(session: Session, data: dict) -> None:  # noqa: ARG001
+async def _h_end(session: Session, data: dict) -> None:
     """A3-typed-deltas: the slow tail (`end_conversation()` blocks on the
     channel; `_stop_running_branches` awaits cancelled tasks) is deferred to
     a background task so `_dispatch_lock` releases immediately — same
     pattern R5 applied to `_register_and_spawn`'s `_replayed` wait. The
     lock is re-acquired around `_stop_running_branches` so it can't
-    interleave with a concurrent fork's stop/register."""
-    if session.current is None:
+    interleave with a concurrent fork's stop/register.
+
+    STRESS-V2 H1: capture the target *now* — a fork spawned between this
+    dispatch and `_do_end` acquiring the lock changes `session.current`;
+    `only={branch_id}` stops the branch the user asked to end, not
+    whatever happens to be running when the bg task wins the lock."""
+    branch_id = data.get("target") or session.current
+    if branch_id is None:
         logger.warning("end before start — dropping")
         return
-    branch = session.branches[session.current]
+    branch = session.branches[branch_id]
     if branch.status == "ended":
         return
 
     async def _do_end() -> None:
+        # STRESS-V2 H2: petri's channel is a zero-buffer rendezvous stream;
+        # if the branch task was already cancelled (e.g. by a concurrent
+        # fork's `_stop_running_branches`) there is no consumer and this
+        # `send` blocks forever. Best-effort with a timeout — the branch is
+        # about to be cancelled below regardless.
         try:
-            await branch.channel.end_conversation()
+            with anyio.move_on_after(2.0):
+                await branch.channel.end_conversation()
         except Exception as exc:  # noqa: BLE001
             logger.warning("end_conversation raised: %r", exc)
         async with session._dispatch_lock:  # noqa: SLF001
-            await _stop_running_branches(session)
+            await _stop_running_branches(session, only={branch_id})
 
     asyncio.create_task(_do_end())  # noqa: RUF006
 
@@ -970,6 +983,19 @@ async def _h_approve(session: Session, data: dict) -> None:
         logger.warning("approve for unknown display_id %r", data["display_id"])
 
 
+async def _h_approve_all(session: Session, data: dict) -> None:  # noqa: ARG001
+    """STRESS-V2 s13: resolve every pending gate server-side. The client's
+    ``Approve all`` used to iterate its own ``usePendingGates()`` snapshot
+    and send N ``{t:"approve"}`` — a gate opening between the snapshot and
+    the last send was missed and the orchestrator stayed ``waiting``. One
+    message, snapshot at resolve time; ``UNLOCKED`` (sets Futures only) and
+    idempotent (empty ``pending`` → no-op)."""
+    if session.orchestrator is None:
+        return
+    for gid in list(session.orchestrator.gate.pending):
+        session.orchestrator.gate.resolve(gid, {})
+
+
 async def _h_interrupt_and_send(session: Session, data: dict) -> None:
     """M1-FEATURES §11: kill the running cell (tool result becomes
     ``[interrupted by user …]``), queue the human's text, release one turn so
@@ -1165,6 +1191,8 @@ async def _dispatch_locked(session: Session, data: dict) -> None:  # noqa: PLR09
             session.orchestrator.send(data["text"])
         case "approve":
             await _h_approve(session, data)
+        case "approve_all":
+            await _h_approve_all(session, data)
         case "detach_cell":
             if session.orchestrator is not None:
                 session.orchestrator.kernel.detach()

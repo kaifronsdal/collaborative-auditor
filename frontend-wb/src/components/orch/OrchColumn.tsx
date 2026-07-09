@@ -21,7 +21,12 @@ import {
 
 import type { ChatMessage, Event } from "@tsmono/inspect-common";
 
-import { useEvents, usePendingGates, type PendingGate } from "../../lib/selectors";
+import {
+  useEvents,
+  useIsPending,
+  usePendingGates,
+  type PendingGate,
+} from "../../lib/selectors";
 import type { BgJob, Status } from "../../lib/wire";
 import { useSession } from "../../store/session";
 import { ComposerTextarea } from "../ComposerTextarea";
@@ -335,9 +340,14 @@ function OrchHeader({
     send({ t: "approve", display_id: id, verdict });
   };
   // `ask_human` gates need a value; only `run_proposal`s can be bulk-approved.
+  // STRESS-V2 s13: one `{t:"approve_all"}` — the server snapshots
+  // `orch.gate.pending` at resolve time, so a gate opening between the
+  // client's `gates` render and the click isn't missed. `approvable` only
+  // gates whether the button *mounts* (>1 run_proposal).
   const approvable = gates.filter((g) => g.kind === "run_proposal");
+  const approving = useIsPending((c) => c.t === "approve_all");
   const approveAll = (): void => {
-    for (const g of approvable) send({ t: "approve", display_id: g.id, verdict: {} });
+    send({ t: "approve_all" });
   };
   const ctxLevel = ctxPct > 90 ? "hi" : ctxPct > 70 ? "mid" : "lo";
 
@@ -401,6 +411,7 @@ function OrchHeader({
                     type="button"
                     className="hgp-all"
                     onClick={approveAll}
+                    disabled={approving}
                   >
                     Approve all ({approvable.length})
                   </button>

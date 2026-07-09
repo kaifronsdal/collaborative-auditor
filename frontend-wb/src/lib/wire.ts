@@ -323,6 +323,9 @@ export type Up = { req_id?: string } & (
     }
   | { t: "orch_send"; text: string }
   | { t: "approve"; display_id: string; verdict?: unknown }
+  // STRESS-V2 s13: server iterates `orch.gate.pending` — one message
+  // instead of N `{t:"approve"}` from a stale client snapshot.
+  | { t: "approve_all" }
   | { t: "detach_cell" }
   | { t: "cancel_cell"; turn: number }
   // P2 bg-job panel: SIGTERM one tracked ``bash`` subprocess by its bg-id.
