@@ -439,12 +439,15 @@ type DownOp = Exclude<Down, { t: "batch" }>;
  *  frame types that carry structural state and must arrive in `v`-order.
  *  A stale one is dropped. Legacy singleton ops (`event`/`update`/`pool`/
  *  `timeline`) only reach the wire inside `{t:"batch"}` post-A3 so are
- *  covered by the batch's `v`; sideband broadcasts (`status`/`error`/
- *  `notify`/`queued`/…) are idempotent or overlay-only and may
- *  legitimately race the drain queue. */
+ *  covered by the batch's `v`; sideband broadcasts (`error`/`notify`/
+ *  `queued`/…) are idempotent or overlay-only and may legitimately race
+ *  the drain queue. STRESS-V2 H5b: `status` writes `version: msg.v` and
+ *  goes through the drain queue too, so a stale one (post-H5a resync, or
+ *  under `WORKBENCH_BROADCAST_DELAY_MS` reorder) must be dropped rather
+ *  than rewind `version` and cause the guard to reject the next batch. */
 const GUARDED: ReadonlySet<Down["t"]> = new Set([
   "state", "batch", "branch_created", "current", "batch_resolved", "orch",
-  "queued_consumed",
+  "queued_consumed", "status",
 ]);
 
 /**

@@ -134,7 +134,12 @@ class Session:
         # sync handler → drain task hand-off. Bounded buffer: the handler runs
         # inline in the generating task and must not block, so on overflow we
         # log + drop rather than back-pressure (which would stall generate) or
-        # grow unbounded (which would OOM under a stalled client).
+        # grow unbounded (which would OOM under a stalled client). STRESS-V2
+        # H5a: a drop sets ``_desync``; ``drain()`` resyncs with one full
+        # ``push_full_state`` per overflow episode (A3 removed mid-session
+        # ``{t:"state"}``, so without this a dropped ``batch``/
+        # ``branch_created`` is a permanent client-side hole).
+        self._desync: bool = False
         self._send: MemoryObjectSendStream[dict[str, Any]]
         self._recv: MemoryObjectReceiveStream[dict[str, Any]]
         self._send, self._recv = anyio.create_memory_object_stream[dict[str, Any]](
@@ -335,7 +340,12 @@ class Session:
         self.version += 1
         for op in ops:
             op["v"] = self.version
-        self._enqueue({"t": "batch", "v": self.version, "ops": ops})
+        if self._enqueue({"t": "batch", "v": self.version, "ops": ops}):
+            # STRESS-V2 H5a: advance the pool high-water-mark only after the
+            # batch is queued. On a drop, ``pool_sent`` stays where it was so
+            # the next successful ``{t:"pool"}`` op re-ships the missed
+            # entries; the ``_desync`` full-state push covers the rest.
+            self.pool_sent = len(self.pool)
 
     def _resolve(self, span_id: str | None) -> tuple[str, Role] | None:
         """Walk `span_id → parent → …` to the nearest registered role span."""
@@ -353,18 +363,28 @@ class Session:
     def _auditor_timeline(self) -> dict[str, Any]:
         return build_auditor_timeline(self)
 
-    def _enqueue(self, msg: dict[str, Any]) -> None:
+    def _enqueue(self, msg: dict[str, Any]) -> bool:
+        """Queue a wire message for :meth:`drain`; returns whether it landed.
+
+        STRESS-V2 H5a: on ``WouldBlock`` (2048-slot buffer full), the frame is
+        dropped and ``_desync`` is set — :meth:`drain`'s next iteration pushes
+        a full ``{t:"state"}`` snapshot to every connection, restoring the
+        pre-A3 "next snapshot resyncs" contract at one push per overflow
+        episode. Callers that advance derived cursors (``pool_sent``) gate on
+        the return so the cursor doesn't skip the dropped delta.
+        """
         try:
             self._send.send_nowait(msg)
         except anyio.WouldBlock:
-            # bounded buffer full — a client is stalled. Drop rather than block
-            # the generating task or OOM. The next `state` snapshot resyncs.
             logger.warning(
                 "wire buffer full; dropping %r (v=%d)", msg["t"], msg.get("v")
             )
+            self._desync = True
+            return False
         except anyio.ClosedResourceError:
             # session.close() raced a late event from a branch's finally block.
-            pass
+            return False
+        return True
 
     # -- wire emission (enqueue only; drain() owns the socket) ----------------
 
@@ -377,9 +397,9 @@ class Session:
         if len(self.pool) <= self.pool_sent:
             return None
         entries = [m.model_dump(mode="json") for m in self.pool[self.pool_sent :]]
-        op = {"t": "pool", "from": self.pool_sent, "entries": entries}
-        self.pool_sent = len(self.pool)
-        return op
+        # ``pool_sent`` is advanced by the caller (``_on_event``) only after
+        # the enclosing batch's ``_enqueue`` succeeds — see STRESS-V2 H5a.
+        return {"t": "pool", "from": self.pool_sent, "entries": entries}
 
     async def drain(self) -> None:
         """Own the WebSockets: await enqueued wire messages and broadcast them.
@@ -394,10 +414,33 @@ class Session:
         if os.environ.get("WORKBENCH_BROADCAST_DELAY_MS"):
             async with anyio.create_task_group() as tg:
                 async for msg in self._recv:
+                    if self._desync:
+                        await self._resync_all()
                     tg.start_soon(self.broadcast, msg)
             return
         async for msg in self._recv:
+            if self._desync:
+                await self._resync_all()
             await self.broadcast(msg)
+
+    async def _resync_all(self) -> None:
+        """STRESS-V2 H5a: push a full ``{t:"state"}`` to every connection.
+
+        Called from :meth:`drain` on the first iteration after an overflow
+        drop set ``_desync``. The client's ``case "state"`` replaces its
+        store wholesale and bumps ``version`` to the snapshot's ``v``, so
+        stale queued frames still in the buffer (all with lower ``v``) are
+        subsequently rejected by the A3 ``GUARDED`` check. Cleared before the
+        awaits so a concurrent drop during the (potentially slow) send just
+        re-arms for the next iteration rather than being lost.
+        """
+        self._desync = False
+        for conn in list(self.connections):
+            try:
+                await self.push_full_state(conn)
+            except (WebSocketDisconnect, ConnectionError, OSError, RuntimeError):
+                if conn in self.connections:
+                    self.connections.remove(conn)
 
     async def broadcast(self, msg: dict[str, Any]) -> None:
         # Test-only network-jitter simulation (``_e2e_m1_chaos_delay``):

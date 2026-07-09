@@ -706,13 +706,19 @@ class Orchestrator(StepGated):
         self.pause()
         # Cancel every running cell and let the orch task drain ``_settle``'s
         # emits (traceback / ``cell_done``) so ``mark_rewound`` catches them.
+        # STRESS-V2 H7: a bg cell in blocking sync code (``time.sleep``,
+        # pandas, C-ext) never observes the cancel, so ``gather`` would block
+        # indefinitely while ``_dispatch_lock`` is held. The ``move_on_after``
+        # lets dispatch return; the cell eventually finishes and its output
+        # is dropped by the rewound-uuid filter (``mark_rewound`` below).
         tasks = list(self.kernel.bg.values())
         for tid in list(self.kernel.bg):
             self.kernel.cancel(tid)
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
-            for _ in range(5):
-                await asyncio.sleep(0)
+            with anyio.move_on_after(2.0):
+                await asyncio.gather(*tasks, return_exceptions=True)
+                for _ in range(5):
+                    await asyncio.sleep(0)
         self.queued.clear()
         msg_id = self._turn_msg.get(turn)
         if msg_id is None:
