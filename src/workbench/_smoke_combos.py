@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import sys
+from typing import Any
 
 import anyio
 from inspect_ai.model import (
@@ -53,7 +54,7 @@ from workbench.run import Branch, find_auditor_step
 from workbench.server import _dispatch
 from workbench.session import Session
 from workbench.sources import GEN_SOURCE, TARGET_GEN_SOURCE
-from workbench.timeline import build_auditor_timeline
+from workbench.timeline import _msg_id, build_auditor_timeline, build_target_timeline
 
 # ── shared shapes ───────────────────────────────────────────────────────────
 
@@ -1276,6 +1277,285 @@ async def c13_queued_lifecycle_pre_turn_no_clear() -> None:
         await session.close()
 
 
+# ── C14/C15: A1-b-wide target-timeline graft edge cases ────────────────────
+# ARCHITECTURE-RACES.md §A1-b-wide "Edge cases": exercise the two hard
+# interactions between L1 rollback (per-branch `history`) and L2 fork
+# (session-wide `branch/edit/resample`) in `build_target_timeline`'s
+# event-sourced graft. Both drive a real mockllm audit — the auditor calls
+# `rollback_conversation` so the L1 tree is populated the same way a live
+# audit would populate it (BranchEvent + span topology), not via a
+# hand-built fixture.
+
+
+def _find_in_tl(
+    root: dict[str, Any], sid: str
+) -> tuple[dict[str, Any], dict[str, Any] | None] | None:
+    """DFS the target-timeline tree for span `sid`; return (span, parent)."""
+    stack: list[tuple[dict[str, Any], dict[str, Any] | None]] = [(root, None)]
+    while stack:
+        sp, parent = stack.pop()
+        if sp["id"] == sid:
+            return sp, parent
+        for c in sp["branches"]:
+            stack.append((c, sp))
+    return None
+
+
+def _content_anchors(session: Session, span: dict[str, Any]) -> set[str]:
+    """The set of `AnchorEvent.anchor_id` in `span['content']` — what
+    `splice()` matches a child's `branchedFrom` against."""
+    return {
+        d["anchor_id"]
+        for it in span["content"]
+        if (d := session.events[it["event"]])["event"] == "anchor"
+    }
+
+
+def _splice_texts(session: Session, root: dict[str, Any], sid: str) -> list[str]:
+    """Python mirror of ``core.ts:splice()`` restricted to assistant texts.
+
+    Walks the ancestor chain to `sid`; for each non-tail node, cuts its
+    `content` at the first `AnchorEvent` whose `anchor_id ==
+    child.branched_from` (throws if absent; `branched_from is None` discards
+    the accumulated prefix). Returns the assistant-message text of every
+    `ModelEvent` along the concatenated result — the exact list the target
+    column's `.bubble.assistant` renders when this lane is selected.
+    """
+    chain: list[dict[str, Any]] = []
+
+    def walk(sp: dict[str, Any]) -> bool:
+        chain.append(sp)
+        if sp["id"] == sid:
+            return True
+        for c in sp["branches"]:
+            if walk(c):
+                return True
+        chain.pop()
+        return False
+
+    assert walk(root), f"span {sid!r} not reachable from timeline root"
+    out: list[str] = []
+    for i, node in enumerate(chain):
+        evs = [session.events[it["event"]] for it in node["content"]]
+        if i + 1 < len(chain):
+            bf = chain[i + 1]["branched_from"]
+            if bf is None:
+                out.clear()
+                continue
+            cut = next(
+                (j for j, d in enumerate(evs) if d["event"] == "anchor" and d["anchor_id"] == bf),
+                None,
+            )
+            assert cut is not None, (
+                f"splice: anchor {bf!r} not in {node['id']!r} content — "
+                f"`branched_from` invariant violated"
+            )
+            evs = evs[: cut + 1]
+        for d in evs:
+            if d["event"] == "model" and _msg_id(d):
+                c = d["output"]["choices"][0]["message"]["content"]
+                out.append(c[0]["text"] if isinstance(c, list) else c)
+    return out
+
+
+# C14 — L2 fork at an anchor that lives in *both* parent lanes: fresh in
+# lane A, replayed in lane B. `anchor_owner` is keyed by live `ModelEvent`
+# (never emitted for a replayed step), so ownership resolves to lane A —
+# the child grafts there, and `splice()` reconstructs the r1/r2 prefix from
+# lane A's content.
+
+SCRIPT_C14: list[ModelOutput] = [
+    _auditor_turn(
+        _tc("set_system_message", system_message="sys"),
+        _tc("send_message", message="u1"),
+        _tc("resume"),
+    ),
+    _auditor_turn(_tc("send_message", message="u2"), _tc("resume")),
+    _auditor_turn(_tc("send_message", message="u3"), _tc("resume")),
+    # Rollback keeps M5 (= r2) → lane B replays r1, r2 then goes live.
+    _auditor_turn(
+        _tc("rollback_conversation", message_id="M5"),
+        _tc("send_message", message="u4"),
+        _tc("resume"),
+    ),
+    _auditor_turn(_tc("send_message", message="u5"), _tc("resume")),
+    _auditor_turn(_tc("end_conversation")),
+]
+
+
+async def c14_bwide_fork_shared_prefix_anchor() -> None:
+    session = Session()
+    await session.start()
+    try:
+        base = await make_base(
+            session,
+            auditor_outputs=auditor_by_turn(SCRIPT_C14),
+            target_outputs=target_by_last_user(
+                {f"u{i}": f"r{i}" for i in range(1, 6)}
+            ),
+            max_turns=6,
+        )
+        assert _count_trajectories(base.history) == 2
+        lane_a = base.history.root.span_id
+        lane_b = base.history.root.children[0].span_id
+        # For a target `ModelOutput` step the L2 tape's `anchor_id` *is* the
+        # assistant `message.id` — so `_nth_target_anchor` doubles as the
+        # `branched_from` value the timeline should carry.
+        r2 = _nth_target_anchor(base.audit_tape.log, 1)
+
+        # L2-fork at r2 — fresh in lane A, in lane B's L1-replayed prefix.
+        await _dispatch(
+            session,
+            {
+                "t": "branch",
+                "branch": "base",
+                "at": _nth_target_anchor(base.audit_tape.log, 1),
+            },
+        )
+        _child_id, child = await run_child(session)
+        child_root = child.history.root.span_id
+
+        tl = build_target_timeline(session)["root"]
+        hit = _find_in_tl(tl, child_root)
+        assert hit is not None, f"child L1-root {child_root!r} absent from timeline"
+        c_span, c_parent = hit
+        # KEY: child grafts under lane A (the span that emitted r2's live
+        # `ModelEvent`), NOT lane B (which only replayed r2 → `AnchorEvent`
+        # only, never in `anchor_owner`), and NOT the wrapper root.
+        assert c_parent is not None and c_parent["id"] == lane_a, (
+            f"child grafted under {c_parent['id'] if c_parent else None!r}; "
+            f"want lane-A {lane_a!r} (anchor_owner[r2] — lane-B {lane_b!r} "
+            f"only replayed r2, no ModelEvent)"
+        )
+        assert c_span["branched_from"] == r2, (
+            f"child branched_from={c_span['branched_from']!r}; want r2.id={r2!r}"
+        )
+        # `splice()` invariant: the graft parent's content carries an
+        # `AnchorEvent` for the child's `branched_from`.
+        assert r2 in _content_anchors(session, c_parent), (
+            f"lane-A content missing AnchorEvent for r2 ({r2!r}) — splice() "
+            f"would throw at core.ts:413"
+        )
+        # Full splice from the child's L1-root: r1, r2 (from lane A's live
+        # content, cut at r2's anchor) then the child's L1-root's own live
+        # target turns. `auditor_by_turn` re-runs T2 verbatim → r3 is the
+        # child-root's only live turn before the child's own rollback moves
+        # execution to child-lane-B′; r4/r5 belong to B′, not this splice.
+        got = _splice_texts(session, tl, child_root)
+        assert got == ["r1", "r2", "r3"], (
+            f"splice(child-root)={got!r}; want ['r1','r2','r3'] "
+            f"(lane-A prefix + child-root live)"
+        )
+    finally:
+        await session.close()
+
+
+# C15 — L2 fork *past* a rollback the parent already executed: the child's
+# L2 replay re-runs `rollback_conversation` on a fresh L1 → child gets
+# lanes A′ (never live — its whole content is L2-served/L1-replayed) and
+# B′. `build_target_timeline` grafts each L1 span independently at
+# `anchor_owner[branched_from]`, so A′ (no live `ModelEvent` → not in
+# `spans`) is dropped and B′ grafts directly under the *parent's* lane B
+# (which owns the last L2-served anchor in B′'s pre-live prefix). The
+# child's `history.children` edge A′→B′ is discarded and re-derived from
+# event ownership.
+
+SCRIPT_C15: list[ModelOutput] = [
+    _auditor_turn(
+        _tc("set_system_message", system_message="sys"),
+        _tc("send_message", message="u1"),
+        _tc("resume"),
+    ),
+    _auditor_turn(_tc("send_message", message="u2"), _tc("resume")),
+    # Rollback keeps M3 (= r1) → lane B replays r1 then goes live r3..r5.
+    _auditor_turn(
+        _tc("rollback_conversation", message_id="M3"),
+        _tc("send_message", message="u3"),
+        _tc("resume"),
+    ),
+    _auditor_turn(_tc("send_message", message="u4"), _tc("resume")),
+    _auditor_turn(_tc("send_message", message="u5"), _tc("resume")),
+    _auditor_turn(_tc("end_conversation")),
+]
+
+
+async def c15_bwide_rollback_inside_l2_prefix() -> None:
+    session = Session()
+    await session.start()
+    try:
+        base = await make_base(
+            session,
+            auditor_outputs=auditor_by_turn(SCRIPT_C15),
+            target_outputs=target_by_last_user(
+                {f"u{i}": f"r{i}" for i in range(1, 6)}
+            ),
+            max_turns=6,
+        )
+        assert _count_trajectories(base.history) == 2
+        lane_b = base.history.root.children[0].span_id
+        r4 = _nth_target_anchor(base.audit_tape.log, 3)
+        r5 = _nth_target_anchor(base.audit_tape.log, 4)
+
+        # L2-fork at r4 — inside parent lane B, *past* the rollback.
+        await _dispatch(
+            session,
+            {
+                "t": "branch",
+                "branch": "base",
+                "at": _nth_target_anchor(base.audit_tape.log, 3),
+            },
+        )
+        _child_id, child = await run_child(session)
+        # L2 replay re-executed the rollback on a fresh L1.
+        assert _count_trajectories(child.history) == 2, (
+            f"child L1 trajectories={_count_trajectories(child.history)}; "
+            f"L2-served prefix should have re-run rollback_conversation"
+        )
+        child_a = child.history.root.span_id
+        child_b = child.history.root.children[0].span_id
+
+        tl = build_target_timeline(session)["root"]
+        # A′ never went live (its entire bucket is L2-served/L1-replayed
+        # `AnchorEvent`s → `live[A′] == []`) → dropped from `spans`.
+        assert _find_in_tl(tl, child_a) is None, (
+            f"child lane A′ ({child_a!r}) has no live ModelEvent and must be "
+            f"dropped from the session-wide target timeline"
+        )
+        # B′ grafts under *parent* lane B — its pre-live prefix ends with the
+        # L2-served `AnchorEvent` for r4, and `anchor_owner[r4] == lane_b`.
+        # The child's own `history` edge A′→B′ is bypassed entirely.
+        hit = _find_in_tl(tl, child_b)
+        assert hit is not None, f"child lane B′ {child_b!r} absent from timeline"
+        b_span, b_parent = hit
+        assert b_parent is not None and b_parent["id"] == lane_b, (
+            f"child B′ grafted under {b_parent['id'] if b_parent else None!r}; "
+            f"want parent lane-B {lane_b!r} (anchor_owner[r4]) — NOT child "
+            f"lane-A′ {child_a!r} (dropped) nor the wrapper root"
+        )
+        assert b_span["branched_from"] == r4, (
+            f"child B′ branched_from={b_span['branched_from']!r}; want r4.id={r4!r}"
+        )
+        assert r4 in _content_anchors(session, b_parent), (
+            "parent lane-B content missing AnchorEvent for r4 — splice() "
+            "would throw"
+        )
+        # B′'s live content is exactly the child's post-fork target turns
+        # (r5 regenerated) — nothing L2-served leaks past the pre/live split.
+        b_live = [
+            session.events[it["event"]]
+            for it in b_span["content"]
+            if session.events[it["event"]]["event"] == "model"
+        ]
+        assert len(b_live) == 1, (
+            f"child B′ live ModelEvents={len(b_live)}; want 1 (r5 regenerated)"
+        )
+        assert _msg_id(b_live[0]) != r5, (
+            "child B′'s r5 must be a fresh generate, not the parent's message"
+        )
+    finally:
+        await session.close()
+
+
 # ── runner ──────────────────────────────────────────────────────────────────
 
 TESTS = [
@@ -1294,6 +1574,14 @@ TESTS = [
     (
         "C13  R4 queued lifecycle (pre_turn no-clear)",
         c13_queued_lifecycle_pre_turn_no_clear,
+    ),
+    (
+        "C14  b-wide: L2 fork on shared-prefix anchor → grafts under owner",
+        c14_bwide_fork_shared_prefix_anchor,
+    ),
+    (
+        "C15  b-wide: L1 rollback in L2 prefix → A′ dropped, B′→parent-B",
+        c15_bwide_rollback_inside_l2_prefix,
     ),
 ]
 

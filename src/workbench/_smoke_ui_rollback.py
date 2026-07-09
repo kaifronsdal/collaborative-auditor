@@ -128,12 +128,16 @@ async def _amain() -> None:
             # The frontend should connect to /ws/{sid}, receive the completed
             # branch's full state (incl. timelines), and render inspect-view's
             # gantt swimlane (TimelineSwimLanes — CSS-module classes, so we
-            # select via role/host instead of class names).
+            # select via role/host instead of class names). A1-b-wide: the
+            # session-wide target timeline has a synthetic `target-root`
+            # wrapper span (empty content, branchedFrom=null) so `splice()`
+            # can host multiple root branches → row 0 is the wrapper, rows
+            # 1/2 are the two L1 trajectories.
             gantt = target_col.locator(".lane-gantt-host")
             await expect(gantt).to_be_visible(timeout=15_000)
             lanes = gantt.locator('[role="row"]')
-            await expect(lanes).to_have_count(2)
-            print("UI ✓ target .lane-gantt-host visible with 2 swimlane rows")
+            await expect(lanes).to_have_count(3)
+            print("UI ✓ target .lane-gantt-host visible with 3 swimlane rows (wrapper + 2)")
 
             # Default selection = latest (branch 2); shows spliced lineage:
             # r1 (prefix) then r4, r5.
@@ -144,8 +148,9 @@ async def _amain() -> None:
             )
             print(f"UI ✓ branch-2 lineage shows {texts}")
 
-            # Click branch 1 row label → r1, r2, r3 (no r4/r5).
-            await lanes.first.locator("> div").first.click()
+            # Click branch 1 row label → r1, r2, r3 (no r4/r5). Row 0 is the
+            # b-wide wrapper span; branch 1 is row 1.
+            await lanes.nth(1).locator("> div").first.click()
             texts1 = [
                 t.strip()
                 for t in await target_col.locator(".bubble.assistant").all_text_contents()

@@ -21,8 +21,7 @@ Cases
 4. **pause interrupts** — running branch with a slow (30s) mockllm auditor
    generate; click ``.primary-pause`` mid-generate, assert
    ``.runline.status-paused`` and backend ``b.status == 'paused'`` land in
-   <2s (c2004c4: ``Branch.pause()`` cancels ``_gen_scope``). Skipped if the
-   fix commit isn't in ``git log -20``.
+   <2s (c2004c4: ``Branch.pause()`` cancels ``_gen_scope``).
 
 Run:  uv run python -m workbench._e2e_m1_ui_fixes
 """
@@ -31,7 +30,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import subprocess
 import sys
 import time
 import traceback
@@ -156,19 +154,6 @@ async def _mk_branch(
                 break
             await anyio.sleep(0.02)
     return session, b
-
-
-def _pause_fix_landed() -> bool:
-    try:
-        out = subprocess.run(
-            ["git", "log", "--oneline", "-20"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.lower()
-    except Exception:
-        return False
-    return "interrupt" in out or "honest pause" in out
 
 
 # ── cases ───────────────────────────────────────────────────────────────────
@@ -387,16 +372,8 @@ async def _amain() -> int:
         ("newAudit → fresh session", case_new_audit),
         ("unqueue ghost bubble", case_unqueue),
         ("redacted reasoning placeholder", case_redacted_reasoning),
+        ("pause interrupts mid-generate", case_pause_interrupts),
     ]
-    skipped: list[str] = []
-    if _pause_fix_landed():
-        cases.append(("pause interrupts mid-generate", case_pause_interrupts))
-    else:
-        skipped.append(
-            "pause interrupts mid-generate (fix not landed — no "
-            "'interrupt'/'honest pause' commit in git log -20)"
-        )
-
     results: list[tuple[str, str, str]] = []  # (name, status, detail)
 
     async with _backend(ws_port), _vite(ws_port, ui_port), async_playwright() as pw:
@@ -435,10 +412,8 @@ async def _amain() -> int:
         if detail:
             line += f"  — {detail}"
         print(line)
-    for s in skipped:
-        print(f"SKIP   {s}")
     n_pass = sum(1 for _, st, _ in results if st == "PASS")
-    print(f"\n{n_pass}/{len(results)} passed, {len(skipped)} skipped")
+    print(f"\n{n_pass}/{len(results)} passed")
     return 0 if n_pass == len(results) else 1
 
 
