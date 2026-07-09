@@ -110,6 +110,13 @@ main thread saturates → WS receive backs up → drain fills → `_desync`
 
 ## P4 — deferred / follow-up
 
+- **Per-role `eventsRev`** — `SwimlaneColumn` residual 1606 renders
+  (chunk-independent) is `eventsRev` × ~9 structural events/turn.
+  Target column recomputes on auditor Tool/Span events. Split
+  `eventsRev` into `eventsRev[branch][role]` so each column keys on
+  its own. Would cut ~1606 → ~400.
+- `Settings.default_*` wiring — SettingsModal round-trips them but
+  StartView reads hardcoded `presets.ts`. Either wire or delete.
 - A6#1 `session.events` unbounded (~100MB) — cap or rotate. Needs
   design (rewound events? Cross-branch refs?).
 - A6#23 virtualization (react-window) — after `React.memo` lands.
