@@ -184,12 +184,26 @@ def build_target_timeline(session: Session) -> dict[str, Any]:
         # some span emitted a live `ModelEvent` for, so its `AnchorEvent`
         # (which fires *after* the `ModelEvent`) is in that span's `live`
         # content and `splice()` will find it.
+        #
+        # Same-branch L1 rollback lanes emit **no** replayed `AnchorEvent`
+        # under the new lane's span (petri's serve path emits nothing) —
+        # only a `BranchEvent(from_anchor=<parent's message.id>)` marks the
+        # replay boundary. Without the second arm the lane gets `bf=None`
+        # and grafts as a sibling under root instead of nested under its
+        # parent lane, and `splice()` misaligns (F1/`_smoke_ui_rollback`).
+        def _bf_of(u: str) -> str | None:
+            d = session.events[u]
+            if d["event"] == "anchor":
+                return d["anchor_id"]
+            if d["event"] == "branch":
+                return d.get("from_anchor")
+            return None
+
         bf = next(
             (
-                d["anchor_id"]
+                a
                 for u in reversed(pre[sid])
-                if (d := session.events[u])["event"] == "anchor"
-                and d["anchor_id"] in anchor_owner
+                if (a := _bf_of(u)) is not None and a in anchor_owner
             ),
             None,
         )
