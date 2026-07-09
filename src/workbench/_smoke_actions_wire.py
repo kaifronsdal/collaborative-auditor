@@ -44,7 +44,6 @@ import sys
 
 import anyio
 from inspect_ai.model import ModelOutput
-from inspect_ai.tool import ToolCall
 
 from workbench._smoke_fixtures import (
     SCRIPT3,
@@ -58,7 +57,9 @@ from workbench._smoke_fixtures import (
     _pool_msg_id,
     _pool_user_id,
     _send,
+    _target_tool_call,
     _tc,
+    _walk,
     auditor_by_turn,
     auditor_counted,
     make_base,
@@ -454,15 +455,6 @@ async def w11_edit_target_system() -> None:
 #   T1  send_tool_call_result(tc-1, "72F") · resume  → target "warm"
 #   T2  end_conversation
 
-
-def _target_tool_call(call_id: str, fn: str, **args: object) -> ModelOutput:
-    out = ModelOutput.from_content(model="mockllm", content="")
-    out.choices[0].message.tool_calls = [
-        ToolCall(id=call_id, function=fn, type="function", arguments=dict(args))
-    ]
-    return out
-
-
 TOOL_SCRIPT: list[ModelOutput] = [
     _auditor_turn(
         _tc("set_system_message", system_message="sys"),
@@ -511,7 +503,7 @@ async def w12_edit_target_tool() -> None:
             auditor_outputs=auditor_by_turn(TOOL_SCRIPT),
             target_outputs=target_by_last_user(
                 {
-                    "ask": _target_tool_call("tc-1", "get_weather"),
+                    "ask": _target_tool_call("get_weather", "tc-1"),
                     "72F": "warm",
                     "30F": "cold",
                 }
@@ -759,8 +751,6 @@ async def f2_l1_spans_on_rollback() -> None:
         )
     finally:
         await session.close()  # flush drain so every `_on_event` batch reaches `conn`
-
-    from workbench.timeline import _walk
 
     l1 = [t.span_id for t in _walk(base.history.root)]
     ops = [m for m in flatten(conn.sent) if m["t"] == "l1_spans"]

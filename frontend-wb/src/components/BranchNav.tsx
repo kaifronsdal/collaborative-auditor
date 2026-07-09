@@ -12,7 +12,7 @@
  */
 import type { JSX, MouseEvent } from "react";
 
-export type BranchNavProps = {
+type BranchNavProps = {
   /** 0-based position of the currently-viewed sibling. */
   idx: number;
   /** Total siblings at this fork (including the one being viewed). */

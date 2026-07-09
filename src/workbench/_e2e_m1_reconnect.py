@@ -41,6 +41,7 @@ import sys
 import time
 import traceback
 from dataclasses import dataclass, field
+from functools import partial
 
 import anyio
 from inspect_ai.model import ChatMessage, GenerateConfig, ModelOutput
@@ -54,6 +55,7 @@ from workbench._smoke_fixtures import (
     _target,
     _tc,
     _vite,
+    _wire_page_capture as _wire_page_capture_base,
 )
 from workbench.run import Branch
 from workbench.server import sessions
@@ -141,37 +143,13 @@ class BackendLogCapture(logging.Handler):
         return [r for r in out if not any(n in r for n in self._NOISE)]
 
 
-@dataclass
-class Capture:
-    console: list[str] = field(default_factory=list)
-    page_errors: list[str] = field(default_factory=list)
-
-
-_CONSOLE_NOISE = (
-    "Lit is in dev mode",
-    # ``ws.close()`` mid-flight → the server may have a frame queued that
-    # never arrives; the browser logs a generic "WebSocket is already in
-    # CLOSING or CLOSED state" if a `send()` raced the close. Not a finding.
-    "CLOSING or CLOSED state",
-    # Vite HMR socket also closes when the page's beforeunload fires on
-    # teardown; irrelevant to the app WS.
-    "[vite]",
+# ``ws.close()`` mid-flight → the server may have a frame queued that never
+# arrives; the browser logs "WebSocket is already in CLOSING or CLOSED state"
+# if a `send()` raced the close. Vite's HMR socket also closes on teardown.
+# Neither is a finding.
+_wire_page_capture = partial(
+    _wire_page_capture_base, extra_noise=("CLOSING or CLOSED state", "[vite]")
 )
-
-
-def _wire_page_capture(page: Page) -> Capture:
-    cap = Capture()
-    page.on("pageerror", lambda e: cap.page_errors.append(str(e)))
-    page.on(
-        "console",
-        lambda m: (
-            cap.console.append(f"[{m.type}] {m.text}")
-            if m.type in ("error", "warning")
-            and not any(n in m.text for n in _CONSOLE_NOISE)
-            else None
-        ),
-    )
-    return cap
 
 
 # ── store bridge ────────────────────────────────────────────────────────────

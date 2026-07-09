@@ -246,14 +246,12 @@ function PinnedGroups({
  */
 export function Sidebar(): JSX.Element {
   const newAudit = useSession((s) => s.newAudit);
-  const sessionsList = useSession((s) => s.sessionsList);
   const savedSessions = useSession((s) => s.savedSessions);
   const sessionId = useSession((s) => s.sessionId);
   const fetchSessions = useSession((s) => s.fetchSessions);
   const exportBranch = useSession((s) => s.exportBranch);
   const importEval = useSession((s) => s.importEval);
   const current = useSession((s) => s.current);
-  const status = useSession((s) => s.status);
   const branches = useSession((s) => s.branches);
   const switchBranch = useSession((s) => s.switchBranch);
   const mode = useSession((s) => s.mode);
@@ -376,7 +374,7 @@ export function Sidebar(): JSX.Element {
         {sessionId && <ExportMenu sessionId={sessionId} />}
       </div>
       <div className="side-recents">
-        {savedSessions.length === 0 && sessionsList.length === 0 ? (
+        {savedSessions.length === 0 ? (
           <div className="side-empty">No recent sessions</div>
         ) : null}
         {savedSessions.map((s) => {
@@ -396,27 +394,6 @@ export function Sidebar(): JSX.Element {
             </button>
           );
         })}
-        {sessionsList.length > 0 &&
-          sessionsList.map((s) => {
-            const isActive = s.id === current;
-            return (
-              <button
-                key={s.id}
-                className={`side-row${isActive ? " active" : ""}`}
-                title={s.title}
-                onClick={() => {
-                  // Pending entry has no backend branch id yet — clicking it
-                  // while we're waiting for the first `state` broadcast is a
-                  // no-op (the audit is about to become current on its own).
-                  if (s.id !== "__pending__") switchBranch(s.id);
-                }}
-              >
-                {isActive && <span className={`status-dot dot-${status ?? "ended"}`} />}
-                <span className="side-row-title">{s.title}</span>
-                <span className="side-row-time">{relTime(s.updatedAt)}</span>
-              </button>
-            );
-          })}
       </div>
 
       {pins.length > 0 && (

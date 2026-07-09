@@ -21,9 +21,7 @@ import { RewritePanel, SelectionPill, useSelectionPill, type RewriteDraft } from
 import { renderTool } from "./tool-renderers";
 import { resultText, shortId } from "./tool-renderers/util";
 
-export type { RewriteDraft };
-
-export type ToolPairProps = {
+type ToolPairProps = {
   fn: string;
   args: Record<string, unknown>;
   result?: unknown;

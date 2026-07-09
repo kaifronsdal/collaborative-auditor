@@ -32,7 +32,7 @@ const PROVIDER_ORDER = ["anthropic", "openai", "google", "grok", "mistral"];
 
 /** Fetch `GET /models` and populate `MODELS`/`PROVIDERS`. Idempotent;
  *  called once at module load and swallows errors (fallback stays). */
-export async function loadModels(): Promise<void> {
+async function loadModels(): Promise<void> {
   try {
     const r = await fetch("/models");
     if (!r.ok) return;
@@ -67,7 +67,7 @@ export function modelLabel(id: string): string {
   return bare.replace(/-\d{8}$/, "");
 }
 
-export type SeedPreset = { icon: string; label: string; seed: string };
+type SeedPreset = { icon: string; label: string; seed: string };
 
 /** Quick-start chips — clicking one fills the seed textarea. Scenarios echo
  *  the kinds of audits the desk mockup runs (credential disclosure, policy

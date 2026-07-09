@@ -30,30 +30,12 @@ import type { GenerateConfigDict } from "../components/ModelPicker";
 import type { TurnScorePayload } from "../components/orch/types";
 
 /** A2: an in-flight `Up` command awaiting `{t:"ack"}` from the server. */
-export type PendingCmd = Up & { req_id: string };
+type PendingCmd = Up & { req_id: string };
 
-/**
- * A "Recents" entry. M0 stub: populated UI-side when an audit starts (the
- * backend has no session-listing endpoint yet — see the deliverable note).
- * `id` is the branch id once known; until the `state` broadcast lands with a
- * `current`, the row is keyed by a temporary local id.
- */
-export type SessionSummary = {
-  id: string;
-  title: string;
-  updatedAt: number;
-};
-
-/** The config a branch was started with. Captured UI-side at `start` (the
- *  backend doesn't broadcast it); shown read-only in the sidebar config card. */
-export type BranchConfig = {
-  seed: string;
-  auditor_model: string;
-  target_model: string;
-  max_turns?: number;
-  auditor_config?: Partial<GenerateConfigDict>;
-  target_config?: Partial<GenerateConfigDict>;
-};
+// TODO(E): delete after session.test.ts migration — dead post-F3 (the M0
+// UI-side "Recents" stub was superseded by `savedSessions` from `GET
+// /sessions`; nothing writes `sessionsList` anymore).
+type SessionSummary = { id: string; title: string; updatedAt: number };
 
 /** LLM-assisted rewrite draft. Keyed by `call_id` (auditor-side tool_call
  *  rewrite) or `message_id` (target-side message rewrite). */
@@ -145,14 +127,14 @@ function persistPins(sid: string | null, pins: Pin[]): { pins: Pin[] } {
 }
 
 /** Config editable in the sidebar for the next audit (or to override current). */
-export type NextConfig = {
+type NextConfig = {
   auditor_model: string;
   target_model: string;
   auditor_config: Partial<GenerateConfigDict>;
   target_config: Partial<GenerateConfigDict>;
 };
 
-export type SessionState = {
+type SessionState = {
   pool: ChatMessage[];
   /**
    * OVERNIGHT-SWEEP P13: this Map is **mutated in place** by the reducer
@@ -215,7 +197,7 @@ export type SessionState = {
   /** Id of the session the current socket is for; guards idempotent connect. */
   sessionId: string | null;
   /** STRESS-V2 P2: `onclose` scheduled an auto-reconnect and it hasn't opened
-   *  yet. Drives a "reconnecting…" banner; cleared on `onopen`/`disconnect`. */
+   *  yet. Drives a "reconnecting…" banner; cleared on `onopen`. */
   reconnecting: boolean;
   /**
    * A2 (ARCHITECTURE-RACES.md): every `send()` appends `{...msg, req_id}`
@@ -229,19 +211,10 @@ export type SessionState = {
   branches: Record<BranchId, BranchMeta>;
   /** Resample-N batches keyed by `batch_id` (RESAMPLE-N.md). */
   candidateBatches: Record<string, CandidateBatch>;
-  /**
-   * Recents list (STUB, M0). Most-recent first. Populated on `start`; the
-   * pending entry's `id` is reconciled to the real branch id when the next
-   * `state` broadcast lands with a `current`.
-   */
+  // TODO(E): delete after session.test.ts migration — dead post-F3.
   sessionsList: SessionSummary[];
   /** Persisted sessions from `GET /sessions` (sidebar Recents). */
   savedSessions: SavedSession[];
-  /** Per-branch config captured at `start`, keyed by branch id. Read by the
-   *  sidebar config card. F3: currently unpopulated — the PENDING_ID re-key
-   *  path is gone and `branch_created` doesn't yet write it; `DeskView`
-   *  falls back to `branches[current].seed` from `msg.meta`. */
-  branchConfig: Record<string, BranchConfig>;
   /** Editable config for the next audit (pre-populates StartView pickers). */
   nextConfig: NextConfig;
   /** Which start card the sidebar's MODES section has selected. Only affects
@@ -255,7 +228,6 @@ export type SessionState = {
   error: string | null;
   apply: (msg: Down) => void;
   connect: (sessionId: string) => void;
-  disconnect: () => void;
   send: (msg: Up) => void;
   dismissError: () => void;
   /** Compose + send a `start`, and record a Recents entry for it. */
@@ -497,7 +469,7 @@ const RECONNECT_BACKOFF_MAX = 30000;
 
 /** OVERNIGHT-SWEEP E20: `Up` commands `send()`'d while the socket wasn't
  *  OPEN. Module-level so they survive the `onclose → connect()` cycle;
- *  flushed (and cleared) in `onopen`. Cleared on `disconnect()`. */
+ *  flushed (and cleared) in `onopen`. */
 let _outbox: PendingCmd[] = [];
 
 /** A6#4 — cap `orchestrator.notifications` (append-only, never drained
@@ -916,7 +888,6 @@ export const useSession = create<SessionState>((set, get) => ({
   pending: [],
   sessionsList: [],
   savedSessions: [],
-  branchConfig: {},
   branches: {},
   candidateBatches: {},
   nextConfig: readStoredNextConfig(),
@@ -994,14 +965,14 @@ export const useSession = create<SessionState>((set, get) => ({
       }
       // STRESS-V2 P2: auto-reconnect with exponential backoff. `sessionId`
       // is KEPT (was cleared pre-P2) so `CommandPalette`/`Sidebar` exports
-      // and the setTimeout guard below can distinguish "socket dropped,
-      // retry" from "user left" (`disconnect()` clears it).
+      // and the setTimeout guard below still resolve while the retry is
+      // pending.
       set({ ws: null, reconnecting: true });
       const delay = reconnectBackoff;
       reconnectBackoff = Math.min(reconnectBackoff * 2, RECONNECT_BACKOFF_MAX);
       setTimeout(() => {
-        // Skip if `disconnect()`/`newAudit()` navigated away, or a manual
-        // `connect()` already opened a fresh socket in the interim.
+        // Skip if `newAudit()` navigated away, or a manual `connect()`
+        // already opened a fresh socket in the interim.
         if (get().sessionId === sessionId && get().ws == null) {
           get().connect(sessionId);
         }
@@ -1016,16 +987,6 @@ export const useSession = create<SessionState>((set, get) => ({
     set({
       ws: next, sessionId, pending: _outbox.slice(), pins: readStoredPins(sessionId),
     });
-  },
-
-  disconnect: () => {
-    const ws = get().ws;
-    if (ws) {
-      ws.onclose = null; // avoid the handler racing our explicit clear
-      ws.close();
-    }
-    _outbox = [];
-    set({ ws: null, sessionId: null, reconnecting: false });
   },
 
   send: (msg: Up) => {
@@ -1057,8 +1018,7 @@ export const useSession = create<SessionState>((set, get) => ({
     // `useIsPending(c => c.t === "start")` disables the launch button;
     // A3's `{t:"branch_created"}` echo carries the real id (`current` /
     // `branches[id]` / seed via `msg.meta`) fast enough post-R5 that no
-    // PENDING_ID skeleton is needed. The old `sessionsList`/`branchConfig`
-    // PENDING_ID entries were never re-keyed post-A3 (dead) and are gone.
+    // PENDING_ID skeleton is needed.
     set({ pendingNewAudit: false });
     get().send({
       t: "start",

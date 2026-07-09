@@ -91,7 +91,7 @@ const EMPTY_SCORES: TurnScorePayload[] = [];
  * row per render, and the `s.events` subscription forced every row to
  * re-render on every structural change (the P1 chain's tail).
  */
-export function useTurnScores(uuid: string | null | undefined): TurnScorePayload[] {
+function useTurnScores(uuid: string | null | undefined): TurnScorePayload[] {
   return useSession((s) =>
     uuid == null ? EMPTY_SCORES : s.turnScores[uuid] ?? EMPTY_SCORES
   );

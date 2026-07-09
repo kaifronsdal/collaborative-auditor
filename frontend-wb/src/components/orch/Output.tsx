@@ -23,7 +23,7 @@ import {
   type WbPayload,
 } from "./types";
 
-export type OutputProps = {
+type OutputProps = {
   id: string;
   bundle: DisplayBundle;
   stable: boolean;

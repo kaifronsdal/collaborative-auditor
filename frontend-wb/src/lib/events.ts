@@ -20,10 +20,9 @@ import {
 
 import type { BranchId, Role } from "./wire";
 
+// TODO(E): delete `buildEventTree` + `EventNode` re-export after
+// session.test.ts migration — no production callers remain.
 export type { EventNode };
-
-/** inspect's display tree over the current event set. Rebuilt on full
- *  snapshots; cheap at audit scale (INSPECT-REUSE.md §3). */
 export function buildEventTree(events: Iterable<Event>): EventNode[] {
   return treeifyEvents([...events], 0);
 }
@@ -48,7 +47,7 @@ export type EventsByRole = Record<BranchId, Record<Role, Event[]>>;
 
 /** Fresh per-role bucket. Centralized so extending `Role` (e.g. adding
  *  `"orch"` for M1) touches one place instead of every initializer site. */
-export const emptyRoles = (): Record<Role, Event[]> => ({
+const emptyRoles = (): Record<Role, Event[]> => ({
   auditor: [],
   target: [],
   orch: [],

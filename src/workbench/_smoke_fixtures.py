@@ -34,11 +34,11 @@ import os
 import socket
 import subprocess
 import traceback
-from collections import deque
 from collections.abc import Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager, closing
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 import uvicorn
@@ -53,6 +53,10 @@ from workbench.run import Branch
 from workbench.server import _dispatch, app
 from workbench.session import Session
 from workbench.sources import GEN_SOURCE, TARGET_GEN_SOURCE
+from workbench.timeline import _walk
+
+if TYPE_CHECKING:
+    from playwright.async_api import Page
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -80,6 +84,29 @@ def _auditor_turn(*calls: ToolCall) -> ModelOutput:
 
 def _target(content: str) -> ModelOutput:
     return ModelOutput.from_content(model="mockllm", content=content)
+
+
+def _target_tool_call(
+    fn: str, call_id: str, *, content: str = "", **args: Any
+) -> ModelOutput:
+    """Target-side ModelOutput carrying one ``tool_call`` (simulated tool use)."""
+    out = ModelOutput.from_content(model="mockllm", content=content)
+    out.choices[0].message.tool_calls = [
+        ToolCall(id=call_id, function=fn, type="function", arguments=dict(args))
+    ]
+    return out
+
+
+def _target_out(
+    input: list[ChatMessage],  # noqa: A002
+    tools: list[ToolInfo],
+    tool_choice: ToolChoice,
+    config: GenerateConfig,
+) -> ModelOutput:
+    """Target mockllm callable: echo the last user message as ``reply-to:{text}``."""
+    del tools, tool_choice, config
+    last_user = next(m for m in reversed(input) if m.role == "user")
+    return ModelOutput.from_content(model="mockllm", content=f"reply-to:{last_user.text}")
 
 
 # ── infra (hoisted from _smoke_ui_rollback.py) ──────────────────────────────
@@ -157,6 +184,78 @@ async def _vite(ws_port: int, ui_port: int):
             proc.wait(5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+
+# ── playwright capture (hoisted from _e2e_m1_chaos.py) ──────────────────────
+
+
+@dataclass
+class Capture:
+    console: list[str] = field(default_factory=list)
+    page_errors: list[str] = field(default_factory=list)
+
+
+_CONSOLE_NOISE = ("Lit is in dev mode",)
+
+
+def _wire_page_capture(page: Page, *, extra_noise: tuple[str, ...] = ()) -> Capture:
+    """Collect ``pageerror``s and error/warning console messages on `page`.
+
+    ``extra_noise`` extends the shared filter for scenario-specific chatter
+    (e.g. the reconnect storm's "CLOSING or CLOSED state").
+    """
+    cap = Capture()
+    noise = _CONSOLE_NOISE + extra_noise
+    page.on("pageerror", lambda e: cap.page_errors.append(str(e)))
+    page.on(
+        "console",
+        lambda m: (
+            cap.console.append(f"[{m.type}] {m.text}")
+            if m.type in ("error", "warning")
+            and not any(n in m.text for n in noise)
+            else None
+        ),
+    )
+    return cap
+
+
+# ── UI-driven fork lifecycle (hoisted from _smoke_ui_actions.py) ────────────
+
+
+async def _wait_fork(session: Session, prev: int) -> Branch:
+    """Wait for a UI-driven WS command to land and `_register_and_spawn` to
+    register the new branch + spawn its `run()` task. Returns the fork."""
+    for _ in range(200):
+        if len(session.branches) > prev and len(session.branch_tasks) > 0:
+            break
+        await anyio.sleep(0.05)
+    assert len(session.branches) > prev, (
+        f"no new branch after action (still {len(session.branches)})"
+    )
+    assert session.current is not None
+    return session.branches[session.current]
+
+
+async def _play_to_end(session: Session, fork: Branch) -> None:
+    """Release the fork's gate, wait for it to run to `end_conversation`, then
+    push a full `state` so the frontend has the settled per-branch timeline.
+
+    The incremental `{t:"timeline"}` rebuild fires on the *first* (pending)
+    target ModelEvent of each turn; for a fork whose prefix replays from
+    `pending` that can land before the trajectory span is fully established,
+    leaving the frontend with a stale empty timeline. The action handlers
+    under test don't depend on that machinery, so re-sync via `state` here.
+    """
+    fork.play()
+    await session.broadcast_status()
+    for _ in range(400):
+        if fork.status == "ended":
+            break
+        await anyio.sleep(0.05)
+    assert fork.status == "ended", f"fork {fork.branch_id} never ended (status={fork.status})"
+    assert fork.error is None, f"fork {fork.branch_id} failed: {fork.error}"
+    session.version += 1
+    await session.broadcast({"t": "state", "v": session.version, **session.view()})
 
 
 # ── mockllm callables ───────────────────────────────────────────────────────
@@ -419,13 +518,7 @@ def _pool_user_id(session: Session, text: str) -> str:
 
 
 def _count_trajectories(history) -> int:
-    n = 0
-    q = deque([history.root])
-    while q:
-        t = q.popleft()
-        n += 1
-        q.extend(t.children)
-    return n
+    return sum(1 for _ in _walk(history.root))
 
 
 # ── runner ──────────────────────────────────────────────────────────────────

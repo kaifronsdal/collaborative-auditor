@@ -193,7 +193,7 @@ export function useStagedForTarget(branch: BranchId): ChatMessage[] {
  * then yields one row per trajectory, with `branch: true` rows for rollback
  * forks. `splice(root, span)` reconstructs any row's full conversation lineage.
  */
-export type Swimlanes = {
+type Swimlanes = {
   timeline: Timeline | null;
   rows: SwimlaneRow[];
   /** Gantt-bar layouts for inspect's `TimelineSwimLanes` (time-positioned). */
@@ -235,7 +235,7 @@ export function useSwimlanes(branch: BranchId, role: Role): Swimlanes {
 }
 
 /** Sibling set at a fork point, plus the index of the currently-viewed one. */
-export type ForkGroup = { siblings: string[]; idx: number };
+type ForkGroup = { siblings: string[]; idx: number };
 
 /**
  * Per-anchor fork groups over a swimlane row set (either column).

@@ -26,10 +26,6 @@ export function DeskView(): JSX.Element {
   // Narrowed from `s.branches` (P1): the whole map churns on every branch's
   // status flip; the desk only reads its own seed for the runline.
   const seed = useSession((s) => (s.current ? s.branches[s.current]?.seed : undefined));
-  const branchConfig = useSession((s) =>
-    s.current ? s.branchConfig[s.current] : undefined
-  );
-  const reconnecting = useSession((s) => s.reconnecting);
   const hasOrch = useSession((s) => s.orchestrator != null);
 
   const auditorRef = useRef<ColumnHandle>(null);
@@ -113,7 +109,7 @@ export function DeskView(): JSX.Element {
   }, []);
 
   const branch = current!;
-  const seedTitle = seed ?? branchConfig?.seed ?? "";
+  const seedTitle = seed ?? "";
   const isRunning = status === "running";
   const isEnded = status === "ended";
 
@@ -172,24 +168,6 @@ export function DeskView(): JSX.Element {
 
   return (
     <>
-      {/* STRESS-V2 P2: WS dropped and `onclose` scheduled a backoff retry.
-          Fixed strip so it overlays whatever's on screen (StartView included);
-          reuses the existing `pulse` keyframe. */}
-      {reconnecting && (
-        <div
-          style={{
-            position: "fixed", top: 0, left: 0, right: 0, zIndex: 1000,
-            padding: "4px 0", textAlign: "center",
-            background: "hsl(45 90% 88%)", color: "hsl(30 60% 30%)",
-            borderBottom: "1px solid hsl(45 60% 70%)",
-            font: "var(--fs-sm) var(--sans)",
-            animation: "pulse 1.2s ease-in-out infinite",
-          }}
-        >
-          Reconnecting…
-        </div>
-      )}
-
       {/* Single header bar: status-dot · seed. Play/pause lives in the
           composer's primary button; step/end are gone. */}
       <div className={`runline status-${status ?? "idle"}`}>

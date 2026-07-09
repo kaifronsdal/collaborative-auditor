@@ -23,16 +23,18 @@ import json
 import sys
 
 import anyio
-from inspect_ai.model import ChatMessage, GenerateConfig, ModelOutput
-from inspect_ai.tool import ToolChoice, ToolInfo
 from playwright.async_api import Page, async_playwright, expect
 
 from workbench._smoke_fixtures import (
     _auditor_turn,
     _backend,
     _free_port,
+    _play_to_end,
+    _target_out,
     _tc,
     _vite,
+    _wait_fork,
+    auditor_by_turn,
 )
 from workbench.run import Branch
 from workbench.server import sessions
@@ -41,61 +43,16 @@ from workbench.timeline import build_auditor_timeline
 
 # ── scripted model callables (2-turn base) ─────────────────────────────────
 
-
-def _auditor_out(
-    input: list[ChatMessage],  # noqa: A002
-    tools: list[ToolInfo],
-    tool_choice: ToolChoice,
-    config: GenerateConfig,
-) -> ModelOutput:
-    del tools, tool_choice, config
-    n_assistant = sum(1 for m in input if m.role == "assistant")
-    if n_assistant == 0:
-        return _auditor_turn(
+_auditor_out = auditor_by_turn(
+    [
+        _auditor_turn(
             _tc("set_system_message", system_message="be helpful"),
             _tc("send_message", message="hello-one"),
             _tc("resume"),
-        )
-    return _auditor_turn(_tc("end_conversation"))
-
-
-def _target_out(
-    input: list[ChatMessage],  # noqa: A002
-    tools: list[ToolInfo],
-    tool_choice: ToolChoice,
-    config: GenerateConfig,
-) -> ModelOutput:
-    del tools, tool_choice, config
-    last_user = next(m for m in reversed(input) if m.role == "user")
-    return ModelOutput.from_content(model="mockllm", content=f"reply-to:{last_user.text}")
-
-
-# ── helpers (lifted from _smoke_ui_actions.py) ──────────────────────────────
-
-
-async def _wait_fork(session: Session, prev: int) -> Branch:
-    for _ in range(200):
-        if len(session.branches) > prev and len(session.branch_tasks) > 0:
-            break
-        await anyio.sleep(0.05)
-    assert len(session.branches) > prev, (
-        f"no new branch after action (still {len(session.branches)})"
-    )
-    assert session.current is not None
-    return session.branches[session.current]
-
-
-async def _play_to_end(session: Session, fork: Branch) -> None:
-    fork.play()
-    await session.broadcast_status()
-    for _ in range(400):
-        if fork.status == "ended":
-            break
-        await anyio.sleep(0.05)
-    assert fork.status == "ended", f"fork never ended (status={fork.status})"
-    assert fork.error is None, f"fork failed: {fork.error}"
-    session.version += 1
-    await session.broadcast({"t": "state", "v": session.version, **session.view()})
+        ),
+        _auditor_turn(_tc("end_conversation")),
+    ]
+)
 
 
 def _aud_col(page: Page):

@@ -16,7 +16,7 @@ import ReaderCard from "./ReaderCard";
 /** Shared prop contract — `payload` is narrowed per-card, so the registry
  *  types it loosely and the caller casts on dispatch. `send` is the store's
  *  own `(msg: Up) => void`. */
-export type CardProps<P = WbPayload> = {
+type CardProps<P = WbPayload> = {
   payload: P;
   displayId: string;
   send: (msg: Up) => void;

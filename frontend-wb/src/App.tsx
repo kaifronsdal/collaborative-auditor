@@ -37,6 +37,7 @@ export function App(): JSX.Element {
   const current = useSession((s) => s.current);
   const hasOrch = useSession((s) => s.orchestrator != null);
   const pendingNewAudit = useSession((s) => s.pendingNewAudit);
+  const reconnecting = useSession((s) => s.reconnecting);
   const error = useSession((s) => s.error);
   const dismissError = useSession((s) => s.dismissError);
 
@@ -66,6 +67,25 @@ export function App(): JSX.Element {
       <div className="app">
         <Sidebar />
         <main className="app-main">
+          {/* STRESS-V2 P2: WS dropped and `onclose` scheduled a backoff retry.
+              Lives here (next to E25's error banner) so it also renders on
+              StartView — a `Session.load` crash-loop or a first-connect
+              failure would otherwise show nothing. Fixed strip; reuses the
+              existing `pulse` keyframe. */}
+          {reconnecting && (
+            <div
+              style={{
+                position: "fixed", top: 0, left: 0, right: 0, zIndex: 1000,
+                padding: "4px 0", textAlign: "center",
+                background: "hsl(45 90% 88%)", color: "hsl(30 60% 30%)",
+                borderBottom: "1px solid hsl(45 60% 70%)",
+                font: "var(--fs-sm) var(--sans)",
+                animation: "pulse 1.2s ease-in-out infinite",
+              }}
+            >
+              Reconnecting…
+            </div>
+          )}
           {/* E25: error banner lives here (not DeskView) so it also renders
               over StartView — a `Session.load` failure lands you on StartView
               with an error, and the pre-E25 DeskView-only banner never showed

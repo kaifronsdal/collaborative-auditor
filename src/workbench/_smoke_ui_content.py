@@ -23,21 +23,19 @@ from inspect_ai.model import (
     ContentText,
     ModelOutput,
 )
-from inspect_ai.tool import ToolCall
 from playwright.async_api import async_playwright, expect
 
-from workbench._smoke_fixtures import _auditor_turn, _backend, _free_port, _tc, _vite
+from workbench._smoke_fixtures import (
+    _auditor_turn,
+    _backend,
+    _free_port,
+    _target_tool_call,
+    _tc,
+    _vite,
+)
 from workbench.run import Branch
 from workbench.server import sessions
 from workbench.session import Session
-
-
-def _target_tool_call(fn: str, call_id: str, **args) -> ModelOutput:
-    out = ModelOutput.from_content(model="mockllm", content="")
-    out.choices[0].message.tool_calls = [
-        ToolCall(id=call_id, function=fn, type="function", arguments=args)
-    ]
-    return out
 
 
 def _target_md(md: str) -> ModelOutput:

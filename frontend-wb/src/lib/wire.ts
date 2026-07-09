@@ -10,7 +10,7 @@
 import type { ChatMessage, Event, Timeline } from "@tsmono/inspect-common";
 
 /** Server-built `Timeline` (petri's `build_target_timeline`), event refs as UUIDs. */
-export type ServerTimeline = Timeline;
+type ServerTimeline = Timeline;
 export type TimelineMap = Record<BranchId, Partial<Record<Role, ServerTimeline>>>;
 
 /** Column role. `"orch"` is the M1 orchestrator column — it lives under the
@@ -222,7 +222,7 @@ export type Down =
  *  inherit `parent.meta` verbatim. Lets a fork A/B a different target model
  *  mid-tree — the replayed prefix is served from tape so the swap only
  *  affects post-branch-point generates. UI wiring deferred. */
-export type ForkOverrides = {
+type ForkOverrides = {
   auditor_model?: string;
   target_model?: string;
   auditor_config?: Record<string, unknown>;

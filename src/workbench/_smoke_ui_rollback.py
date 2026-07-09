@@ -39,6 +39,7 @@ from workbench._smoke_fixtures import (
     _target,
     _tc,
     _vite,
+    _walk,
 )
 from workbench.run import Branch
 from workbench.server import sessions
@@ -211,12 +212,6 @@ async def _amain() -> None:
         await session.close()
 
     print("✓ all UI rollback assertions passed")
-
-
-def _walk(t):
-    yield t
-    for c in t.children:
-        yield from _walk(c)
 
 
 def main() -> None:

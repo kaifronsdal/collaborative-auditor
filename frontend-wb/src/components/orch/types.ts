@@ -47,7 +47,7 @@ export type SampleRowPayload = {
   error?: string | null;
 };
 
-export type QuotePayload = {
+type QuotePayload = {
   sample_id: string;
   at: number;
   role: string;
@@ -55,7 +55,7 @@ export type QuotePayload = {
   log?: string;
 };
 
-export type TracebackFrame = { file: string; lineno: number | null; line: string | null };
+type TracebackFrame = { file: string; lineno: number | null; line: string | null };
 
 // -- gate cards ---------------------------------------------------------------
 
@@ -202,7 +202,7 @@ export type CellDonePayload = {
   ns: Record<string, string>;
 };
 
-export type BgDonePayload = {
+type BgDonePayload = {
   kind: "bg_done";
   id: string;
   pid: number;
@@ -210,7 +210,7 @@ export type BgDonePayload = {
 };
 
 /** Carried in `InfoEvent.data` directly (not under `bundle[WB_MIME]`). */
-export type RewindMarkerPayload = {
+type RewindMarkerPayload = {
   kind: "rewind_marker";
   to_turn: number;
 };

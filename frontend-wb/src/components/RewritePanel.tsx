@@ -92,7 +92,7 @@ export function SelectionPill({
   );
 }
 
-export type RewritePanelProps = {
+type RewritePanelProps = {
   className?: string;
   draft: RewriteDraft | undefined;
   prompt: string;

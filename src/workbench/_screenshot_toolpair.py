@@ -18,8 +18,6 @@ import asyncio
 from pathlib import Path
 
 import anyio
-from inspect_ai.model import ModelOutput
-from inspect_ai.tool import ToolCall
 from playwright.async_api import Page, async_playwright
 
 from workbench._smoke_fixtures import (
@@ -27,6 +25,7 @@ from workbench._smoke_fixtures import (
     _backend,
     _free_port,
     _target,
+    _target_tool_call,
     _tc,
     _vite,
 )
@@ -36,14 +35,6 @@ from workbench.session import Session
 
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "frontend-wb" / "screenshots" / "m1"
-
-
-def _target_tool_call(fn: str, call_id: str, **args: object) -> ModelOutput:
-    out = ModelOutput.from_content(model="mockllm", content="I'll check.")
-    out.choices[0].message.tool_calls = [
-        ToolCall(id=call_id, function=fn, type="function", arguments=dict(args))
-    ]
-    return out
 
 
 # Long-ish bash command (multi-line, >20 lines so ToolCallView's input
@@ -94,7 +85,7 @@ AUDITOR = [
     _auditor_turn(_tc("end_conversation")),
 ]
 TARGET = [
-    _target_tool_call("bash", "tc-bash-1", cmd=_BASH_CMD),
+    _target_tool_call("bash", "tc-bash-1", content="I'll check.", cmd=_BASH_CMD),
     _target("Found 60 lock-acquisition errors across 4 shards."),
 ]
 
